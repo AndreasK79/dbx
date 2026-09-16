@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { KeyRound, Loader2, Trash2 } from "@lucide/vue";
+import { Copy, KeyRound, Loader2, Trash2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { tableColumnDefaultDisplayValue } from "@/lib/table/tableColumnDefaultPresentation";
@@ -25,6 +25,12 @@ interface DataGridTableInfoPanelsProps {
   constraintsError: string;
   isProtectedMongoIndex: (index: IndexInfo) => boolean;
   formatColumnType: (dataType: string) => string;
+  /** Whether the indexes panel may offer "copy as CREATE INDEX" for a row. */
+  canCopyIndexSql: boolean;
+  /** Whether the foreign-keys panel may offer "copy as ALTER TABLE … ADD CONSTRAINT" for a row. */
+  canCopyForeignKeySql: boolean;
+  /** Whether the constraints panel may offer "copy as ALTER TABLE … ADD CONSTRAINT" for a row. */
+  canCopyConstraintSql: boolean;
 }
 
 const props = defineProps<DataGridTableInfoPanelsProps>();
@@ -33,6 +39,9 @@ const emit = defineEmits<{
   tableInfoColumnClick: [columnName: string];
   scrollToTableInfoColumn: [columnName: string];
   requestDropMongoIndex: [index: IndexInfo];
+  requestCopyIndexSql: [index: IndexInfo];
+  requestCopyForeignKeySql: [foreignKey: ForeignKeyInfo];
+  requestCopyConstraintSql: [constraint: ConstraintInfo];
 }>();
 
 const { t } = useI18n();
@@ -136,10 +145,16 @@ const { t } = useI18n();
               {{ index.columns.join(", ") }}
             </div>
           </div>
-          <Button v-if="props.canManageMongoIndexes && !props.isProtectedMongoIndex(index)" variant="ghost" size="sm" class="h-7 shrink-0 px-2 text-[11px] text-destructive hover:text-destructive" @click="emit('requestDropMongoIndex', index)">
-            <Trash2 class="mr-1 h-3 w-3" />
-            {{ t("contextMenu.dropIndex") }}
-          </Button>
+          <div class="flex shrink-0 flex-col items-end gap-1">
+            <Button v-if="props.canCopyIndexSql" variant="ghost" size="sm" class="h-7 px-2 text-[11px]" :title="t('grid.copyIndexSql')" :aria-label="t('grid.copyIndexSql')" @click="emit('requestCopyIndexSql', index)">
+              <Copy class="mr-1 h-3 w-3" />
+              {{ t("grid.copyIndexSql") }}
+            </Button>
+            <Button v-if="props.canManageMongoIndexes && !props.isProtectedMongoIndex(index)" variant="ghost" size="sm" class="h-7 px-2 text-[11px] text-destructive hover:text-destructive" @click="emit('requestDropMongoIndex', index)">
+              <Trash2 class="mr-1 h-3 w-3" />
+              {{ t("contextMenu.dropIndex") }}
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -160,8 +175,18 @@ const { t } = useI18n();
     </div>
     <div v-else class="divide-y">
       <div v-for="foreignKey in props.foreignKeys" :key="`${foreignKey.name}:${foreignKey.column}`" class="p-3 text-xs">
-        <div class="font-medium truncate">{{ foreignKey.name }}</div>
-        <div class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ foreignKey.column }} -> {{ foreignKey.ref_table }}.{{ foreignKey.ref_column }}</div>
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="font-medium truncate">{{ foreignKey.name }}</div>
+            <div class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ foreignKey.column }} -> {{ foreignKey.ref_table }}.{{ foreignKey.ref_column }}</div>
+          </div>
+          <div class="flex shrink-0 flex-col items-end gap-1">
+            <Button v-if="props.canCopyForeignKeySql" variant="ghost" size="sm" class="h-7 px-2 text-[11px]" :title="t('grid.copyForeignKeySql')" :aria-label="t('grid.copyForeignKeySql')" @click="emit('requestCopyForeignKeySql', foreignKey)">
+              <Copy class="mr-1 h-3 w-3" />
+              {{ t("grid.copyForeignKeySql") }}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -202,15 +227,25 @@ const { t } = useI18n();
     </div>
     <div v-else class="divide-y">
       <div v-for="constraint in props.constraints" :key="constraint.name" class="p-3 text-xs" :class="constraint.enabled ? '' : 'opacity-60'">
-        <div class="flex flex-wrap items-center gap-1.5">
-          <span class="font-medium truncate">{{ constraint.name }}</span>
-          <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ constraint.constraint_type }}</span>
-          <span v-if="!constraint.enabled" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintDisabled") }}</span>
-          <span v-else-if="!constraint.valid" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintNotValidated") }}</span>
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="font-medium truncate">{{ constraint.name }}</span>
+              <span class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ constraint.constraint_type }}</span>
+              <span v-if="!constraint.enabled" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintDisabled") }}</span>
+              <span v-else-if="!constraint.valid" class="rounded border px-1 py-px text-[10px] text-muted-foreground">{{ t("grid.tableInfoConstraintNotValidated") }}</span>
+            </div>
+            <div v-if="constraint.columns.length" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ constraint.columns.join(", ") }}</div>
+            <div v-if="constraint.ref_table" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
+            <div v-if="constraint.definition" class="mt-1 font-mono text-[11px] text-muted-foreground break-all whitespace-pre-wrap">{{ constraint.definition }}</div>
+          </div>
+          <div class="flex shrink-0 flex-col items-end gap-1">
+            <Button v-if="props.canCopyConstraintSql" variant="ghost" size="sm" class="h-7 px-2 text-[11px]" :title="t('grid.copyConstraintSql')" :aria-label="t('grid.copyConstraintSql')" @click="emit('requestCopyConstraintSql', constraint)">
+              <Copy class="mr-1 h-3 w-3" />
+              {{ t("grid.copyConstraintSql") }}
+            </Button>
+          </div>
         </div>
-        <div v-if="constraint.columns.length" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">{{ constraint.columns.join(", ") }}</div>
-        <div v-if="constraint.ref_table" class="mt-1 font-mono text-[11px] text-muted-foreground break-all">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
-        <div v-if="constraint.definition" class="mt-1 font-mono text-[11px] text-muted-foreground break-all whitespace-pre-wrap">{{ constraint.definition }}</div>
       </div>
     </div>
   </div>

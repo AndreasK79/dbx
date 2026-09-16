@@ -207,6 +207,7 @@ import { combineDataTypeForDatabase, dataTypeLengthInputValue, getDataTypeOption
 import { useToast } from "@/composables/useToast";
 import type { DatabaseType, SqlShortcutAction, SqlSnippet } from "@/types/database";
 import { uuid } from "@/lib/common/utils";
+import { MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES, mergeImportedVscodeSnippets, parseVscodeSnippetsFile, serializeVscodeSnippetsFile, type VscodeSnippetsImportError } from "@/lib/sql/vscodeSnippetsImport";
 import { findSqlShortcutConflicts, hasSqlShortcutConflicts as sqlShortcutsHaveConflicts, SQL_SHORTCUT_TABLE_TOKEN } from "@/lib/sql/sqlShortcutActions";
 import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlCompletion";
 import AiProviderLogo from "@/components/icons/AiProviderLogo.vue";
@@ -727,6 +728,44 @@ function editableSnippet(snippet: SqlSnippet): SqlSnippet {
 
 const editSnippets = ref<SqlSnippet[]>(settingsStore.editorSettings.snippets.map(editableSnippet));
 
+// --- Snippet filter ---
+const snippetFilter = ref("");
+
+const visibleSnippets = computed(() => {
+  const query = snippetFilter.value.trim().toLocaleLowerCase();
+  if (!query) return editSnippets.value;
+  return editSnippets.value.filter((snippet) => snippet.label.toLocaleLowerCase().includes(query) || snippet.prefix.toLocaleLowerCase().includes(query) || snippet.body.toLocaleLowerCase().includes(query));
+});
+
+// --- Snippet bulk selection ---
+const selectedSnippetIds = ref<Set<string>>(new Set());
+
+const selectedSnippetCount = computed(() => editSnippets.value.reduce((count, snippet) => count + (selectedSnippetIds.value.has(snippet.id) ? 1 : 0), 0));
+// 全选针对当前筛选结果；被筛掉的行保持原选中状态
+const allSnippetsSelected = computed(() => visibleSnippets.value.length > 0 && visibleSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
+
+function toggleSnippetSelected(id: string, checked: boolean) {
+  if (checked) selectedSnippetIds.value.add(id);
+  else selectedSnippetIds.value.delete(id);
+}
+
+function toggleAllSnippetsSelected(checked: boolean) {
+  const next = new Set(selectedSnippetIds.value);
+  for (const snippet of visibleSnippets.value) {
+    if (checked) next.add(snippet.id);
+    else next.delete(snippet.id);
+  }
+  selectedSnippetIds.value = next;
+}
+
+function deleteSelectedSnippets() {
+  const deletable = editSnippets.value.filter((snippet) => selectedSnippetIds.value.has(snippet.id));
+  if (deletable.length === 0) return;
+  if (!window.confirm(`Delete ${deletable.length} selected snippet${deletable.length === 1 ? "" : "s"}?`)) return;
+  editSnippets.value = editSnippets.value.filter((snippet) => !selectedSnippetIds.value.has(snippet.id));
+  selectedSnippetIds.value = new Set();
+}
+
 function editableSqlShortcut(action: SqlShortcutAction): SqlShortcutAction {
   return { ...action, enabled: action.enabled !== false };
 }
@@ -1074,11 +1113,148 @@ function setSnippetEnabled(id: string, enabled: boolean) {
 
 function deleteSnippet(id: string) {
   editSnippets.value = editSnippets.value.filter((s) => s.id !== id);
+  selectedSnippetIds.value.delete(id);
 }
 
 function confirmDeleteSnippet(snippet: SqlSnippet) {
   if (window.confirm(`Delete snippet "${snippet.label}"?`)) {
     deleteSnippet(snippet.id);
+  }
+}
+
+// --- Snippet import (VS Code snippets JSON) ---
+
+const snippetsImporting = ref(false);
+const snippetsFileInputRef = ref<HTMLInputElement | null>(null);
+
+function onImportSnippetsClick() {
+  if (snippetsImporting.value) return;
+  if (isTauriRuntime()) {
+    void importSnippetsFromDesktop();
+    return;
+  }
+  snippetsFileInputRef.value?.click();
+}
+
+async function importSnippetsFromDesktop() {
+  snippetsImporting.value = true;
+  try {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "VS Code Snippets", extensions: ["json", "code-snippets"] }],
+    });
+    if (typeof selected !== "string") return;
+    const { readTextFile, stat } = await import("@tauri-apps/plugin-fs");
+    // Reject oversized files before reading them into memory. If the platform
+    // cannot stat the path, fall through and let the parse-time limit decide.
+    try {
+      const info = await stat(selected);
+      if (info.size > MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES) {
+        toast(translateSnippetsImportError({ code: "too-large" }), 5000);
+        return;
+      }
+    } catch {
+      // stat failures are not fatal; the parser's own limit still applies.
+    }
+    applyImportedSnippetsText(await readTextFile(selected));
+  } catch (error) {
+    toast(t("settings.snippetsImportReadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  } finally {
+    snippetsImporting.value = false;
+  }
+}
+
+async function handleSnippetsFileInputChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  // Reject oversized files before reading them into memory.
+  if (file.size > MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES) {
+    toast(translateSnippetsImportError({ code: "too-large" }), 5000);
+    return;
+  }
+  snippetsImporting.value = true;
+  try {
+    applyImportedSnippetsText(await file.text());
+  } catch (error) {
+    toast(t("settings.snippetsImportReadFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  } finally {
+    snippetsImporting.value = false;
+  }
+}
+
+// Import only updates the draft; the snippets tab is Apply-based, so the dirty
+// check and Apply footer pick the change up without touching the store here.
+function applyImportedSnippetsText(text: string) {
+  const result = parseVscodeSnippetsFile(text);
+  if (!result.ok) {
+    toast(translateSnippetsImportError(result.error), 5000);
+    return;
+  }
+  const merged = mergeImportedVscodeSnippets(editSnippets.value, result.value);
+  editSnippets.value = merged.snippets;
+  toast(merged.renamedCount > 0 ? t("settings.snippetsImportSuccessRenamed", { count: merged.importedCount, renamed: merged.renamedCount }) : t("settings.snippetsImportSuccess", { count: merged.importedCount }), 2500);
+}
+
+function translateSnippetsImportError(error: VscodeSnippetsImportError): string {
+  switch (error.code) {
+    case "too-large":
+      return t("settings.snippetsImportFileTooLarge", { limit: `${MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES / (1024 * 1024)} MB` });
+    case "invalid-json":
+      return t("settings.snippetsImportInvalidJson");
+    case "invalid-structure":
+      return t("settings.snippetsImportInvalidStructure");
+    case "no-valid-snippets":
+      return t("settings.snippetsImportNoValidSnippets");
+  }
+}
+
+// --- Snippet export (VS Code snippets JSON) ---
+
+const snippetsExporting = ref(false);
+
+function onExportSnippetsClick() {
+  if (snippetsExporting.value || editSnippets.value.length === 0) return;
+  if (isTauriRuntime()) {
+    void exportSnippetsToDesktop();
+    return;
+  }
+  exportSnippetsToBrowser();
+}
+
+async function exportSnippetsToDesktop() {
+  snippetsExporting.value = true;
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const target = await save({
+      defaultPath: "dbx-snippets.json",
+      filters: [{ name: "VS Code Snippets", extensions: ["json", "code-snippets"] }],
+    });
+    if (typeof target !== "string") return;
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(target, serializeVscodeSnippetsFile(editSnippets.value));
+    toast(t("settings.snippetsExportSuccess", { count: editSnippets.value.length }), 2500);
+  } catch (error) {
+    toast(t("settings.snippetsExportWriteFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  } finally {
+    snippetsExporting.value = false;
+  }
+}
+
+function exportSnippetsToBrowser() {
+  try {
+    const blob = new Blob([serializeVscodeSnippetsFile(editSnippets.value)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "dbx-snippets.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+    toast(t("settings.snippetsExportSuccess", { count: editSnippets.value.length }), 2500);
+  } catch (error) {
+    toast(t("settings.snippetsExportWriteFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
   }
 }
 
@@ -7870,10 +8046,26 @@ onUnmounted(() => {
                 <p class="text-sm text-muted-foreground">
                   {{ t("settings.snippetsDescription") }}
                 </p>
-                <Button variant="outline" size="sm" @click="openAddSnippetDialog">
-                  <Plus class="mr-2 h-4 w-4" />
-                  {{ t("settings.snippetsAdd") }}
-                </Button>
+                <div class="flex shrink-0 items-center gap-2">
+                  <Button v-if="selectedSnippetCount > 0" variant="outline" size="sm" @click="deleteSelectedSnippets">
+                    <Trash2 class="mr-2 h-4 w-4" />
+                    {{ t("settings.snippetsDeleteSelected", { count: selectedSnippetCount }) }}
+                  </Button>
+                  <Button variant="outline" size="sm" :disabled="snippetsImporting" @click="onImportSnippetsClick">
+                    <Loader2 v-if="snippetsImporting" class="mr-2 h-4 w-4 animate-spin" />
+                    <Upload v-else class="mr-2 h-4 w-4" />
+                    {{ t("settings.snippetsImport") }}
+                  </Button>
+                  <Button variant="outline" size="sm" :disabled="snippetsExporting || editSnippets.length === 0" @click="onExportSnippetsClick">
+                    <Loader2 v-if="snippetsExporting" class="mr-2 h-4 w-4 animate-spin" />
+                    <Download v-else class="mr-2 h-4 w-4" />
+                    {{ t("settings.snippetsExport") }}
+                  </Button>
+                  <Button variant="outline" size="sm" @click="openAddSnippetDialog">
+                    <Plus class="mr-2 h-4 w-4" />
+                    {{ t("settings.snippetsAdd") }}
+                  </Button>
+                </div>
               </div>
               <div class="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                 <p>{{ t("settings.snippetsPlaceholderHint") }}</p>
@@ -7885,10 +8077,26 @@ LIMIT 100;</pre
                 >
               </div>
 
+              <div class="flex items-center gap-2">
+                <div class="relative w-full max-w-sm">
+                  <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input v-model="snippetFilter" :placeholder="t('settings.snippetsFilterPlaceholder')" class="pl-8" autocomplete="off" spellcheck="false" />
+                </div>
+                <p v-if="snippetFilter.trim()" class="whitespace-nowrap text-xs text-muted-foreground">
+                  {{ t("settings.snippetsFilterCount", { shown: visibleSnippets.length, total: editSnippets.length }) }}
+                </p>
+                <Button v-if="snippetFilter" variant="ghost" size="sm" class="h-7 shrink-0 px-2" :aria-label="t('settings.snippetsFilterClear')" @click="snippetFilter = ''">
+                  <X class="h-3.5 w-3.5" />
+                </Button>
+              </div>
+
               <div class="overflow-x-auto rounded-md border">
-                <table class="w-full min-w-[720px] text-sm">
+                <table class="w-full min-w-[760px] text-sm">
                   <thead>
                     <tr class="border-b bg-muted/50">
+                      <th class="px-3 py-2 w-10">
+                        <input type="checkbox" class="h-3.5 w-3.5 accent-primary" :checked="allSnippetsSelected" :aria-label="t('settings.snippetsSelectAll')" @change="toggleAllSnippetsSelected(($event.target as HTMLInputElement).checked)" />
+                      </th>
                       <th class="px-3 py-2 text-left font-medium whitespace-nowrap">
                         {{ t("settings.snippetsLabel") }}
                       </th>
@@ -7905,7 +8113,15 @@ LIMIT 100;</pre
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="snippet in editSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
+                    <tr v-if="visibleSnippets.length === 0" class="hover:bg-muted/30">
+                      <td colspan="6" class="px-3 py-8 text-center text-sm text-muted-foreground">
+                        {{ t("settings.snippetsFilterNoMatch") }}
+                      </td>
+                    </tr>
+                    <tr v-for="snippet in visibleSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
+                      <td class="px-3 py-2">
+                        <input type="checkbox" class="h-3.5 w-3.5 accent-primary" :checked="selectedSnippetIds.has(snippet.id)" :aria-label="t('settings.snippetsSelectSnippet')" @change="toggleSnippetSelected(snippet.id, ($event.target as HTMLInputElement).checked)" />
+                      </td>
                       <td class="px-3 py-2">{{ snippet.label }}</td>
                       <td class="px-3 py-2">
                         <Badge variant="outline" class="h-5 rounded-md px-1.5 text-[11px] font-mono text-muted-foreground">
@@ -7937,6 +8153,7 @@ LIMIT 100;</pre
                   </tbody>
                 </table>
               </div>
+              <input ref="snippetsFileInputRef" type="file" accept=".json,.code-snippets,application/json" class="hidden" @change="handleSnippetsFileInputChange" />
             </section>
 
             <section v-else-if="activeSettingsTab === 'backups' && !isWeb" data-settings-search-id="backups" :class="['py-2', settingsSearchTargetClass('backups')]">

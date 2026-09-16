@@ -143,6 +143,34 @@ pub struct ExtensionInfo {
     pub schema: Option<String>,
 }
 
+/// Foreign-server "remote link" (postgres FDW): pg_foreign_server joined with
+/// its wrapper, owner, options, description, user mappings and foreign tables.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignServerInfo {
+    pub name: String,
+    pub wrapper: String,
+    pub owner: String,
+    pub server_type: Option<String>,
+    pub server_version: Option<String>,
+    pub options: Vec<String>,
+    pub comment: Option<String>,
+    pub user_mappings: Vec<ForeignServerUserMapping>,
+    pub foreign_tables: Vec<ForeignServerForeignTable>,
+}
+
+/// pg_user_mappings row; `username` is "PUBLIC" for the public mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignServerUserMapping {
+    pub username: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForeignServerForeignTable {
+    pub schema: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObjectStatistics {
     pub name: String,

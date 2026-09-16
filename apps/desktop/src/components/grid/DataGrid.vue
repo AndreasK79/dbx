@@ -51,6 +51,7 @@ import {
   WandSparkles,
   Camera,
   AlertTriangle,
+  ArrowDownAZ,
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -97,6 +98,9 @@ import { dataGridCellDisplayText, dataGridCellEditorText } from "@/lib/dataGrid/
 import { createColumnDrafts } from "@/lib/table/tableStructureEditorState";
 import type { BuildSingleColumnAlterSqlOptions } from "@/lib/table/tableStructureEditorSql";
 import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
+import { buildCreateIndexSql } from "@/lib/table/indexCreateSql";
+import { buildAddForeignKeySql } from "@/lib/table/foreignKeySql";
+import { buildAddConstraintSql } from "@/lib/table/constraintSql";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind } from "@/lib/dataGrid/cellValueGeneration";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue } from "@/lib/mongo/mongoDocumentValues";
@@ -128,6 +132,7 @@ import {
   nextTransposeState,
   nextTransposeStateForRecordCount,
   restoreDataGridAfterTranspose,
+  sortTransposeRowsByColumn,
   shouldAutoTransposeSingleRow,
   transposeRecordIndexesForMode,
   transposeRecordWidthsForDensity,
@@ -266,7 +271,17 @@ import {
   dataGridSelectedSortMenuValue,
   type DataGridColumnSortState,
 } from "@/lib/dataGrid/dataGridContextMenu";
-import { buildColumnForeignKeyMap, combineForeignKeyConditions, foreignKeyAssociationCells, foreignKeyNavigationTarget, foreignKeySourceColumnName, type ForeignKeyAssociation } from "@/lib/dataGrid/dataGridForeignKeyNavigation";
+import {
+  buildColumnForeignKeyMap,
+  combineForeignKeyConditions,
+  foreignKeyAssociationCells,
+  foreignKeyAssociationCellsForSource,
+  foreignKeyAssociationForRef,
+  foreignKeyNavigationTarget,
+  foreignKeySourceColumnName,
+  type ForeignKeyAssociation,
+  type ForeignKeyAssociationCell,
+} from "@/lib/dataGrid/dataGridForeignKeyNavigation";
 import {
   collectForeignKeyDisplayValues,
   createForeignKeyDisplayRequestCoordinator,
@@ -353,6 +368,7 @@ import { appendDebugLog, isDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { formatShortcut } from "@/lib/editor/shortcutRegistry";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useDataGridColumnFormatter } from "@/composables/useDataGridColumnFormatter";
+import { useDataGridSourceForeignKeys } from "@/composables/useDataGridSourceForeignKeys";
 import { useDataGridTableMetadataLoaders } from "@/composables/useDataGridTableMetadataLoaders";
 import { DATA_GRID_SERVER_COLUMN_FILTER_LIMIT, useDataGridColumnFilters } from "@/composables/useDataGridColumnFilters";
 import { useDataGridLargeValues } from "@/composables/useDataGridLargeValues";
@@ -402,7 +418,7 @@ function fetchForeignKeys() {
   return tableMetadataLoaderFetchForeignKeys();
 }
 // 外键单元格跳转复用导航入口；对话框引用传 stub（同 AiAssistant 模式）
-const { openTableTarget } = useNavigationTargets({
+const { openTableTarget, executeTableTargetInQueryTab } = useNavigationTargets({
   showFieldLineageDialog: ref(false),
   showDatabaseSearchDialog: ref(false),
   showDiagramDialog: ref(false),
@@ -456,6 +472,12 @@ interface DataGridProps {
    * identity or editing.
    */
   queryDisplaySourceColumns?: Array<QueryResultSourceColumnRef | undefined>;
+  /**
+   * Tab that owns this grid. When set, foreign-key drill-through navigates that
+   * tab in place — a data tab is re-pointed to the referenced table, a query
+   * tab executes the lookup in its results pane — instead of opening a new tab.
+   */
+  foreignKeyNavigationTabId?: string;
   initialWhereInput?: string;
   initialOrderByInput?: string;
   sortColumn?: string;
@@ -603,6 +625,8 @@ if (isDebugLoggingEnabled()) {
 
 const transposeRowIndex = ref<number | null>(null);
 const showTranspose = ref(false);
+/** Alphabetical column-name ordering for the transpose view; resets when transpose closes. */
+const transposeSortAlpha = ref(false);
 const preserveTransposeOnNextResult = ref(false);
 let preservedSelectionOnNextResult: {
   selection: PersistedDataGridSelection;
@@ -7088,7 +7112,7 @@ const canvasDetailButtonCell = computed(() => {
   const visibleLeft = Math.max(rowNumberWidth.value, rect.left);
   const visibleRight = viewportWidth > 0 ? Math.min(viewportWidth, rect.left + rect.width) : rect.left + rect.width;
   const canQuickDownload = canQuickDownloadCellValue(target.rowIndex, target.col);
-  const foreignKey = canvasCellForeignKey(target.rowIndex, target.col);
+  const foreignKey = cellForeignKeyInfo(target.rowIndex, target.col);
   const externalUrl = cellExternalUrl(displayItemAt(target.rowIndex)?.data[target.col]);
   if (!cellDetailButtonEnabled.value && !canQuickDownload && !foreignKey && !externalUrl) return null;
   const minWidth = canvasDataGridActionOverlayWidth(canQuickDownload, !!foreignKey, cellDetailButtonEnabled.value, !!externalUrl) + 2;
@@ -9385,7 +9409,7 @@ const activeTransposeRecordIndexes = computed(() =>
 const transposeBeforeSpacerWidth = computed(() => (multiRowTranspose.value ? transposeRecordWindow.value.beforeWidth : 0));
 const transposeAfterSpacerWidth = computed(() => (multiRowTranspose.value ? transposeRecordWindow.value.afterWidth + transposeEndSpacerWidth.value : 0));
 const transposeRows = computed(() => {
-  return buildVisibleTransposeRows({
+  const rows = buildVisibleTransposeRows({
     columns: visibleColumns.value,
     records: displayRowRefs.value.map((_, index) => displayItemAt(index)?.data ?? []),
     recordIndexes: activeTransposeRecordIndexes.value,
@@ -9394,6 +9418,7 @@ const transposeRows = computed(() => {
     comments: visibleColumnComments.value,
     displayValue: (value, _column, index) => formatCellCached(value, visibleColumnIndexes.value[index]),
   });
+  return transposeSortAlpha.value ? sortTransposeRowsByColumn(rows) : rows;
 });
 const transposeReserveTypeLine = computed(() => showTransposeFieldMetadata.value && showColumnTypesInHeader.value && transposeRows.value.some((row) => row.type));
 const transposeReserveCommentLine = computed(() => showTransposeFieldMetadata.value && showColumnCommentsInHeader.value && transposeRows.value.some((row) => row.comment));
@@ -9698,6 +9723,7 @@ watch(isTransposeMode, (active) => {
   // The transpose scroller is v-if-removed by isTransposeMode; drop the observer
   // before the element unmounts so it never observes a detached node.
   disconnectTransposeViewportObserver();
+  transposeSortAlpha.value = false;
   const scrollTopBeforeTranspose = restoreGridScrollTopAfterTranspose ? (gridScrollTopBeforeKeyboardTranspose ?? undefined) : undefined;
   restoreGridScrollTopAfterTranspose = false;
   gridScrollTopBeforeKeyboardTranspose = null;
@@ -10541,10 +10567,13 @@ watch(
 
 // ---- 外键单元格跳转 ----
 const columnForeignKeyMap = computed(() => buildColumnForeignKeyMap(foreignKeys.value));
-const foreignKeyNavigationEnabled = computed(() => !!props.connectionId && !!props.tableMeta?.tableName && tableMetadataCapabilities.value.foreignKeys);
+// 多源（JOIN）结果：逐列 source ref 指向源表时，按源表解析外键（即使结果
+// 不可编辑，queryDisplaySourceColumns 也已填充，见 QueryTab 类型注释）
+const hasSourceRefs = computed(() => props.context === "results" && !!props.queryDisplaySourceColumns?.some((ref) => !!ref?.tableName));
+const { sourceForeignKeyMaps, ensureSourceForeignKeys } = useDataGridSourceForeignKeys({ props });
+const foreignKeyNavigationEnabled = computed(() => !!props.connectionId && tableMetadataCapabilities.value.foreignKeys && (!!props.tableMeta?.tableName || hasSourceRefs.value));
 
-function cellForeignKeyAssociation(actualColIdx: number): ForeignKeyAssociation | null {
-  if (!foreignKeyNavigationEnabled.value) return null;
+function singleTableForeignKeyAssociation(actualColIdx: number): ForeignKeyAssociation | null {
   const columnName = foreignKeySourceColumnName({
     context: props.context,
     resultColumns: props.result.columns,
@@ -10555,8 +10584,24 @@ function cellForeignKeyAssociation(actualColIdx: number): ForeignKeyAssociation 
   return columnForeignKeyMap.value.get(columnName.toLowerCase()) ?? null;
 }
 
+function cellForeignKeyAssociation(actualColIdx: number): ForeignKeyAssociation | null {
+  if (!foreignKeyNavigationEnabled.value) return null;
+  if (hasSourceRefs.value) {
+    // 严格逐列解析：源未解析或该源 FK 未加载时不回退单表 map——同名列
+    // 回退会跳到错误的表
+    return foreignKeyAssociationForRef({
+      connectionId: props.connectionId,
+      refs: props.queryDisplaySourceColumns ?? [],
+      columnIndex: actualColIdx,
+      sourceForeignKeyMaps: sourceForeignKeyMaps.value,
+    });
+  }
+  return singleTableForeignKeyAssociation(actualColIdx);
+}
+
 function formatterForeignKeyForColumn(columnIndex: number): ForeignKeyInfo | undefined {
-  return singleColumnForeignKey(cellForeignKeyAssociation(columnIndex));
+  // FK 展示格式化器仍走单表解析：其配置（refSchema 等）以 tableMeta 为准
+  return singleColumnForeignKey(singleTableForeignKeyAssociation(columnIndex));
 }
 
 function savedForeignKeyDisplayConfig(columnIndex: number): ForeignKeyDisplayConfig | undefined {
@@ -10691,19 +10736,32 @@ watch(
   { immediate: true },
 );
 
-function canvasCellForeignKey(rowIndex: number, actualColIdx: number): ForeignKeyInfo | null {
-  const association = cellForeignKeyAssociation(actualColIdx);
-  if (!association) return null;
+// 单元格级 FK 各列取值：多源结果按 sourceKey 解析复合外键，单表沿用列名映射
+function foreignKeyCellsForCell(association: ForeignKeyAssociation, rowIndex: number, actualColIdx: number): ForeignKeyAssociationCell[] | undefined {
   const item = displayItems.value[rowIndex];
-  if (!item) return null;
-  const cells = foreignKeyAssociationCells({
+  if (!item) return undefined;
+  if (hasSourceRefs.value) {
+    return foreignKeyAssociationCellsForSource({
+      association,
+      refs: props.queryDisplaySourceColumns ?? [],
+      columnIndex: actualColIdx,
+      row: item.data,
+    });
+  }
+  return foreignKeyAssociationCells({
     association,
     context: props.context,
     resultColumns: props.result.columns,
     sourceColumns: props.sourceColumns,
     row: item.data,
   });
-  return cells ? association.foreignKey : null;
+}
+
+// 两种渲染模式共用的悬浮按钮判定：association 存在且本行各 FK 列均有值
+function cellForeignKeyInfo(rowIndex: number, actualColIdx: number): ForeignKeyInfo | null {
+  const association = cellForeignKeyAssociation(actualColIdx);
+  if (!association) return null;
+  return foreignKeyCellsForCell(association, rowIndex, actualColIdx) ? association.foreignKey : null;
 }
 
 // 外键跳转按钮需要 FK 元数据：表身份就绪即后台加载（fetchForeignKeys 自带去重，
@@ -10716,17 +10774,32 @@ watch(
   { immediate: true },
 );
 
+// 多源结果：结果替换后按新 source ref 集合补齐逐源 FK map（已加载身份自动跳过）
+watch(
+  () => [props.connectionId, props.database, props.queryDisplaySourceColumns] as const,
+  () => {
+    if (hasSourceRefs.value) void ensureSourceForeignKeys();
+  },
+  { immediate: true },
+);
+
+// 子列的列信息（值字面量按类型格式化用）：多源结果从对应源的 write target
+// 元数据解析；不可编辑 JOIN 无 write target 时返回 undefined（构建器按原文处理）
+function foreignKeyColumnInfo(actualColIdx: number, foreignKey: ForeignKeyInfo): ColumnInfo | undefined {
+  if (hasSourceRefs.value) {
+    const ref = props.queryDisplaySourceColumns?.[actualColIdx];
+    if (!ref?.tableName) return undefined;
+    const target = props.joinedWriteTargets?.find((candidate) => (candidate.tableMeta.database ?? "") === (ref.database ?? "") && (candidate.tableMeta.schema ?? "") === (ref.schema ?? "") && candidate.tableMeta.tableName === ref.tableName);
+    return target?.tableMeta.columns.find((column) => column.name.toLowerCase() === foreignKey.column.toLowerCase());
+  }
+  return props.tableMeta?.columns.find((column) => column.name.toLowerCase() === foreignKey.column.toLowerCase());
+}
+
 async function navigateToForeignKeyCell(rowIndex: number, actualColIdx: number) {
   const association = cellForeignKeyAssociation(actualColIdx);
   const item = displayItems.value[rowIndex];
   if (!association || !item || !props.connectionId) return;
-  let cells = foreignKeyAssociationCells({
-    association,
-    context: props.context,
-    resultColumns: props.result.columns,
-    sourceColumns: props.sourceColumns,
-    row: item.data,
-  });
+  let cells = foreignKeyCellsForCell(association, rowIndex, actualColIdx);
   if (!cells) return;
   try {
     const resolved = await resolveLargeValueCells(
@@ -10744,22 +10817,29 @@ async function navigateToForeignKeyCell(rowIndex: number, actualColIdx: number) 
           databaseType: resolvedDatabaseType.value,
           identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
           columnName: foreignKey.ref_column,
-          columnInfo: props.tableMeta?.columns.find((column) => column.name.toLowerCase() === foreignKey.column.toLowerCase()),
+          columnInfo: foreignKeyColumnInfo(actualColIdx, foreignKey),
           rawValue: String(value),
         }),
       ),
     );
     const condition = combineForeignKeyConditions(conditions);
     if (!condition) return;
-    await openTableTarget(
-      foreignKeyNavigationTarget({
-        connectionId: props.connectionId,
-        database: props.database || props.tableMeta?.database || "",
-        currentSchema: props.tableMeta?.schema || props.schema,
-        fk: association.foreignKey,
-        whereInput: condition,
-      }),
-    );
+    const navigationTarget = foreignKeyNavigationTarget({
+      connectionId: props.connectionId,
+      database: props.database || props.tableMeta?.database || "",
+      currentSchema: props.tableMeta?.schema || props.schema,
+      fk: association.foreignKey,
+      whereInput: condition,
+    });
+    // 同面板跳转：data tab 原地换目标（不安全状态由 canReuseActiveDataTab
+    // 拒绝后回退新建），query tab 在结果面板内执行（编辑器 SQL 不动）
+    if (props.foreignKeyNavigationTabId && props.context === "table-data") {
+      await openTableTarget(navigationTarget, { reuseTabId: props.foreignKeyNavigationTabId });
+    } else if (props.foreignKeyNavigationTabId && props.context === "results") {
+      await executeTableTargetInQueryTab(navigationTarget, { tabId: props.foreignKeyNavigationTabId });
+    } else {
+      await openTableTarget(navigationTarget);
+    }
   } catch (e: any) {
     toast(String(e?.message || e), 5000);
   }
@@ -10770,18 +10850,7 @@ function contextForeignKeyMenuItem(): ContextMenuItem | null {
   if (!cell || cell.col < 0) return null;
   const association = cellForeignKeyAssociation(cell.col);
   const item = contextRowItem.value;
-  if (
-    !association ||
-    !item ||
-    !foreignKeyAssociationCells({
-      association,
-      context: props.context,
-      resultColumns: props.result.columns,
-      sourceColumns: props.sourceColumns,
-      row: item.data,
-    })
-  )
-    return null;
+  if (!association || !item || !foreignKeyCellsForCell(association, cell.rowIndex, cell.col)) return null;
   const fk = association.foreignKey;
   return {
     label: t("grid.foreignKeyNavigate", { table: fk.ref_table }),
@@ -10980,6 +11049,62 @@ const filteredIndexes = computed(() => {
 });
 
 const droppableMongoIndexes = computed(() => indexes.value.filter((index) => !isProtectedMongoIndex(index)));
+
+/** "Copy as CREATE INDEX" targets SQL databases; MongoDB indexes have no SQL form. */
+const canCopyIndexSql = computed(() => resolvedDatabaseType.value !== "mongodb");
+
+function onCopyIndexSql(index: IndexInfo) {
+  if (!props.tableMeta?.tableName) return;
+  void copyText(
+    buildCreateIndexSql({
+      databaseType: resolvedDatabaseType.value,
+      driverProfile: props.connectionId ? connectionStore.getConfig(props.connectionId)?.driver_profile : undefined,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
+      schema: props.tableMeta.schema,
+      catalog: props.tableMeta.catalog,
+      tableName: props.tableMeta.tableName,
+      index,
+    }),
+  );
+}
+
+/** "Copy as ADD CONSTRAINT" targets SQL databases; MongoDB has no foreign keys. */
+const canCopyForeignKeySql = computed(() => resolvedDatabaseType.value !== "mongodb");
+
+function onCopyForeignKeySql(foreignKey: ForeignKeyInfo) {
+  if (!props.tableMeta?.tableName) return;
+  void copyText(
+    buildAddForeignKeySql({
+      databaseType: resolvedDatabaseType.value,
+      driverProfile: props.connectionId ? connectionStore.getConfig(props.connectionId)?.driver_profile : undefined,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
+      schema: props.tableMeta.schema,
+      catalog: props.tableMeta.catalog,
+      tableName: props.tableMeta.tableName,
+      foreignKey,
+      // The unfiltered list: a search-filtered subset could truncate a composite constraint.
+      foreignKeys: foreignKeys.value,
+    }),
+  );
+}
+
+/** "Copy as ADD CONSTRAINT" targets SQL databases; MongoDB has no table constraints. */
+const canCopyConstraintSql = computed(() => resolvedDatabaseType.value !== "mongodb");
+
+function onCopyConstraintSql(constraint: ConstraintInfo) {
+  if (!props.tableMeta?.tableName) return;
+  void copyText(
+    buildAddConstraintSql({
+      databaseType: resolvedDatabaseType.value,
+      driverProfile: props.connectionId ? connectionStore.getConfig(props.connectionId)?.driver_profile : undefined,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
+      schema: props.tableMeta.schema,
+      catalog: props.tableMeta.catalog,
+      tableName: props.tableMeta.tableName,
+      constraint,
+    }),
+  );
+}
 
 const dropMongoIndexConfirmMessage = computed(() =>
   pendingDropMongoIndex.value
@@ -11870,6 +11995,19 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 <span class="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                   {{ multiRowTranspose ? t("grid.transposeMultiRow") : t("grid.transposeSingleRow") }}
                 </span>
+                <!-- Left of the flex-1 spacer: narrow result panes push the right-side
+                     action cluster out of view, which hid the sort toggle entirely. -->
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="h-5 w-5"
+                  :class="{ 'text-primary': transposeSortAlpha }"
+                  :title="transposeSortAlpha ? t('grid.transposeSortColumnsOriginal') : t('grid.transposeSortColumns')"
+                  :aria-label="transposeSortAlpha ? t('grid.transposeSortColumnsOriginal') : t('grid.transposeSortColumns')"
+                  @click="transposeSortAlpha = !transposeSortAlpha"
+                >
+                  <ArrowDownAZ class="w-3 h-3" />
+                </Button>
                 <span class="flex-1" />
                 <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeRowIndex === 0" @click="transposeNav(-1)">
                   <ChevronLeft class="w-3 h-3" />
@@ -13036,6 +13174,16 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                               <ExternalLink class="h-3 w-3" />
                             </button>
                             <button
+                              v-if="cellForeignKeyInfo(item.displayIndex, col.actualColIdx)"
+                              class="flex h-5 w-5 items-center justify-center rounded bg-background/90 text-muted-foreground shadow-sm ring-1 ring-border hover:text-foreground"
+                              :title="t('grid.foreignKeyNavigate', { table: cellForeignKeyInfo(item.displayIndex, col.actualColIdx)!.ref_table })"
+                              :aria-label="t('grid.foreignKeyNavigate', { table: cellForeignKeyInfo(item.displayIndex, col.actualColIdx)!.ref_table })"
+                              @mousedown.stop
+                              @click.stop="navigateToForeignKeyCell(item.displayIndex, col.actualColIdx)"
+                            >
+                              <ArrowUpRight class="h-3 w-3" />
+                            </button>
+                            <button
                               v-if="cellDetailButtonEnabled"
                               class="flex h-5 w-5 items-center justify-center rounded bg-background/90 text-muted-foreground shadow-sm ring-1 ring-border hover:text-foreground"
                               :title="t('grid.cellDetails')"
@@ -13214,9 +13362,15 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               :constraints-error="constraintsError"
               :is-protected-mongo-index="isProtectedMongoIndex"
               :format-column-type="gaussdbMColumnType"
+              :can-copy-index-sql="canCopyIndexSql"
+              :can-copy-foreign-key-sql="canCopyForeignKeySql"
+              :can-copy-constraint-sql="canCopyConstraintSql"
               @table-info-column-click="onTableInfoColumnClick"
               @scroll-to-table-info-column="scrollToTableInfoColumn"
               @request-drop-mongo-index="requestDropMongoIndex"
+              @request-copy-index-sql="onCopyIndexSql"
+              @request-copy-foreign-key-sql="onCopyForeignKeySql"
+              @request-copy-constraint-sql="onCopyConstraintSql"
             />
 
             <pre

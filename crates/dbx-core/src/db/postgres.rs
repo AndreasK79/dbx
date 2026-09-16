@@ -36,9 +36,9 @@ use crate::types::{
     ColumnInfo, CompletionAssistantCandidate, CompletionAssistantCandidateKind, CompletionAssistantMatchMode,
     CompletionAssistantObjectKind, CompletionAssistantRequest, CompletionAssistantResponse, ConstraintInfo,
     CustomTypeDdl, CustomTypeDetails, CustomTypeDomainConstraint, CustomTypeKind, CustomTypeMember,
-    CustomTypeProperties, DatabaseInfo, DatabaseStorageInfo, ExtensionInfo, ForeignKeyInfo, FunctionInfo, IndexInfo,
-    ObjectInfo, ObjectStatistics, OwnerInfo, QueryMessage, QueryResult, RuleInfo, SchemaInfo, SequenceInfo,
-    SpatialColumnBuilder, TableInfo, TriggerInfo,
+    CustomTypeProperties, DatabaseInfo, DatabaseStorageInfo, ExtensionInfo, ForeignKeyInfo, ForeignServerForeignTable,
+    ForeignServerInfo, ForeignServerUserMapping, FunctionInfo, IndexInfo, ObjectInfo, ObjectStatistics, OwnerInfo,
+    QueryMessage, QueryResult, RuleInfo, SchemaInfo, SequenceInfo, SpatialColumnBuilder, TableInfo, TriggerInfo,
 };
 
 pub(crate) const GAUSSDB_COMPATIBILITY_SQL: &str =
@@ -8749,6 +8749,12 @@ async fn list_foreign_keys_with_sql(
 }
 
 pub async fn list_foreign_keys(pool: &Pool, schema: &str, table: &str) -> Result<Vec<ForeignKeyInfo>, String> {
+    // The frontend keeps metadata requests for unqualified postgres sources
+    // schema-less (search_path resolution, see queryStore's
+    // useCurrentPostgresSchema); `n.nspname = ''` matches nothing, which
+    // silently returned zero FKs. Default to public like the other
+    // table-metadata queries in this file (get_columns, list_constraints...).
+    let schema = if schema.is_empty() { "public" } else { schema };
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
     let tiers = [postgres_foreign_keys_sql(), postgres_foreign_keys_compat_sql()];
     query_with_compat_fallback("list_foreign_keys", &tiers, |sql| {
@@ -9320,6 +9326,82 @@ pub async fn list_extension_member_objects(pool: &Pool, schema: &str) -> Result<
         .iter()
         .map(|row| (pg_row_try_string(row, 0), pg_row_try_string(row, 1), pg_row_try_string(row, 2)))
         .collect())
+}
+
+fn list_foreign_servers_sql() -> &'static str {
+    "SELECT s.srvname, f.fdwname, COALESCE(r.rolname, ''), s.srvtype, s.srvversion, s.srvoptions, d.description \
+     FROM pg_catalog.pg_foreign_server s \
+     JOIN pg_catalog.pg_foreign_data_wrapper f ON f.oid = s.srvfdw \
+     JOIN pg_catalog.pg_roles r ON r.oid = s.srvowner \
+     LEFT JOIN pg_catalog.pg_description d ON d.objoid = s.oid AND d.classoid = 'pg_foreign_server'::regclass \
+     ORDER BY s.srvname"
+}
+
+fn list_foreign_server_user_mappings_sql() -> &'static str {
+    // pg_user_masks already hides mapping options (passwords) the current user
+    // is not allowed to see; usename NULL is the PUBLIC mapping.
+    "SELECT srvname, COALESCE(usename, 'PUBLIC'), umoptions \
+     FROM pg_catalog.pg_user_mappings \
+     ORDER BY srvname, 2"
+}
+
+fn list_foreign_server_tables_sql() -> &'static str {
+    "SELECT n.nspname, c.relname, s.srvname \
+     FROM pg_catalog.pg_foreign_table ft \
+     JOIN pg_catalog.pg_class c ON c.oid = ft.ftrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_catalog.pg_foreign_server s ON s.oid = ft.ftserver \
+     ORDER BY s.srvname, n.nspname, c.relname"
+}
+
+/// postgres 的「远程链接」浏览器数据：FDW foreign server 及其 wrapper、owner、
+/// options（host/port/dbname 等）、user mapping，以及挂在该 server 上的
+/// foreign table 列表（dblink 扩展本身没有持久化链接目录，postgres 中真正
+/// 被编目的远程链接是 foreign server）。
+pub async fn list_foreign_servers(pool: &Pool) -> Result<Vec<ForeignServerInfo>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let server_rows =
+        postgres_query_cached(&client, list_foreign_servers_sql(), &[]).await.map_err(|e| e.to_string())?;
+    let mut servers: Vec<ForeignServerInfo> = Vec::with_capacity(server_rows.len());
+    for row in &server_rows {
+        servers.push(ForeignServerInfo {
+            name: pg_row_try_string(row, 0),
+            wrapper: pg_row_try_string(row, 1),
+            owner: pg_row_try_string(row, 2),
+            server_type: row.try_get::<_, Option<String>>(3).ok().flatten().filter(|s| !s.is_empty()),
+            server_version: row.try_get::<_, Option<String>>(4).ok().flatten().filter(|s| !s.is_empty()),
+            options: row.try_get::<_, Option<Vec<String>>>(5).ok().flatten().unwrap_or_default(),
+            comment: row.try_get::<_, Option<String>>(6).ok().flatten().filter(|s| !s.is_empty()),
+            user_mappings: Vec::new(),
+            foreign_tables: Vec::new(),
+        });
+    }
+
+    let mapping_rows = postgres_query_cached(&client, list_foreign_server_user_mappings_sql(), &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    for row in &mapping_rows {
+        let server_name = pg_row_try_string(row, 0);
+        if let Some(server) = servers.iter_mut().find(|item| item.name == server_name) {
+            server.user_mappings.push(ForeignServerUserMapping {
+                username: pg_row_try_string(row, 1),
+                options: row.try_get::<_, Option<Vec<String>>>(2).ok().flatten().unwrap_or_default(),
+            });
+        }
+    }
+
+    let table_rows =
+        postgres_query_cached(&client, list_foreign_server_tables_sql(), &[]).await.map_err(|e| e.to_string())?;
+    for row in &table_rows {
+        let server_name = pg_row_try_string(row, 2);
+        if let Some(server) = servers.iter_mut().find(|item| item.name == server_name) {
+            server
+                .foreign_tables
+                .push(ForeignServerForeignTable { schema: pg_row_try_string(row, 0), name: pg_row_try_string(row, 1) });
+        }
+    }
+
+    Ok(servers)
 }
 
 pub async fn list_available_extensions(pool: &Pool) -> Result<Vec<ExtensionInfo>, String> {
@@ -12990,6 +13072,28 @@ mod tests {
         assert!(sql.contains("d.deptype = 'e'"));
         assert!(sql.contains("pg_get_function_identity_arguments(p.oid)"));
         assert!(!sql.contains("d.deptype = 'x'"));
+    }
+
+    #[test]
+    fn foreign_server_queries_read_the_pg_catalog_remote_link_sources() {
+        let servers = list_foreign_servers_sql();
+        assert!(servers.contains("pg_catalog.pg_foreign_server"));
+        assert!(servers.contains("pg_catalog.pg_foreign_data_wrapper"));
+        assert!(servers.contains("pg_catalog.pg_roles"));
+        assert!(servers.contains("pg_catalog.pg_description"));
+        assert!(servers.contains("ORDER BY s.srvname"));
+
+        let mappings = list_foreign_server_user_mappings_sql();
+        assert!(mappings.contains("pg_catalog.pg_user_mappings"));
+        // NULL usename is the PUBLIC mapping; the view itself hides options the
+        // current user may not read (passwords), so no extra filtering is needed.
+        assert!(mappings.contains("COALESCE(usename, 'PUBLIC')"));
+
+        let tables = list_foreign_server_tables_sql();
+        assert!(tables.contains("pg_catalog.pg_foreign_table"));
+        assert!(tables.contains("pg_catalog.pg_class"));
+        assert!(tables.contains("pg_catalog.pg_namespace"));
+        assert!(tables.contains("ORDER BY s.srvname, n.nspname, c.relname"));
     }
 
     #[tokio::test]

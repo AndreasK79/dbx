@@ -527,6 +527,7 @@ async fn main() {
         .route("/schema/owners", get(routes::schema::list_owners))
         .route("/schema/table-owner", get(routes::schema::get_table_owner))
         .route("/schema/extensions", get(routes::schema::list_extensions))
+        .route("/schema/foreign-servers", get(routes::schema::list_foreign_servers))
         .route("/schema/available-extensions", get(routes::schema::list_available_extensions))
         .route("/schema/ddl", get(routes::schema::get_ddl))
         .route("/docs/snapshot", post(routes::docs::collect_snapshot))

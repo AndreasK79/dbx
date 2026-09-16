@@ -6,6 +6,7 @@ import {
   defaultTransposeRecordWidth,
   minTransposeFieldWidth,
   shouldAutoTransposeSingleRow,
+  sortTransposeRowsByColumn,
   transposeAnchorRowIndex,
   transposeEndAlignmentSpacerWidth,
   transposeFieldWidth,
@@ -235,5 +236,21 @@ describe("dataGridTranspose field metadata", () => {
       { column: "display_name", type: "varchar", comment: "User name" },
       { column: "status", type: "int", comment: "Current status" },
     ]);
+  });
+});
+
+describe("transpose alphabetical column sort", () => {
+  it("sorts rows by column name with numeric collation and case-insensitive order", () => {
+    const columns = ["b_col", "A_col10", "a_col2"];
+    const rows = columns.map((column) => ({ column, type: "int" }));
+    expect(sortTransposeRowsByColumn(rows).map((row) => row.column)).toEqual(["a_col2", "A_col10", "b_col"]);
+  });
+
+  it("returns a new array and leaves the input order untouched", () => {
+    const rows = [{ column: "zeta" }, { column: "alpha" }];
+    const sorted = sortTransposeRowsByColumn(rows);
+    expect(sorted.map((row) => row.column)).toEqual(["alpha", "zeta"]);
+    expect(rows.map((row) => row.column)).toEqual(["zeta", "alpha"]);
+    expect(sorted).not.toBe(rows);
   });
 });

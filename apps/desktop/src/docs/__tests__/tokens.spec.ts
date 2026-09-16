@@ -39,4 +39,15 @@ describe("design tokens", () => {
     expect(dark, "tokens.css must declare .dark").toBeGreaterThan(-1);
     expect(dark).toBeGreaterThan(root);
   });
+
+  it("pins color-scheme to the app theme so native controls follow it", () => {
+    // Native <select> popups, scrollbars, and date pickers are OS-rendered from
+    // color-scheme. Without these, dark mode shows light popups under the app's
+    // light text (unreadable option lists in native selects app-wide).
+    const source = readFileSync(path.join(stylesDir, "tokens.css"), "utf8");
+    const rootBlock = source.slice(source.search(/^:root\s*\{/m), source.search(/^\.dark\s*\{/m));
+    const darkBlock = source.slice(source.search(/^\.dark\s*\{/m));
+    expect(rootBlock).toContain("color-scheme: light");
+    expect(darkBlock).toContain("color-scheme: dark");
+  });
 });

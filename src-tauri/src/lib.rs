@@ -1941,6 +1941,7 @@ pub fn run() {
             commands::schema::list_owners,
             commands::schema::get_table_owner,
             commands::schema::list_extensions,
+            commands::schema::list_foreign_servers,
             commands::schema::list_available_extensions,
             commands::schema_diff::prepare_schema_diff,
             commands::schema_diff::generate_schema_sync_sql,

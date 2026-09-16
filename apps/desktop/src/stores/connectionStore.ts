@@ -2082,6 +2082,18 @@ export const useConnectionStore = defineStore("connection", () => {
     };
   }
 
+  function buildForeignServersNode(connectionId: string, database: string): TreeNode {
+    return {
+      id: `${connectionId}:${database}:__foreign_servers`,
+      label: "tree.foreignServers",
+      type: "group-foreign-servers",
+      connectionId,
+      database,
+      isExpanded: false,
+      children: [],
+    };
+  }
+
   function objectGroupCacheKey(node: TreeNode): string {
     const config = node.connectionId ? getConfig(node.connectionId) : undefined;
     const objectTreeProfileCacheKey = driverProfileObjectTreeProfileForConnection(config)?.cacheKey;
@@ -5479,6 +5491,7 @@ export const useConnectionStore = defineStore("connection", () => {
           }
           if (isPostgresLikeForExtensions(getConfig(connectionId)?.db_type)) {
             children.push(buildExtensionManagementNode(connectionId, database));
+            children.push(buildForeignServersNode(connectionId, database));
           }
           if (isSidebarSearchQueryChanged(options)) return;
           const targetNode = treeNodeLoadTarget(load);
@@ -5914,6 +5927,7 @@ export const useConnectionStore = defineStore("connection", () => {
             });
             if (!schema && isPostgresLikeForExtensions(config?.db_type)) {
               children.push(buildExtensionManagementNode(connectionId, database));
+              children.push(buildForeignServersNode(connectionId, database));
             }
           }
           if (isTreeLoadSearchChanged(searchFilter, options)) return;
@@ -6274,6 +6288,38 @@ export const useConnectionStore = defineStore("connection", () => {
         schema: ext.schema ?? undefined,
         comment: ext.comment ?? null,
         meta: ext,
+        isExpanded: false,
+      }));
+      const targetNode = treeNodeLoadTarget(load);
+      if (!targetNode) return;
+      setChildren(targetNode, children);
+      targetNode.objectCount = children.length;
+      targetNode.isExpanded = true;
+    } catch (e) {
+      recordMetadataLoadError(connectionId, e, load);
+      throw e;
+    } finally {
+      finishTreeNodeLoad(load);
+    }
+  }
+
+  async function loadForeignServers(connectionId: string, database: string) {
+    const node = findNode(treeNodes.value, `${connectionId}:${database}:__foreign_servers`);
+    if (!node) return;
+    let load = beginTreeNodeLoad(node);
+    try {
+      await ensureConnected(connectionId);
+      load = reclaimTreeNodeLoad(load, node);
+      if (useCachedChildren(node, undefined, load)) return;
+      const servers = await withMetadataLoadTimeout(connectionId, api.listForeignServers(connectionId, database), "foreign servers");
+      const children: TreeNode[] = servers.map((server) => ({
+        id: `${node.id}:${server.name}`,
+        label: server.name,
+        type: "postgres-foreign-server" as const,
+        connectionId,
+        database,
+        comment: server.comment ?? null,
+        meta: server,
         isExpanded: false,
       }));
       const targetNode = treeNodeLoadTarget(load);
@@ -7042,6 +7088,8 @@ export const useConnectionStore = defineStore("connection", () => {
       node.isExpanded = true;
     } else if (node.type === "group-extensions" && node.connectionId && hasTreeNodeDatabaseContext(node)) {
       await loadExtensions(node.connectionId, node.database || "");
+    } else if (node.type === "group-foreign-servers" && node.connectionId && hasTreeNodeDatabaseContext(node)) {
+      await loadForeignServers(node.connectionId, node.database || "");
     }
   }
 

@@ -291,6 +291,17 @@ export function buildVisibleTransposeRows<T>(options: BuildVisibleTransposeRowsO
   });
 }
 
+/**
+ * Sorts transposed rows by column name for the transpose view's alphabetical
+ * ordering toggle — handy to find one column in a wide table. Pure: returns a
+ * new array and leaves the input untouched, so the caller's original column
+ * order stays the "off" state. Numeric collation keeps `col2` before `col10`;
+ * base sensitivity orders case-insensitively.
+ */
+export function sortTransposeRowsByColumn<T extends { column: string }>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => a.column.localeCompare(b.column, undefined, { numeric: true, sensitivity: "base" }));
+}
+
 export function visibleTransposeRecordWindow(options: TransposeRecordWindowOptions): TransposeRecordWindow {
   if (options.totalRecords <= 0 || options.recordWidth <= 0) {
     return { start: 0, end: 0, beforeWidth: 0, afterWidth: 0 };

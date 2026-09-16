@@ -28,6 +28,8 @@ describe("replaceSelectedEditorText", () => {
 
   it("disables and guards delimited-list generation in QueryEditor", () => {
     expect(queryEditorSource).toContain("disabled: props.readOnly || !canCopySelectedSql.value");
+    expect(queryEditorSource).toContain("shortcut: shortcuts.convertSelectionToDelimited");
+    expect(queryEditorSource).toContain("...binding(shortcuts.convertSelectionToDelimited, () => {\n          openDelimitedListDialog();\n          return true;\n        }),");
     expect(queryEditorSource).toMatch(/function openDelimitedListDialog\(\) \{\s+if \(props\.readOnly\) return;/);
     expect(queryEditorSource).toMatch(/function applyDelimitedListResult\(result: string\) \{[\s\S]*if \(!currentView \|\| props\.readOnly\) return;[\s\S]*replaceSelectedEditorText/);
   });

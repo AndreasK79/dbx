@@ -193,6 +193,39 @@ describe("SqlParameterDialog raw parameter action", () => {
   });
 });
 
+describe("SqlParameterDialog enter-to-execute", () => {
+  it("executes the resolved SQL when the form submits (Enter in a parameter field)", async () => {
+    const { state, onExecute } = await mountDialog();
+    const resolvedPreview = document.body.querySelector("pre")?.textContent;
+    expect(resolvedPreview).not.toBe(SQL);
+
+    const form = document.body.querySelector("form");
+    expect(form).not.toBeNull();
+    form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await nextTick();
+
+    expect(historyMocks.remember).toHaveBeenCalledOnce();
+    expect(onExecute).toHaveBeenCalledOnce();
+    expect(onExecute).toHaveBeenCalledWith(resolvedPreview);
+    expect(state.open).toBe(false);
+  });
+
+  it("types Execute as the only submit button so Enter cannot trigger the other actions", async () => {
+    await mountDialog();
+    expect(buttonWithText("Execute")?.getAttribute("type")).toBe("submit");
+    expect(buttonWithText("Cancel")?.getAttribute("type")).toBe("button");
+    expect(buttonWithText("Copy")?.getAttribute("type")).toBe("button");
+    expect(ignoreActionButton()?.getAttribute("type")).toBe("button");
+    expect(clearActionButton()?.getAttribute("type")).toBe("button");
+    expect(actionButton()?.getAttribute("type")).toBe("button");
+  });
+
+  it("focuses the first parameter value input when the dialog opens", async () => {
+    await mountDialog();
+    expect(document.activeElement).toBe(parameterInputs()[0]);
+  });
+});
+
 describe("SqlParameterDialog ignore parameter action", () => {
   it("closes the dialog and emits the original SQL without remembering or mutating values", async () => {
     const { state, onExecute } = await mountDialog();
@@ -249,6 +282,10 @@ describe("SqlParameterDialog clear parameter values action", () => {
 
     const input = parameterInputs()[0];
     expect(input).not.toBeUndefined();
+    // The input was auto-focused on open; clicking the button moves focus to
+    // it (as in real browsers), so focusing the input back fires a fresh
+    // focus event that reopens the history popover.
+    clearActionButton()!.focus();
     input?.focus();
     await nextTick();
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -57,6 +57,17 @@ describe("shortcutRegistry editor actions", () => {
     }
   });
 
+  it("registers convert-selection-to-delimited as an editor shortcut", () => {
+    expect(SHORTCUT_DEFINITIONS.find((item) => item.id === "convertSelectionToDelimited")).toMatchObject({
+      id: "convertSelectionToDelimited",
+      labelKey: "settings.shortcutConvertSelectionToDelimited",
+      scope: "editor",
+      defaultShortcut: "Mod+Alt+,",
+    });
+    expect(DEFAULT_SHORTCUT_SETTINGS.convertSelectionToDelimited).toBe("Mod+Alt+,");
+    expect(shortcutToCodeMirrorKey("Mod+Alt+,")).toBe("Mod-Alt-,");
+  });
+
   it("normalizes missing, legacy, cleared, and configured pagination shortcuts", () => {
     const missing = normalizeShortcutSettings();
     const legacy = normalizeShortcutSettings({ goToColumn: "Mod+G" });
@@ -262,7 +273,7 @@ describe("shortcutRegistry editor actions", () => {
     expect(shortcuts.indentMore).toBe("");
     expect(shortcuts.indentLess).toBe("Shift+Tab");
     expect(shortcuts.joinLines).toBe("Mod+J");
-    expect(shortcuts.duplicateLine).toBe("Mod+D");
+    expect(shortcuts.duplicateLine).toBe("");
     expect(shortcuts.deleteLine).toBe("Shift+Mod+K");
     expect(shortcuts.moveLineUp).toBe("Alt+ArrowUp");
     expect(shortcuts.moveLineDown).toBe("Alt+ArrowDown");
@@ -292,23 +303,47 @@ describe("shortcutRegistry editor actions", () => {
     const next = SHORTCUT_DEFINITIONS.find((item) => item.id === "addNextSelectionOccurrence");
     const all = SHORTCUT_DEFINITIONS.find((item) => item.id === "selectAllSelectionOccurrences");
 
-    expect(next).toMatchObject({ scope: "editor", defaultShortcut: "Ctrl+G" });
+    expect(next).toMatchObject({ scope: "editor", defaultShortcut: "Mod+D" });
     expect(all).toMatchObject({ scope: "editor", defaultShortcut: "Ctrl+Mod+G" });
     expect(findShortcutConflict("selectAllSelectionOccurrences", DEFAULT_SHORTCUT_SETTINGS.selectAllSelectionOccurrences, DEFAULT_SHORTCUT_SETTINGS)).toBeNull();
+    // duplicateLine runs the same command as copyLineDown (Shift+Alt+↓) and is
+    // unbound by default so Ctrl+D belongs to occurrence selection (VS Code style).
+    expect(DEFAULT_SHORTCUT_SETTINGS.duplicateLine).toBe("");
+    expect(findShortcutConflict("addNextSelectionOccurrence", DEFAULT_SHORTCUT_SETTINGS.addNextSelectionOccurrence, DEFAULT_SHORTCUT_SETTINGS)).toBeNull();
   });
 
   it("resolves occurrence selection defaults per platform", () => {
-    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "MacIntel")).toBe("Ctrl+G");
+    // VS Code-style word/occurrence selection on Cmd/Ctrl+D on every platform.
+    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "MacIntel")).toBe("Mod+D");
+    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Win32")).toBe("Mod+D");
+    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Linux x86_64")).toBe("Mod+D");
     expect(selectionOccurrenceDefaultShortcut("selectAllSelectionOccurrences", "MacIntel")).toBe("Ctrl+Mod+G");
     // Ctrl+Mod+G is unreachable on non-mac (CodeMirror expands Mod→Ctrl) and
-    // Ctrl+G there is find-next, so Windows/Linux use the JetBrains-style keys.
-    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Win32")).toBe("Alt+J");
+    // Ctrl+G there is find-next, so Windows/Linux use the JetBrains-style key.
     expect(selectionOccurrenceDefaultShortcut("selectAllSelectionOccurrences", "Win32")).toBe("Ctrl+Alt+Shift+J");
-    expect(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Linux x86_64")).toBe("Alt+J");
     expect(selectionOccurrenceDefaultShortcut("selectAllSelectionOccurrences", "Linux x86_64")).toBe("Ctrl+Alt+Shift+J");
     // Both platform defaults must survive the CodeMirror key conversion.
     expect(shortcutToCodeMirrorKey(selectionOccurrenceDefaultShortcut("selectAllSelectionOccurrences", "Win32"))).toBe("Ctrl-Alt-Shift-j");
-    expect(shortcutToCodeMirrorKey(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Win32"))).toBe("Alt-j");
+    expect(shortcutToCodeMirrorKey(selectionOccurrenceDefaultShortcut("addNextSelectionOccurrence", "Win32"))).toBe("Mod-d");
+  });
+
+  it("migrates the legacy Ctrl+D duplicate-line default to occurrence selection", () => {
+    // Settings persisted under the old defaults: duplicateLine on Mod+D and
+    // addNextSelectionOccurrence on the old platform default (Alt+J here) —
+    // the latter is re-resolved to the new Mod+D default, freeing Ctrl+D.
+    const shortcuts = normalizeShortcutSettings({ duplicateLine: "Mod+D", addNextSelectionOccurrence: "Alt+J" }, "Win32");
+    expect(shortcuts.duplicateLine).toBe("");
+    expect(shortcuts.addNextSelectionOccurrence).toBe("Mod+D");
+  });
+
+  it("keeps user-customized shortcuts when migrating the Ctrl+D default", () => {
+    const rebound = normalizeShortcutSettings({ duplicateLine: "Ctrl+Y", addNextSelectionOccurrence: "Alt+J" }, "Win32");
+    expect(rebound.duplicateLine).toBe("Ctrl+Y");
+    expect(rebound.addNextSelectionOccurrence).toBe("Mod+D");
+
+    const occurrenceCustomized = normalizeShortcutSettings({ duplicateLine: "Mod+D", addNextSelectionOccurrence: "Alt+K" }, "Win32");
+    expect(occurrenceCustomized.duplicateLine).toBe("Mod+D");
+    expect(occurrenceCustomized.addNextSelectionOccurrence).toBe("Alt+K");
   });
 
   it("registers an IDEA/DataGrip-style Alt+/ shortcut for manually triggering completion", () => {

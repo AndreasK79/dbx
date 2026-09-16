@@ -33,6 +33,7 @@ const emit = defineEmits<{
 }>();
 
 const values = ref<Record<string, SqlParameterInput>>({});
+const formRef = ref<HTMLFormElement | null>(null);
 const histories = ref<Record<string, SqlParameterInput[]>>({});
 const activeHistoryName = ref("");
 let closeHistoryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -138,6 +139,17 @@ function execute() {
   emit("execute", resolvedSql.value);
 }
 
+// 打开对话框时把焦点放到第一个参数值输入框：reka 默认聚焦第一个可聚焦
+// 元素——头部的“清除值”按钮——紧接的 Enter 会误触它清空参数值。
+function focusFirstParameterInputOnOpen(event: Event) {
+  event.preventDefault();
+  const input = formRef.value?.querySelector<HTMLInputElement>("input[data-form-type='other']");
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
 async function copyResolvedSql() {
   try {
     await copyToClipboard(resolvedSql.value);
@@ -150,97 +162,100 @@ async function copyResolvedSql() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-h-[86vh] border border-border !bg-background text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]">
-      <DialogHeader>
-        <DialogTitle class="flex items-center gap-2">
-          <Braces class="h-5 w-5 text-primary" />
-          {{ t("sqlParameters.title") }}
-        </DialogTitle>
-      </DialogHeader>
+    <DialogContent class="max-h-[86vh] border border-border !bg-background text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]" @open-auto-focus="focusFirstParameterInputOnOpen">
+      <!-- Form wrapper so Enter in any field submits (implicit submission → Execute). -->
+      <form ref="formRef" class="grid grid-cols-[minmax(0,1fr)] gap-4" @submit.prevent="execute">
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <Braces class="h-5 w-5 text-primary" />
+            {{ t("sqlParameters.title") }}
+          </DialogTitle>
+        </DialogHeader>
 
-      <div class="grid max-h-[calc(86vh-8rem)] gap-4 overflow-y-auto pr-1">
-        <div class="flex flex-wrap items-center gap-2">
-          <p class="min-w-0 flex-1 text-sm text-muted-foreground">{{ t("sqlParameters.description") }}</p>
-          <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-values" @click="clearParameterValues">
-            {{ t("sqlParameters.clearValues") }}
-          </Button>
-          <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" data-testid="sql-parameters-use-raw-all" @click="setAllParametersToRaw">
-            {{ t("sqlParameters.useRawForAll") }}
-          </Button>
-        </div>
+        <div class="grid max-h-[calc(86vh-8rem)] gap-4 overflow-y-auto pr-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <p class="min-w-0 flex-1 text-sm text-muted-foreground">{{ t("sqlParameters.description") }}</p>
+            <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-values" @click="clearParameterValues">
+              {{ t("sqlParameters.clearValues") }}
+            </Button>
+            <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" data-testid="sql-parameters-use-raw-all" @click="setAllParametersToRaw">
+              {{ t("sqlParameters.useRawForAll") }}
+            </Button>
+          </div>
 
-        <div class="relative z-20 max-h-[302px] overflow-auto rounded-md border bg-background">
-          <div class="min-w-[680px]">
-            <div class="sticky top-0 z-10 grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] border-b bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
-              <div>{{ t("sqlParameters.name") }}</div>
-              <div>{{ t("sqlParameters.syntax") }}</div>
-              <div>{{ t("sqlParameters.type") }}</div>
-              <div>{{ t("sqlParameters.value") }}</div>
-            </div>
-            <div v-for="parameter in parameters" :key="parameter.key" class="grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0">
-              <div class="min-w-0 truncate font-mono text-xs">{{ parameter.name }}</div>
-              <div class="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{{ syntaxLabel(parameter) }}</div>
-              <Select :model-value="values[parameter.key]?.kind || 'string'" @update:model-value="(value) => updateKind(parameter.key, value as SqlParameterValueKind)">
-                <SelectTrigger class="h-8 bg-background text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="kind in parameterKinds" :key="kind" :value="kind">
-                    {{ t(`sqlParameters.kind.${kind}`) }}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <div class="relative min-w-0">
-                <Popover :open="activeHistoryName === parameter.key && filteredSqlParameterHistory(parameter.key).length > 0">
-                  <PopoverAnchor as-child>
-                    <Input
-                      :model-value="values[parameter.key]?.value || ''"
-                      class="h-8 bg-background font-mono text-xs"
-                      :disabled="values[parameter.key]?.kind === 'null'"
-                      autocomplete="off"
-                      data-lpignore="true"
-                      data-form-type="other"
-                      :placeholder="parameter.collection ? t('sqlParameters.collectionValuePlaceholder') : t('sqlParameters.valuePlaceholder')"
-                      @focus="focusParameterInput(parameter.key, $event)"
-                      @blur="closeParameterHistory(parameter.key)"
-                      @update:model-value="(value) => updateValue(parameter.key, String(value))"
-                    />
-                  </PopoverAnchor>
-                  <PopoverContent align="start" side="bottom" class="z-[80] w-[var(--reka-popover-trigger-width)] max-h-40 gap-0 overflow-auto p-1" @open-auto-focus.prevent>
-                    <button
-                      v-for="entry in filteredSqlParameterHistory(parameter.key)"
-                      :key="`${entry.kind}:${entry.value}`"
-                      type="button"
-                      class="flex w-full min-w-0 items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
-                      @mousedown.prevent="selectHistoryEntry(parameter.key, entry)"
-                    >
-                      <TruncatedTextTooltip :text="entry.value" class="min-w-0 flex-1 font-mono" side="top" :delay="150" />
-                      <span class="shrink-0 text-[10px] uppercase text-muted-foreground">{{ t(`sqlParameters.kind.${entry.kind}`) }}</span>
-                    </button>
-                  </PopoverContent>
-                </Popover>
+          <div class="relative z-20 max-h-[302px] overflow-auto rounded-md border bg-background">
+            <div class="min-w-[680px]">
+              <div class="sticky top-0 z-10 grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] border-b bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
+                <div>{{ t("sqlParameters.name") }}</div>
+                <div>{{ t("sqlParameters.syntax") }}</div>
+                <div>{{ t("sqlParameters.type") }}</div>
+                <div>{{ t("sqlParameters.value") }}</div>
+              </div>
+              <div v-for="parameter in parameters" :key="parameter.key" class="grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0">
+                <div class="min-w-0 truncate font-mono text-xs">{{ parameter.name }}</div>
+                <div class="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{{ syntaxLabel(parameter) }}</div>
+                <Select :model-value="values[parameter.key]?.kind || 'string'" @update:model-value="(value) => updateKind(parameter.key, value as SqlParameterValueKind)">
+                  <SelectTrigger class="h-8 bg-background text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="kind in parameterKinds" :key="kind" :value="kind">
+                      {{ t(`sqlParameters.kind.${kind}`) }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <div class="relative min-w-0">
+                  <Popover :open="activeHistoryName === parameter.key && filteredSqlParameterHistory(parameter.key).length > 0">
+                    <PopoverAnchor as-child>
+                      <Input
+                        :model-value="values[parameter.key]?.value || ''"
+                        class="h-8 bg-background font-mono text-xs"
+                        :disabled="values[parameter.key]?.kind === 'null'"
+                        autocomplete="off"
+                        data-lpignore="true"
+                        data-form-type="other"
+                        :placeholder="parameter.collection ? t('sqlParameters.collectionValuePlaceholder') : t('sqlParameters.valuePlaceholder')"
+                        @focus="focusParameterInput(parameter.key, $event)"
+                        @blur="closeParameterHistory(parameter.key)"
+                        @update:model-value="(value) => updateValue(parameter.key, String(value))"
+                      />
+                    </PopoverAnchor>
+                    <PopoverContent align="start" side="bottom" class="z-[80] w-[var(--reka-popover-trigger-width)] max-h-40 gap-0 overflow-auto p-1" @open-auto-focus.prevent>
+                      <button
+                        v-for="entry in filteredSqlParameterHistory(parameter.key)"
+                        :key="`${entry.kind}:${entry.value}`"
+                        type="button"
+                        class="flex w-full min-w-0 items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+                        @mousedown.prevent="selectHistoryEntry(parameter.key, entry)"
+                      >
+                        <TruncatedTextTooltip :text="entry.value" class="min-w-0 flex-1 font-mono" side="top" :delay="150" />
+                        <span class="shrink-0 text-[10px] uppercase text-muted-foreground">{{ t(`sqlParameters.kind.${entry.kind}`) }}</span>
+                      </button>
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </div>
             </div>
           </div>
+
+          <div class="relative z-10 grid gap-2">
+            <div class="text-xs font-medium text-muted-foreground">{{ t("sqlParameters.preview") }}</div>
+            <pre class="max-h-48 min-w-0 overflow-auto rounded-md bg-muted px-3 py-3 text-xs font-mono whitespace-pre" v-html="highlightedSql" />
+          </div>
         </div>
 
-        <div class="relative z-10 grid gap-2">
-          <div class="text-xs font-medium text-muted-foreground">{{ t("sqlParameters.preview") }}</div>
-          <pre class="max-h-48 min-w-0 overflow-auto rounded-md bg-muted px-3 py-3 text-xs font-mono whitespace-pre" v-html="highlightedSql" />
-        </div>
-      </div>
-
-      <DialogFooter>
-        <Button type="button" variant="outline" data-testid="sql-parameters-ignore" @click="ignoreParameters">
-          {{ t("sqlParameters.ignore") }}
-        </Button>
-        <Button variant="outline" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
-        <Button variant="outline" @click="copyResolvedSql">
-          <Copy class="mr-1.5 h-4 w-4" />
-          {{ t("grid.copy") }}
-        </Button>
-        <Button @click="execute">{{ t("sqlParameters.execute") }}</Button>
-      </DialogFooter>
+        <DialogFooter>
+          <Button type="button" variant="outline" data-testid="sql-parameters-ignore" @click="ignoreParameters">
+            {{ t("sqlParameters.ignore") }}
+          </Button>
+          <Button type="button" variant="outline" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
+          <Button type="button" variant="outline" @click="copyResolvedSql">
+            <Copy class="mr-1.5 h-4 w-4" />
+            {{ t("grid.copy") }}
+          </Button>
+          <Button type="submit">{{ t("sqlParameters.execute") }}</Button>
+        </DialogFooter>
+      </form>
     </DialogContent>
   </Dialog>
 </template>

@@ -61,6 +61,7 @@ import type {
   RuleInfo,
   OwnerInfo,
   ExtensionInfo,
+  ForeignServerInfo,
   QueryResult,
   SqlReferenceAnalysis,
   DatabaseType,
@@ -2206,6 +2207,10 @@ export async function listExtensions(connectionId: string, database: string, sch
 
 export async function listAvailableExtensions(connectionId: string, database: string): Promise<ExtensionInfo[]> {
   return invoke("list_available_extensions", { connectionId, database });
+}
+
+export async function listForeignServers(connectionId: string, database: string): Promise<ForeignServerInfo[]> {
+  return invoke("list_foreign_servers", { connectionId, database });
 }
 
 // --- Docs ---

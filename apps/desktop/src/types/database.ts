@@ -998,6 +998,29 @@ export interface ExtensionInfo {
   schema?: string | null;
 }
 
+/** A cataloged postgres remote link (FDW foreign server) with its user mappings and foreign tables. */
+export interface ForeignServerInfo {
+  name: string;
+  wrapper: string;
+  owner: string;
+  server_type?: string | null;
+  server_version?: string | null;
+  options: string[];
+  comment?: string | null;
+  user_mappings: ForeignServerUserMapping[];
+  foreign_tables: ForeignServerForeignTable[];
+}
+
+export interface ForeignServerUserMapping {
+  username: string;
+  options: string[];
+}
+
+export interface ForeignServerForeignTable {
+  schema: string;
+  name: string;
+}
+
 export interface OwnerInfo {
   object_name: string;
   object_type: string;
@@ -1297,9 +1320,11 @@ export type TreeNodeType =
   | "group-packages"
   | "group-partitions"
   | "group-extensions"
+  | "group-foreign-servers"
   | "group-tablespaces"
   | "group-datafiles"
   | "extension"
+  | "postgres-foreign-server"
   | "object-browser"
   | "user-admin"
   | "dameng-users"
@@ -1412,7 +1437,7 @@ export interface TreeNode {
   tableSearchParentId?: string;
   savedSqlId?: string;
   savedSqlFolderId?: string;
-  meta?: ColumnInfo | IndexInfo | ForeignKeyInfo | TriggerInfo | ConstraintInfo | PartitionInfo | SubpartitionInfo | ExtensionInfo | VectorCollectionMeta | MongoCollectionMeta | CustomTypeTreeMemberMeta;
+  meta?: ColumnInfo | IndexInfo | ForeignKeyInfo | TriggerInfo | ConstraintInfo | PartitionInfo | SubpartitionInfo | ExtensionInfo | ForeignServerInfo | VectorCollectionMeta | MongoCollectionMeta | CustomTypeTreeMemberMeta;
   loadMore?: {
     parentId: string;
     offset: number;

@@ -30,6 +30,7 @@ export type ShortcutActionId =
   | "uppercaseSelection"
   | "lowercaseSelection"
   | "convertNamingStyle"
+  | "convertSelectionToDelimited"
   | "exPasteSqlInCondition"
   | "toggleFold"
   | "editTableStructure"
@@ -103,15 +104,16 @@ export function closeOtherTabsDefaultShortcut(platform = globalThis.navigator?.p
   return isMacShortcutPlatform(platform) ? "Alt+Mod+W" : "Shift+Alt+W";
 }
 
-// 同词项选择的平台相关默认键。Windows/Linux 上 Ctrl+Mod+G 经 CodeMirror 的
-// Mod→Ctrl 展开后成为不可达的 Ctrl-Ctrl-G，且 Ctrl+G 本身是编辑器内
-// find-next（Mod-G 的非 mac 展开），因此非 mac 平台改用 JetBrains 风格的
-// Alt+J / Ctrl+Alt+Shift+J；macOS 维持 Ctrl+G / Ctrl+Cmd+G。
+// 同词项选择的平台相关默认键。「累加下一个匹配」按 VS Code 习惯绑定
+// Mod+D（macOS 展开为 Cmd+D，其余平台为 Ctrl+D）。全选匹配不能用
+// Ctrl+Mod+G（Windows/Linux 上经 CodeMirror 的 Mod→Ctrl 展开后成为不可达
+// 的 Ctrl-Ctrl-G），也不能用 Ctrl+G（编辑器内 find-next），因此非 mac 平台
+// 用 JetBrains 风格的 Ctrl+Alt+Shift+J；macOS 维持 Ctrl+Cmd+G。旧默认键
+// （mac Ctrl+G / 其他平台 Alt+J）保留在 PLATFORM_DEFAULT_SHORTCUTS 中，
+// 供存量设置识别迁移。
 export function selectionOccurrenceDefaultShortcut(actionId: "addNextSelectionOccurrence" | "selectAllSelectionOccurrences", platform = globalThis.navigator?.platform || ""): string {
-  if (isMacShortcutPlatform(platform)) {
-    return actionId === "addNextSelectionOccurrence" ? "Ctrl+G" : "Ctrl+Mod+G";
-  }
-  return actionId === "addNextSelectionOccurrence" ? "Alt+J" : "Ctrl+Alt+Shift+J";
+  if (actionId === "addNextSelectionOccurrence") return "Mod+D";
+  return isMacShortcutPlatform(platform) ? "Ctrl+Mod+G" : "Ctrl+Alt+Shift+J";
 }
 
 export function tabNavigationHistoryDefaultShortcut(direction: "back" | "forward", platform = globalThis.navigator?.platform || ""): string {
@@ -136,6 +138,7 @@ const PLATFORM_DEFAULT_SHORTCUTS: Partial<Record<ShortcutActionId, ReadonlySet<s
 };
 const LEGACY_CLOSE_TAB_DEFAULT = "Meta+W";
 const LEGACY_COPY_CURRENT_ROW_DEFAULT = "Mod+D";
+const LEGACY_DUPLICATE_LINE_DEFAULT = "Mod+D";
 const EDIT_TABLE_STRUCTURE_DEFAULT = "Mod+Shift+D";
 const TAB_NAVIGATION_HISTORY_ACTIONS: ShortcutActionId[] = ["navigateTabHistoryBack", "navigateTabHistoryForward"];
 
@@ -228,7 +231,9 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "duplicateLine",
     labelKey: "settings.shortcutDuplicateLine",
     scope: "editor",
-    defaultShortcut: "Mod+D",
+    // 与 copyLineDown（Shift+Alt+↓）命令相同；默认不绑定。Mod+D 让给
+    // VS Code 风格的 addNextSelectionOccurrence（见 LEGACY_DUPLICATE_LINE_DEFAULT 迁移）。
+    defaultShortcut: "",
   },
   {
     id: "deleteLine",
@@ -288,7 +293,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     id: "addNextSelectionOccurrence",
     labelKey: "settings.shortcutAddNextSelectionOccurrence",
     scope: "editor",
-    defaultShortcut: "Ctrl+G",
+    defaultShortcut: "Mod+D",
   },
   {
     id: "selectAllSelectionOccurrences",
@@ -313,6 +318,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutConvertNamingStyle",
     scope: "editor",
     defaultShortcut: "Shift+Alt+C",
+  },
+  {
+    id: "convertSelectionToDelimited",
+    labelKey: "settings.shortcutConvertSelectionToDelimited",
+    scope: "editor",
+    defaultShortcut: "Mod+Alt+,",
   },
   {
     id: "exPasteSqlInCondition",
@@ -677,6 +688,14 @@ export function normalizeShortcutSettings(settings?: Partial<ShortcutSettings>, 
   if (settings?.copyCurrentRow === "" && settings?.editTableStructure === LEGACY_COPY_CURRENT_ROW_DEFAULT) {
     normalized.editTableStructure = EDIT_TABLE_STRUCTURE_DEFAULT;
     normalized.copyCurrentRow = LEGACY_COPY_CURRENT_ROW_DEFAULT;
+  }
+
+  // Mod+D 曾是 duplicateLine 的默认键，现按 VS Code 习惯让给
+  // addNextSelectionOccurrence（首按选中光标所在词，再按累加下一个匹配）。
+  // duplicateLine 与 copyLineDown（Shift+Alt+↓）命令相同，故默认置空。
+  // 仍停留在旧默认的存量设置跟随迁移；两个动作任一被自定义过的，不动。
+  if (shortcutsUseSameKeys(normalized.duplicateLine, LEGACY_DUPLICATE_LINE_DEFAULT, platform) && shortcutsUseSameKeys(normalized.addNextSelectionOccurrence, "Mod+D", platform)) {
+    normalized.duplicateLine = "";
   }
 
   for (const actionId of TAB_NAVIGATION_HISTORY_ACTIONS) {

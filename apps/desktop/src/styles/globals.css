@@ -1541,6 +1541,17 @@ html.dbx-data-grid-native-selection-blocked [role="textbox"] * {
     text-rendering: geometricPrecision;
     font-synthesis: none;
   }
+  /* Native <select> option lists (CSV import column mapping and other
+   * deliberately-native selects) are browser-rendered: the WebView2 runtime
+   * paints the popup surface with its own light colors even under
+   * color-scheme: dark, while the option text stays the app's light
+   * foreground — light-on-light and unreadable. Chromium honors
+   * background-color/color on <option> inside the popup, so pin them to the
+   * popover tokens. Light mode keeps the OS-native popup untouched. */
+  .dark select option {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
   button,
   [role="button"],
   [role="menuitem"],

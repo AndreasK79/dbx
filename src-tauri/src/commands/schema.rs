@@ -646,6 +646,15 @@ pub async fn list_extensions(
 }
 
 #[tauri::command]
+pub async fn list_foreign_servers(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    database: String,
+) -> Result<Vec<db::ForeignServerInfo>, String> {
+    dbx_core::schema::list_foreign_servers_core(&state, &connection_id, &database).await
+}
+
+#[tauri::command]
 pub async fn list_available_extensions(
     state: State<'_, Arc<AppState>>,
     connection_id: String,

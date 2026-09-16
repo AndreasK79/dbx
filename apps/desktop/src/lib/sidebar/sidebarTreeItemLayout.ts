@@ -40,6 +40,7 @@ const leafTypes: Set<TreeNodeType> = new Set([
   "table-search-control",
   "load-more",
   "extension",
+  "postgres-foreign-server",
   "datafile",
 ]);
 

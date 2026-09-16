@@ -414,6 +414,10 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-slate-500" };
     case "extension":
       return { icon: Package, colorClass: "text-violet-400" };
+    case "group-foreign-servers":
+      return { icon: Network, colorClass: "text-violet-500" };
+    case "postgres-foreign-server":
+      return { icon: Server, colorClass: "text-violet-400" };
     case "load-more":
       return { icon: Plus, colorClass: "text-primary" };
     default:

@@ -2139,6 +2139,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
       action: openDelimitedListDialog,
       disabled: props.readOnly || !canCopySelectedSql.value,
       icon: List,
+      shortcut: shortcuts.convertSelectionToDelimited,
     },
     {
       label: t("editor.contextMenu.addNextSelectionOccurrence"),
@@ -2327,6 +2328,10 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.undo, (view) => codeMirrorUndo?.(view) ?? false),
         ...binding(shortcuts.redo, (view) => codeMirrorRedo?.(view) ?? false),
         ...binding(shortcuts.selectAll, (view) => codeMirrorSelectAll?.(view) ?? false),
+        ...binding(shortcuts.convertSelectionToDelimited, () => {
+          openDelimitedListDialog();
+          return true;
+        }),
         ...binding(shortcuts.extendSelection, extendQueryEditorSelectionForView),
         ...binding(shortcuts.addNextSelectionOccurrence, addNextQueryEditorSelectionOccurrence),
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
