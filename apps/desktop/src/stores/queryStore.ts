@@ -30,6 +30,7 @@ import {
   planMongoFindPagination,
   mongoUseToQueryResult,
   mongoVersionToQueryResult,
+  mongoBulkWriteToQueryResult,
   mongoWriteToQueryResult,
   splitMongoCommandRanges,
   type MongoAggregateSafetyOptions,
@@ -59,7 +60,7 @@ import { appendLargeValueCells, canUseTableDataLargeValuePreview, remapLargeValu
 import { simpleDataGridOrderByReferencesMissingColumn, sortDataGridRowIndexes, type DataGridSortDirection } from "@/lib/dataGrid/dataGridSort";
 import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
 import { agentProtocolQueryResultMaxRows, capQueryResultTotal, effectiveQueryResultMaxRows, limitQueryPagination, queryResultLimitReached } from "@/lib/dataGrid/queryResultRowLimit";
-import { elasticsearchRestRequestRanges, executableStatementRanges, splitSqlStatementRanges, sqlStatementParameterOptionsForCompatibility } from "@/lib/sql/sqlStatementRanges";
+import { elasticsearchRestRequestRanges, executableStatementRanges, splitSqlStatementRanges, sqlStatementParameterOptionsForCompatibility, stripMysqlClientDisplayCommand } from "@/lib/sql/sqlStatementRanges";
 import type { SqlParameterOptions } from "@/lib/sql/sqlParameters";
 import { replaceSqlServerLeadingUseQuery, sqlServerLeadingUseScript, sqlServerUseDatabaseFromStatement } from "@/lib/sql/sqlCompletionLookupTarget";
 import { classifySqlRisk } from "@/lib/sql/sqlRisk";
@@ -346,7 +347,16 @@ function preservedResultIndex(results: QueryResult[], currentIndex: number | und
   return currentIndex;
 }
 
-function annotateQueryResultSources(results: QueryResult[], sql: string, database: string | undefined, databaseType?: DatabaseType, sourceOffset?: number, parameterOptions?: SqlParameterOptions, executedSql?: string): { results: QueryResult[]; sqlServerUseDatabase?: string } {
+function annotateQueryResultSources(
+  results: QueryResult[],
+  sql: string,
+  database: string | undefined,
+  databaseType?: DatabaseType,
+  sourceOffset?: number,
+  parameterOptions?: SqlParameterOptions,
+  executedSql?: string,
+  sourceDocumentSql?: string,
+): { results: QueryResult[]; sqlServerUseDatabase?: string } {
   const statements = splitSqlStatementRanges(sql, databaseType, parameterOptions);
   // The backend positions errors against the SQL it actually received. When the
   // sent SQL was rewritten (pagination wrapper, injected hidden keys…), record
@@ -354,6 +364,7 @@ function annotateQueryResultSources(results: QueryResult[], sql: string, databas
   // back onto `sourceStatement`.
   const executedStatements = executedSql && executedSql !== sql ? splitSqlStatementRanges(executedSql, databaseType, parameterOptions) : undefined;
   const alignedExecutedStatements = executedStatements && executedStatements.length === statements.length ? executedStatements : undefined;
+  const documentStatements = sourceDocumentSql && sourceOffset !== undefined ? splitSqlStatementRanges(sourceDocumentSql, databaseType, parameterOptions) : [];
   let statementIndex = 0;
   let sourceDatabase = database;
   let sqlServerUseDatabase: string | undefined;
@@ -377,7 +388,15 @@ function annotateQueryResultSources(results: QueryResult[], sql: string, databas
         });
       }
     }
-    const customName = queryResultNameFromPreamble(sql.slice(statement.hitFrom, statement.from));
+    const documentStatement =
+      sourceOffset === undefined
+        ? undefined
+        : documentStatements.find((candidate) => {
+            const sourceFrom = sourceOffset + statement.from;
+            return candidate.from === sourceFrom || (sourceFrom >= candidate.from && sourceFrom <= candidate.to);
+          });
+    const preamble = documentStatement ? sourceDocumentSql!.slice(documentStatement.hitFrom, documentStatement.from) : sql.slice(statement.hitFrom, statement.from);
+    const customName = queryResultNameFromPreamble(preamble, { databaseType });
     if (customName) result.sourceLabel = customName;
     const successfulUseDatabase = databaseType === "sqlserver" && result.execution_error !== true ? sqlServerUseDatabaseFromStatement(statement.sql) : undefined;
     if (successfulUseDatabase) {
@@ -1765,6 +1784,17 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultRuns[runIndex] = run;
     void persistResultRun(tab, run);
     return run.pinned === true;
+  }
+
+  function renameResultRun(id: string, runId: string, title: string): boolean {
+    const trimmed = title.trim();
+    if (!trimmed) return false;
+    const tab = tabs.value.find((item) => item.id === id);
+    const run = tab?.resultRuns?.find((item) => item.id === runId);
+    if (!tab || !run) return false;
+    run.title = trimmed;
+    void persistResultRun(tab, run);
+    return true;
   }
 
   function unpinAllResultRuns(id: string): number {
@@ -5596,14 +5626,21 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   /**
-   * Resolve grouped result columns by projection ordinal. All databases use the
-   * mapping for comments. MySQL may additionally edit direct columns from one
-   * uniquely identifiable base table; aggregate expressions and columns from
-   * every other source remain read-only.
+   * Resolve read-only query result columns by projection ordinal. All databases
+   * use the mapping for comments. MySQL aggregation may additionally edit
+   * direct columns from one uniquely identifiable base table.
    */
-  async function resolveAggregationQueryMetadata(tab: QueryTab, sql: string, executionDatabase: string, traceId: string | undefined): Promise<QueryMetadataPatch | undefined> {
+  async function resolveQueryDisplayMetadata(
+    tab: QueryTab,
+    sql: string,
+    executionDatabase: string,
+    traceId: string | undefined,
+    connection: ConnectionConfig | undefined,
+    allowMysqlEditing = true,
+    readOnlyReason: "aggregation" | "complex-source" = "aggregation",
+  ): Promise<QueryMetadataPatch | undefined> {
     if (tab.mode !== "query" || !tab.connectionId || !tab.result || !tab.result.columns.length) return undefined;
-    const conn = useConnectionStore().getConfig(tab.connectionId);
+    const conn = connection ?? useConnectionStore().getConfig(tab.connectionId);
     const dbType = conn?.db_type || "";
     const analysis = analyzeSelectStructureForDisplay(sql);
     if (!analysis) return undefined;
@@ -5634,12 +5671,12 @@ export const useQueryStore = defineStore("query", () => {
       const readOnlyPatch: QueryMetadataPatch = {
         queryAnalysis: undefined,
         querySourceColumns: undefined,
-        queryEditabilityReason: "aggregation",
+        queryEditabilityReason: readOnlyReason,
         tableMeta: undefined,
         resultColumnComments: displayInfo.comments,
         queryDisplaySourceColumns: displayInfo.mapping,
       };
-      if (dbType !== "mysql" || (conn?.driver_profile || conn?.db_type) !== "mysql") return readOnlyPatch;
+      if (!allowMysqlEditing || dbType !== "mysql" || (conn?.driver_profile || conn?.db_type) !== "mysql") return readOnlyPatch;
       // Mutation safety boundary: the FROM root must remain on the preserved
       // side of the join tree, and GROUP BY must resolve to exactly that table's
       // declared primary key. This makes every editable result row identify one
@@ -5693,7 +5730,7 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  async function buildQueryMetadataPatch(tab: QueryTab, sql: string, executionDatabase: string, traceId?: string, elapsed?: () => string, hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = []): Promise<QueryMetadataPatch | undefined> {
+  async function buildQueryMetadataPatch(tab: QueryTab, sql: string, executionDatabase: string, traceId?: string, elapsed?: () => string, hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = [], connection?: ConnectionConfig): Promise<QueryMetadataPatch | undefined> {
     if (tab.mode !== "query") return;
     if (!tab.result || !tab.result.columns.length) {
       return {
@@ -5713,8 +5750,13 @@ export const useQueryStore = defineStore("query", () => {
       elapsed: elapsed?.(),
     });
     if (!editability.editable) {
-      const aggregationPatch = editability.reason === "aggregation" ? await resolveAggregationQueryMetadata(tab, sql, executionDatabase, traceId) : undefined;
-      if (aggregationPatch) return aggregationPatch;
+      let displayPatch: QueryMetadataPatch | undefined;
+      if (editability.reason === "aggregation") {
+        displayPatch = await resolveQueryDisplayMetadata(tab, sql, executionDatabase, traceId, connection);
+      } else if (editability.reason === "complex-source") {
+        displayPatch = await resolveQueryDisplayMetadata(tab, sql, executionDatabase, traceId, connection, false, "complex-source");
+      }
+      if (displayPatch) return displayPatch;
       return {
         queryAnalysis: undefined,
         querySourceColumns: undefined,
@@ -5733,8 +5775,7 @@ export const useQueryStore = defineStore("query", () => {
       };
     }
 
-    const connStore = useConnectionStore();
-    const conn = connStore.getConfig(tab.connectionId);
+    const conn = connection ?? useConnectionStore().getConfig(tab.connectionId);
     const dbType = conn?.db_type || "";
     const sources = editableQuerySources(analysis);
     const loadedSources: LoadedEditableSource[] = [];
@@ -5885,14 +5926,14 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  function analyzeQueryMetadataInBackground(tabId: string, sql: string, result: QueryResult, executionDatabase: string, traceId: string, elapsed: () => string, databaseType: DatabaseType | undefined, hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = []) {
+  function analyzeQueryMetadataInBackground(tabId: string, sql: string, result: QueryResult, executionDatabase: string, traceId: string, elapsed: () => string, databaseType: DatabaseType | undefined, hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = [], connection?: ConnectionConfig) {
     void (async () => {
       const tab = tabs.value.find((t) => t.id === tabId);
       if (!tab || tab.result !== result) return;
       queryExecutionLog("info", "metadata:start", { traceId, elapsed: elapsed() });
       // Metadata requests outlive the displayed result when another query starts
       // or a retained run is selected. Analyze this result, not the live tab.
-      const patch = await buildQueryMetadataPatch({ ...tab, result }, sql, executionDatabase, traceId, elapsed, hiddenPrimaryKeys);
+      const patch = await buildQueryMetadataPatch({ ...tab, result }, sql, executionDatabase, traceId, elapsed, hiddenPrimaryKeys, connection);
       if (patch?.queryAnalysis && hasHiddenPhysicalRowKey(databaseType, hiddenPrimaryKeys)) {
         patch.queryAnalysis = { ...patch.queryAnalysis, allowInsert: false };
       }
@@ -6241,6 +6282,9 @@ export const useQueryStore = defineStore("query", () => {
         mongoCommands = splitMongoCommandRanges(sql);
       }
       const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
+      if (effectiveDbType === "mysql") {
+        sqlToExecute = stripMysqlClientDisplayCommand(sqlToExecute);
+      }
       if (tab.autoCommit === false && !supportsTransaction(conn?.db_type)) {
         tab.autoCommit = true;
       }
@@ -6644,6 +6688,7 @@ export const useQueryStore = defineStore("query", () => {
               case "insert":
               case "update":
               case "replace":
+              case "bulkWrite":
               case "delete":
               case "createIndex":
               case "createUser":
@@ -6667,6 +6712,9 @@ export const useQueryStore = defineStore("query", () => {
                 } else if (mongoCommand.kind === "update") {
                   const result = await api.mongoUpdateDocuments(executionConnectionId, currentDatabase, mongoCommand.collection, mongoCommand.filter, mongoCommand.update, mongoCommand.many, mongoCommand.options);
                   allResults.push(markQueryResultRowsRaw(annotateMongoResult(mongoWriteToQueryResult(result.affected_rows, performance.now() - commandStartedAt))));
+                } else if (mongoCommand.kind === "bulkWrite") {
+                  const result = await api.mongoBulkWrite(executionConnectionId, currentDatabase, mongoCommand.collection, mongoCommand.operations, mongoCommand.options);
+                  allResults.push(markQueryResultRowsRaw(annotateMongoResult(mongoBulkWriteToQueryResult(result, performance.now() - commandStartedAt))));
                 } else if (mongoCommand.kind === "replace") {
                   const result = await api.mongoReplaceDocument(executionConnectionId, currentDatabase, mongoCommand.collection, mongoCommand.filter, mongoCommand.replacement, mongoCommand.options);
                   allResults.push(markQueryResultRowsRaw(annotateMongoResult(mongoWriteToQueryResult(result.affected_rows, performance.now() - commandStartedAt))));
@@ -7110,6 +7158,7 @@ export const useQueryStore = defineStore("query", () => {
         options?.sourceOffset,
         sqlStatementParameterOptions,
         sqlToExecute,
+        options?.sourceOffset === undefined ? undefined : tab.sql,
       );
       const results = offsetBatchQueryResultIndexes(annotatedResults.results, batchResume?.startStatementIndex ?? 0);
       reconcileBatchSqlResults(tab, executionId, results);
@@ -7327,7 +7376,7 @@ export const useQueryStore = defineStore("query", () => {
           elapsed: elapsed(),
         });
         if (current.mode === "query" && current.result) {
-          analyzeQueryMetadataInBackground(id, displayedQueryMetadataSql(current, queryMetadataSql), current.result, executionDatabase, traceId, elapsed, effectiveDbType, hiddenPrimaryKeys);
+          analyzeQueryMetadataInBackground(id, displayedQueryMetadataSql(current, queryMetadataSql), current.result, executionDatabase, traceId, elapsed, effectiveDbType, hiddenPrimaryKeys, conn);
         }
       } else {
         queryExecutionLog("warn", "stale-result", {
@@ -7943,7 +7992,7 @@ export const useQueryStore = defineStore("query", () => {
       const metadataStartedAt = performance.now();
       const connection = useConnectionStore().getConfig(tab.connectionId);
       const executionDatabase = dataTabExecutionDatabase(connection, tab.database, tab.catalog);
-      analyzeQueryMetadataInBackground(id, sourceStatement, tab.result, executionDatabase, uuid().slice(0, 8), () => `${Math.round(performance.now() - metadataStartedAt)}ms`, effectiveDatabaseTypeForConnection(connection));
+      analyzeQueryMetadataInBackground(id, sourceStatement, tab.result, executionDatabase, uuid().slice(0, 8), () => `${Math.round(performance.now() - metadataStartedAt)}ms`, effectiveDatabaseTypeForConnection(connection), [], connection);
     }
   }
 
@@ -8291,12 +8340,13 @@ export const useQueryStore = defineStore("query", () => {
     await connStore.ensureConnected(location.connectionId);
     const conn = connStore.getConfig(location.connectionId);
     const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
+    const executableSql = effectiveDbType === "mysql" ? stripMysqlClientDisplayCommand(sql) : sql;
     const executionDatabase = dataTabExecutionDatabase(conn, location.database, location.catalog);
     // main 引入全局查询超时：queryTimeoutSecsForConnection 现需传入全局默认值；
     // settingsStore 取 defineStore 顶层声明的实例（本函数无局部覆盖）。
     const queryTimeoutSecs = queryTimeoutSecsForConnection(conn, settingsStore.editorSettings.globalQueryTimeoutSecs);
     const useAgentCursor = usesAgentCursorForQuery(conn?.db_type, conn?.driver_profile);
-    const queryBaseSql = queryResultBaseSql(tab);
+    const queryBaseSql = effectiveDbType === "mysql" ? stripMysqlClientDisplayCommand(queryResultBaseSql(tab)) : queryResultBaseSql(tab);
     const exportSettings = useSettingsStore().editorSettings;
     const exportRowLimit = exportSettings.exportRowLimitEnabled ? exportSettings.exportRowLimit : Number.POSITIVE_INFINITY;
 
@@ -8375,7 +8425,7 @@ export const useQueryStore = defineStore("query", () => {
         const remaining = exportRowLimit - rows.length;
         const effectivePageLimit = Math.min(pageLimit, remaining);
         const plan = await api.prepareQueryPaginationExecutionPlan({
-          sql,
+          sql: executableSql,
           queryBaseSql,
           databaseType: effectiveDbType,
           pagination: { limit: effectivePageLimit, offset, sessionId },
@@ -8437,7 +8487,8 @@ export const useQueryStore = defineStore("query", () => {
     if (!effectiveDbType) return undefined;
     if (effectiveDbType === "mongodb") return undefined;
     const useAgentCursor = usesAgentCursorForQuery(conn?.db_type, conn?.driver_profile);
-    const queryBaseSql = queryResultBaseSql(tab);
+    const executableSql = effectiveDbType === "mysql" ? stripMysqlClientDisplayCommand(sql) : sql;
+    const queryBaseSql = effectiveDbType === "mysql" ? stripMysqlClientDisplayCommand(queryResultBaseSql(tab)) : queryResultBaseSql(tab);
     const resultStatementIndex = tab.result.statement_index;
     const batchSql = tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql;
     const batchStatements = effectiveDbType === "postgres" && tab.result.truncated === true && Number.isInteger(resultStatementIndex) && resultStatementIndex! > 0 ? splitSqlStatementRanges(batchSql, effectiveDbType) : [];
@@ -8452,7 +8503,7 @@ export const useQueryStore = defineStore("query", () => {
       database: dataTabExecutionDatabase(conn, location.database, location.catalog),
       schema: location.schema,
       catalog: location.catalog,
-      sql,
+      sql: executableSql,
       queryBaseSql,
       setupSql,
       databaseType: effectiveDbType,
@@ -8488,13 +8539,14 @@ export const useQueryStore = defineStore("query", () => {
     if (!effectiveDbType) return;
 
     const exportId = uuid();
+    const executableSql = effectiveDbType === "mysql" ? stripMysqlClientDisplayCommand(sql) : sql;
     const request: api.QueryResultExportRequest = {
       exportId,
       connectionId: tab.connectionId,
       database: tab.database,
       schema: tab.schema,
-      sql,
-      queryBaseSql: sql,
+      sql: executableSql,
+      queryBaseSql: executableSql,
       databaseType: effectiveDbType,
       useAgentCursor: usesAgentCursorForQuery(conn?.db_type, conn?.driver_profile),
       filePath,
@@ -8674,6 +8726,7 @@ export const useQueryStore = defineStore("query", () => {
     toggleResultAutoSave,
     setActiveResultRun,
     toggleResultRunPinned,
+    renameResultRun,
     unpinAllResultRuns,
     closeOtherResultRuns,
     closeResultRunsToLeft,
