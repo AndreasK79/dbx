@@ -64,6 +64,7 @@ import SidebarLocateButton from "./SidebarLocateButton.vue";
 import SidebarRegexToggleButton from "./SidebarRegexToggleButton.vue";
 import SidebarTreeRuntimeHost from "./SidebarTreeRuntimeHost.vue";
 import SidebarTreeItemDialogs from "./SidebarTreeItemDialogs.vue";
+import SidebarTableVGroupDialog from "./SidebarTableVGroupDialog.vue";
 import InstallExtensionDialog from "@/components/objects/InstallExtensionDialog.vue";
 import ExtensionDetailsDialog from "@/components/objects/ExtensionDetailsDialog.vue";
 import ForeignServerDetailsDialog from "@/components/objects/ForeignServerDetailsDialog.vue";
@@ -1486,6 +1487,12 @@ function topOcclusionHeightForSidebarNode(nodeId: string): number {
   return SIDEBAR_TREE_ROW_HEIGHT;
 }
 
+/** Select and reveal a freshly created table group. */
+async function focusCreatedTableVGroup(groupId: string) {
+  store.selectedTreeNodeId = groupId;
+  await scrollToSidebarNode(groupId);
+}
+
 async function scrollToSidebarNode(nodeId: string, options?: { align?: SidebarNodeScrollAlign }) {
   await nextTick();
 
@@ -1656,6 +1663,14 @@ async function locateTabInSidebar(tab: QueryTab | undefined | null, align: Sideb
     if (!ancestor.isExpanded && store.canUseLoadedTreeNodeToggle(ancestor)) {
       ancestor.isExpanded = true;
     }
+  }
+
+  // 表分组行同样是投影出的合成节点（不登记已加载子节点，上面的守卫会跳过），
+  // 折叠状态存在布局里，必须经布局 op 展开，否则下次投影又把它折叠回去。
+  for (const node of nodePath) {
+    if (node.type !== "table-vgroup" || !node.vgroupId) continue;
+    const group = store.tableVGroupLayoutFor(node)?.groups.find((current) => current.id === node.vgroupId);
+    if (group?.collapsed) store.toggleTableVGroupCollapsed(node, node.vgroupId);
   }
 
   // Connection groups never register loaded tree children, so the guard above
@@ -2865,6 +2880,7 @@ defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes, locateTabInSid
       </template>
     </SidebarDangerConfirmDialog>
     <SidebarTreeItemDialogs v-if="sidebarTreeItemDialogController" :key="sidebarTreeItemDialogController.node?.id" :controller="sidebarTreeItemDialogController" @closed="sidebarTreeItemDialogController = null" />
+    <SidebarTableVGroupDialog @created="focusCreatedTableVGroup" />
     <InstallExtensionDialog v-if="sidebarInstallExtensionTarget" ref="sidebarInstallExtensionDialogRef" :node="sidebarInstallExtensionTarget" @close="refreshSidebarActionTarget" @changed="refreshSidebarActionTarget" />
     <ExtensionDetailsDialog v-if="sidebarExtensionDetailsTarget" ref="sidebarExtensionDetailsDialogRef" :node="sidebarExtensionDetailsTarget" />
     <ForeignServerDetailsDialog v-if="sidebarForeignServerDetailsTarget" ref="sidebarForeignServerDetailsDialogRef" :node="sidebarForeignServerDetailsTarget" />

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::models::connection::{ConnectionConfig, ConnectionTestResult, DatabaseType};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use super::{
@@ -191,14 +191,26 @@ impl PluginHost {
     /// to an installed connection provider.
     pub fn connection_params_standalone(&self, config: &ConnectionConfig) -> Result<serde_json::Value, String> {
         let (_, provider) = self.resolve_connection_provider(config)?;
-        plugin_connection_params(config, &provider, &config.host, config.port)
+        plugin_connection_params(config, &provider, &config.host, config.port, None)
     }
 
+    /// Reports whether the connection's provider declared
+    /// `proxy_route` (multi-endpoint targets that want a SOCKS5
+    /// runtime route over transport layers instead of a static tunnel).
+    /// Unresolvable configs report `false` so the caller falls back to the
+    /// static-tunnel path (and its empty-endpoint guard).
+    pub async fn wants_proxy_route(&self, config: &ConnectionConfig) -> bool {
+        match self.resolve_connection_provider(config) {
+            Ok((_, provider)) => provider.proxy_route,
+            Err(_) => false,
+        }
+    }
     pub async fn test_connection(
         &self,
         config: &ConnectionConfig,
         runtime_host: &str,
         runtime_port: u16,
+        runtime_proxy: Option<PluginRuntimeProxy>,
     ) -> Result<ConnectionTestResult, String> {
         let _activity = self
             .inner
@@ -215,9 +227,9 @@ impl PluginHost {
         let result: serde_json::Value = session
             .invoke_with_timeout(
                 PLUGIN_CONNECTION_TEST_METHOD,
-                plugin_connection_params(config, &provider, runtime_host, runtime_port)?,
+                plugin_connection_params(config, &provider, runtime_host, runtime_port, runtime_proxy.as_ref())?,
                 None,
-                Some(Duration::from_secs(config.effective_connect_timeout_secs())),
+                Some(plugin_connect_deadline(config, &provider)),
             )
             .await?;
         plugin_connection_test_result(result, provider_label)
@@ -228,6 +240,7 @@ impl PluginHost {
         config: &ConnectionConfig,
         runtime_host: &str,
         runtime_port: u16,
+        runtime_proxy: Option<PluginRuntimeProxy>,
     ) -> Result<PluginConnectionHandle, String> {
         let activity = self
             .inner
@@ -236,7 +249,7 @@ impl PluginHost {
             .begin_connection(config.plugin_id.as_deref().unwrap_or_default(), &config.name)?;
         let (_, provider) = self.resolve_connection_provider(config)?;
         validate_plugin_connection_values(config, &provider)?;
-        let params = plugin_connection_params(config, &provider, runtime_host, runtime_port)?;
+        let params = plugin_connection_params(config, &provider, runtime_host, runtime_port, runtime_proxy.as_ref())?;
         let needs_session = provider.has_capability(PluginConnectionCapability::Connect)
             || provider.has_capability(PluginConnectionCapability::Disconnect);
         let session = if needs_session {
@@ -251,7 +264,7 @@ impl PluginHost {
                         PLUGIN_CONNECTION_CONNECT_METHOD,
                         params.clone(),
                         None,
-                        Some(Duration::from_secs(config.effective_connect_timeout_secs())),
+                        Some(plugin_connect_deadline(config, &provider)),
                     )
                     .await?;
                 ensure_plugin_operation_succeeded(result)?;
@@ -275,6 +288,7 @@ impl PluginHost {
         action_id: &str,
         runtime_host: &str,
         runtime_port: u16,
+        runtime_proxy: Option<PluginRuntimeProxy>,
     ) -> Result<PluginConnectionActionResult, String> {
         let _activity = self
             .inner
@@ -285,7 +299,8 @@ impl PluginHost {
         let action = plugin_invoke_connection_action(&provider, action_id)?;
         validate_plugin_connection_values_for_action(config, &provider, action.requires_valid_form)?;
         let session = self.activate(config.plugin_id.as_deref().unwrap_or_default()).await?;
-        let mut params = plugin_connection_params(config, &provider, runtime_host, runtime_port)?;
+        let mut params =
+            plugin_connection_params(config, &provider, runtime_host, runtime_port, runtime_proxy.as_ref())?;
         params
             .as_object_mut()
             .ok_or("Plugin connection action params must be an object")?
@@ -406,24 +421,76 @@ fn required_plugin_binding<'a>(value: &'a Option<String>, field: &str) -> Result
         .ok_or_else(|| format!("Plugin connection is missing {field}"))
 }
 
+/// RPC deadline for connection/test and connection/connect. A config-bound
+/// `connect_timeout_secs` field is the plugin's own handshake timeout (the SSH
+/// plugin defaults it to 30 and lets advanced users tune it), so the host
+/// deadline must never fire first: the resolved plugin value wins — stored
+/// `external_config` first, then the manifest default for configs whose value
+/// was never materialized (imports, MCP, older hosts) — and only plugins that
+/// do not declare the field at all keep the generic built-in fallback.
+fn plugin_connect_deadline(config: &ConnectionConfig, provider: &PluginConnectionProviderContribution) -> Duration {
+    fn positive_timeout(value: &serde_json::Value) -> Option<u64> {
+        value.as_u64().or_else(|| value.as_f64().map(|n| n.max(0.0) as u64)).filter(|secs| *secs > 0)
+    }
+    let plugin_timeout = provider.fields.iter().find(|field| field.key == "connect_timeout_secs").and_then(|field| {
+        config
+            .external_config
+            .as_ref()
+            .and_then(|external| external.get("connect_timeout_secs"))
+            .and_then(positive_timeout)
+            .or_else(|| field.default.as_ref().and_then(positive_timeout))
+    });
+    let secs = plugin_timeout.unwrap_or_else(|| config.effective_connect_timeout_secs());
+    Duration::from_secs(secs.clamp(1, 300))
+}
+
 fn plugin_connection_params(
     config: &ConnectionConfig,
     provider: &PluginConnectionProviderContribution,
     runtime_host: &str,
     runtime_port: u16,
+    runtime_proxy: Option<&PluginRuntimeProxy>,
 ) -> Result<serde_json::Value, String> {
+    let mut runtime = serde_json::json!({
+        "host": runtime_host,
+        "port": runtime_port,
+    });
+    if let Some(proxy) = runtime_proxy {
+        runtime["proxy"] = serde_json::to_value(proxy).map_err(|error| error.to_string())?;
+    }
     Ok(serde_json::json!({
         "provider": {
             "id": provider.id,
             "databaseType": provider.database_type,
         },
         "connection": serde_json::to_value(config).map_err(|error| error.to_string())?,
-        "runtime": {
-            "host": runtime_host,
-            "port": runtime_port,
-        },
+        "runtime": runtime,
         "operationId": uuid::Uuid::new_v4().to_string(),
     }))
+}
+
+/// A host-managed SOCKS5 route handed to a plugin through
+/// `runtime.proxy`. Providers declaring `proxy_route` (multi-endpoint
+/// targets such as Kafka) dial every advertised broker through this route
+/// instead of a static tunnel, which can only reach a single endpoint.
+/// Credentials ride the same encrypted lifecycle channel as connection
+/// secrets and must never be logged by the plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginRuntimeProxy {
+    #[serde(rename = "type")]
+    pub proxy_type: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub username: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub password: String,
+}
+
+impl PluginRuntimeProxy {
+    pub fn socks5(host: String, port: u16, username: String, password: String) -> Self {
+        Self { proxy_type: "socks5".to_string(), host, port, username, password }
+    }
 }
 
 fn validate_plugin_connection_values(
@@ -753,8 +820,9 @@ fn ensure_permission(plugin: &super::InstalledPlugin, required_permission: Optio
 #[cfg(test)]
 mod tests {
     use super::{
-        plugin_connection_action_result, plugin_field_is_visible, plugin_invoke_connection_action,
-        validate_plugin_connection_values, validate_plugin_connection_values_for_action,
+        plugin_connect_deadline, plugin_connection_action_result, plugin_connection_params, plugin_field_is_visible,
+        plugin_invoke_connection_action, validate_plugin_connection_values,
+        validate_plugin_connection_values_for_action, PluginRuntimeProxy,
     };
     use crate::models::connection::ConnectionConfig;
     use crate::plugins::PluginConnectionProviderContribution;
@@ -801,13 +869,100 @@ mod tests {
         let lifecycle = registry.lifecycle();
         let host = super::PluginHost::new(registry);
         let update = lifecycle.begin_update("sample.ui").unwrap();
-        assert!(host.connect_connection(&config, "localhost", 0).await.is_err());
+        assert!(host.connect_connection(&config, "localhost", 0, None).await.is_err());
         drop(update);
-        let connection = host.connect_connection(&config, "localhost", 0).await.unwrap();
+        let connection = host.connect_connection(&config, "localhost", 0, None).await.unwrap();
         assert!(lifecycle.begin_update("sample.ui").unwrap_err().contains("Saved UI connection"));
         connection.disconnect().await.unwrap();
         drop(connection);
         assert!(lifecycle.begin_update("sample.ui").is_ok());
+    }
+
+    #[test]
+    fn connect_deadline_follows_the_provider_declared_timeout_field() {
+        let provider: PluginConnectionProviderContribution = serde_json::from_value(serde_json::json!({
+            "id": "sample.connection",
+            "label": "Sample",
+            "database_type": "sample",
+            "fields": [{ "key": "connect_timeout_secs", "label": "Connect timeout", "type": "number", "default": 30 }]
+        }))
+        .unwrap();
+        let config_with = |timeout: u64, external: Option<u64>| {
+            serde_json::from_value::<ConnectionConfig>(serde_json::json!({
+                "id": "plugin-connection",
+                "name": "Plugin connection",
+                "db_type": "plugin",
+                "host": "localhost",
+                "port": 0,
+                "username": "",
+                "password": "",
+                "connect_timeout_secs": timeout,
+                "external_config": external.map_or(serde_json::json!({}), |secs| serde_json::json!({ "connect_timeout_secs": secs })),
+                "plugin_id": "sample",
+                "plugin_connection_provider": "sample.connection",
+                "plugin_connection_type": "sample"
+            }))
+            .unwrap()
+        };
+
+        // Unmaterialized typed value (0): the manifest default becomes the deadline.
+        assert_eq!(plugin_connect_deadline(&config_with(0, None), &provider), std::time::Duration::from_secs(30));
+        // A stored plugin-field value wins over the typed field: the plugin's own
+        // handshake timeout and the host deadline must never disagree.
+        assert_eq!(plugin_connect_deadline(&config_with(10, Some(60)), &provider), std::time::Duration::from_secs(60));
+        assert_eq!(plugin_connect_deadline(&config_with(5, None), &provider), std::time::Duration::from_secs(30));
+
+        // Providers without the well-known field keep the typed/generic behavior.
+        let provider_without_default: PluginConnectionProviderContribution =
+            serde_json::from_value(serde_json::json!({
+                "id": "sample.connection",
+                "label": "Sample",
+                "database_type": "sample"
+            }))
+            .unwrap();
+        assert_eq!(
+            plugin_connect_deadline(&config_with(0, Some(60)), &provider_without_default),
+            std::time::Duration::from_secs(10)
+        );
+        assert_eq!(
+            plugin_connect_deadline(&config_with(5, None), &provider_without_default),
+            std::time::Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn connection_params_embed_optional_socks5_proxy_route() {
+        let config: ConnectionConfig = serde_json::from_value(serde_json::json!({
+            "id": "plugin-connection",
+            "name": "Plugin connection",
+            "db_type": "plugin",
+            "host": "",
+            "port": 0,
+            "username": "",
+            "password": "",
+            "database": null,
+            "plugin_id": "sample",
+            "plugin_connection_provider": "sample.connection",
+            "plugin_connection_type": "sample"
+        }))
+        .unwrap();
+        let provider: PluginConnectionProviderContribution = serde_json::from_value(serde_json::json!({
+            "id": "sample.connection",
+            "label": "Sample",
+            "database_type": "sample",
+            "fields": []
+        }))
+        .unwrap();
+
+        let without = plugin_connection_params(&config, &provider, "", 0, None).unwrap();
+        assert!(without["runtime"].get("proxy").is_none());
+
+        let proxy = PluginRuntimeProxy::socks5("127.0.0.1".to_string(), 1080, "user".to_string(), "pass".to_string());
+        let with = plugin_connection_params(&config, &provider, "k1", 9092, Some(&proxy)).unwrap();
+        assert_eq!(with["runtime"]["proxy"]["type"], "socks5");
+        assert_eq!(with["runtime"]["proxy"]["host"], "127.0.0.1");
+        assert_eq!(with["runtime"]["proxy"]["port"], 1080);
+        assert_eq!(with["runtime"]["proxy"]["username"], "user");
     }
 
     #[test]

@@ -19,7 +19,8 @@ use crate::agent_connection::{
     agent_connect_params, agent_connect_params_with_role, h2_file_path_from_jdbc_url, hive_uses_zookeeper_discovery,
     is_h2_file_connection, mongo_legacy_error_with_auth_hint, mongo_uses_legacy_driver,
     oracle_alternate_connect_config_labels, oracle_alternate_connect_configs, oracle_error_with_driver_hint,
-    should_retry_mongo_with_legacy_driver, trino_like_jdbc_connection_string, AgentSessionRole,
+    pick_legacy_postgres_like_database, should_retry_mongo_with_legacy_driver, trino_like_jdbc_connection_string,
+    AgentSessionRole,
 };
 use crate::agent_manager::{AgentManager, JavaRuntimeMode, DEFAULT_JRE_KEY};
 use crate::agent_recovery::{RecoveryDecision, RecoveryPolicy, RecoveryScope};
@@ -38,7 +39,7 @@ use crate::nacos::config::{NACOS_CONSOLE_SESSION_PASSWORD, NACOS_PRIMARY_SESSION
 use crate::path_utils::expand_tilde;
 use crate::plugins::{
     PluginConnectionActionResult, PluginConnectionHandle, PluginDriverSession, PluginHost, PluginRegistry,
-    PluginRuntimeEnv,
+    PluginRuntimeEnv, PluginRuntimeProxy,
 };
 use crate::query_cancel::RunningQueries;
 use crate::session_credentials::SessionCredentialStore;
@@ -964,6 +965,19 @@ fn metadata_pool_database<'a>(config: Option<&ConnectionConfig>, database: Optio
     } else {
         database
     }
+}
+
+/// Always-present KingbaseES/Vastbase catalog used to discover a default database for
+/// legacy connections that were saved without one (see issue #9491).
+const LEGACY_POSTGRES_LIKE_PROBE_DATABASE: &str = "template1";
+const LEGACY_POSTGRES_LIKE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Whether a connection relies on the historical `postgres` default that
+/// `ConnectionConfig::default_database()` applies to KingbaseES/Vastbase connections
+/// saved without an explicit database.
+fn needs_legacy_postgres_like_database_probe(config: &ConnectionConfig) -> bool {
+    matches!(config.db_type, DatabaseType::Kingbase | DatabaseType::Vastbase)
+        && config.database.as_deref().is_none_or(|database| database.trim().is_empty())
 }
 
 pub fn sqlserver_legacy_driver_error(agent_error: &str) -> String {
@@ -2184,6 +2198,91 @@ impl AppState {
         .await
     }
 
+    /// `KingbaseES`/`Vastbase` do not guarantee the `postgres` database that
+    /// `ConnectionConfig::default_database()` assumes for saved connections without an
+    /// explicit database (see issue #9491). When such a connection is opened — an
+    /// upgraded legacy record or a cleared "default database" — probe the
+    /// always-present `template1` catalog and open a database that actually exists
+    /// instead of failing the whole connection with `database "postgres" does not exist`.
+    async fn resolve_legacy_postgres_like_database(
+        &self,
+        connection_id: &str,
+        db_config: &ConnectionConfig,
+    ) -> Option<String> {
+        if !needs_legacy_postgres_like_database_probe(db_config) {
+            return None;
+        }
+        // Reuse the metadata pool machinery: it applies the active session credentials and
+        // the connection's transport layers, and it is cached by pool key, so repeated
+        // connects and the object browser share one probe connection. The pool stays
+        // registered so a concurrent reader of the object browser is never torn down;
+        // `remove_connection_pools` closes it together with the connection's other pools.
+        //
+        // The probe always passes `template1` explicitly, so the resolver cannot re-enter
+        // itself; `Box::pin` only satisfies the compiler's async-recursion requirement.
+        let pool_key = match Box::pin(self.get_or_create_metadata_pool_for_session(
+            connection_id,
+            Some(LEGACY_POSTGRES_LIKE_PROBE_DATABASE),
+            None,
+        ))
+        .await
+        {
+            Ok(pool_key) => pool_key,
+            Err(error) => {
+                log::warn!(
+                    "Failed to open a '{LEGACY_POSTGRES_LIKE_PROBE_DATABASE}' probe connection for '{connection_id}' while resolving a legacy default database: {error}"
+                );
+                return None;
+            }
+        };
+        let databases = {
+            let pool_handle = self.pool_handle(&pool_key).await;
+            let client = pool_handle.as_ref().and_then(|pool| match pool {
+                PoolKind::Agent(client) => Some(client.clone()),
+                _ => None,
+            });
+            match client {
+                Some(client) => client
+                    .lock()
+                    .await
+                    .list_databases::<Vec<db::DatabaseInfo>>(Some(LEGACY_POSTGRES_LIKE_PROBE_TIMEOUT))
+                    .await
+                    .map(|databases| databases.into_iter().map(|database| database.name).collect::<Vec<String>>()),
+                None => Err("Legacy default database probe pool is not an Agent pool".to_string()),
+            }
+        };
+        match databases {
+            Ok(databases) => {
+                let resolved = pick_legacy_postgres_like_database(&databases);
+                match &resolved {
+                    Some(database) => {
+                        log::info!(
+                            "Resolved legacy default database '{database}' for '{connection_id}' from {databases:?}"
+                        );
+                        // Write the discovered database back so the legacy record stops relying on
+                        // the `postgres` default and later starts skip the probe. Temporary
+                        // connection-test ids are not persisted and are simply ignored.
+                        if let Err(error) = self.save_connection_database(connection_id, database).await {
+                            log::warn!(
+                                "Failed to persist the resolved legacy default database '{database}' for '{connection_id}': {error}"
+                            );
+                        }
+                    }
+                    None => log::warn!(
+                        "No usable database found for the legacy default database of '{connection_id}' (candidates: {databases:?})"
+                    ),
+                }
+                resolved
+            }
+            Err(error) => {
+                log::warn!(
+                    "Failed to list databases for '{connection_id}' while resolving a legacy default database: {error}"
+                );
+                None
+            }
+        }
+    }
+
     async fn get_or_create_pool_for_session_inner(
         &self,
         connection_id: &str,
@@ -2235,10 +2334,15 @@ impl AppState {
 
         validate_h2_file_connection(&db_config)?;
         self.ensure_current_connection_attempt(connection_id, connection_attempt).await?;
-        let (host, port) = self.connection_host_port(connection_id, &db_config).await?;
+        let endpoint = self.connection_endpoint(connection_id, &db_config).await?;
+        let (host, port) = (endpoint.host, endpoint.port);
+        let runtime_proxy = endpoint.proxy;
         if let Err(err) = self.ensure_current_connection_attempt(connection_id, connection_attempt).await {
             self.reset_connection_transport_for_config(connection_id, &db_config).await;
             return Err(err);
+        }
+        if let Some(database) = self.resolve_legacy_postgres_like_database(connection_id, &db_config).await {
+            db_config.database = Some(database);
         }
         if db_config.db_type != DatabaseType::Plugin {
             probe_connection_endpoint(&db_config, &host, port).await?;
@@ -2825,9 +2929,9 @@ impl AppState {
                 }
                 self.external_driver_pool("jdbc", &jdbc_config).await?
             }
-            DatabaseType::Plugin => {
-                PoolKind::PluginConnection(self.plugin_host.connect_connection(&db_config, &host, port).await?)
-            }
+            DatabaseType::Plugin => PoolKind::PluginConnection(
+                self.plugin_host.connect_connection(&db_config, &host, port, runtime_proxy).await?,
+            ),
             #[cfg(feature = "mq-admin")]
             DatabaseType::MessageQueue => {
                 // MQ admin connections don't hold a data query pool. We just test
@@ -3059,9 +3163,29 @@ impl AppState {
         connection_id: &str,
         config: &ConnectionConfig,
     ) -> Result<(String, u16), String> {
+        let endpoint = self.connection_endpoint(connection_id, config).await?;
+        Ok((endpoint.host, endpoint.port))
+    }
+
+    /// Resolves the runtime dial endpoint for a plugin connection, including
+    /// the host-managed SOCKS5 route when the provider declares
+    /// `proxy_route` and transport layers are configured.
+    pub async fn plugin_connection_endpoint(
+        &self,
+        connection_id: &str,
+        config: &ConnectionConfig,
+    ) -> Result<ConnectionEndpoint, String> {
+        self.connection_endpoint(connection_id, config).await
+    }
+
+    async fn connection_endpoint(
+        &self,
+        connection_id: &str,
+        config: &ConnectionConfig,
+    ) -> Result<ConnectionEndpoint, String> {
         let transport_layers = self.resolved_transport_layers(config).await?;
         if transport_layers.is_empty() || db::sqlite_worker::sqlite_ssh_worker_requested(config) {
-            return Ok((config.host.clone(), config.port));
+            return Ok(ConnectionEndpoint::direct(config.host.clone(), config.port));
         }
         if config.uses_oracle_tns() {
             // A TNS descriptor may contain several failover addresses, so rewriting it
@@ -3078,10 +3202,31 @@ impl AppState {
                 == crate::mq::types::MqSystemKind::RocketMq
         {
             self.rocketmq_socks_proxy_for_transport_layers(connection_id, &transport_layers).await?;
-            return Ok((config.host.clone(), config.port));
+            return Ok(ConnectionEndpoint::direct(config.host.clone(), config.port));
+        }
+
+        // Multi-endpoint plugin providers (Kafka bootstrap + advertised
+        // listeners) route every endpoint through a host-managed SOCKS5
+        // dialer instead of a static tunnel, which can only reach a single
+        // broker. The payload keeps the logical endpoint so the plugin can
+        // still resolve its own seed list and metadata names.
+        if config.db_type == DatabaseType::Plugin && self.plugin_host.wants_proxy_route(config).await {
+            if let Some(proxy) = self.socks5_route_for_transport_layers(connection_id, &transport_layers).await? {
+                return Ok(ConnectionEndpoint { host: config.host.clone(), port: config.port, proxy: Some(proxy) });
+            }
         }
 
         let (remote_host, remote_port) = connection_remote_endpoint(config);
+        // Plugin providers commonly declare no host/port binding (Kafka keeps
+        // its endpoints in provider fields instead), so a static tunnel would
+        // silently forward to an empty target and every downstream dial would
+        // time out with no actionable hint. Fail here instead.
+        if config.db_type == DatabaseType::Plugin && remote_host.is_empty() {
+            return Err(
+                "Transport layers for this plugin connection need a remote host and port. The connection provider must declare host/port fields or support proxy_route (SOCKS5 routing); otherwise remove the SSH/proxy/HTTP tunnel layer."
+                    .to_string(),
+            );
+        }
         let local_port = db::transport_layer_tunnel::start_transport_layers(
             connection_id,
             &transport_layers,
@@ -3093,7 +3238,67 @@ impl AppState {
         )
         .await?;
 
-        Ok(("127.0.0.1".to_string(), local_port))
+        Ok(ConnectionEndpoint { host: "127.0.0.1".to_string(), port: local_port, proxy: None })
+    }
+
+    /// Builds the host-managed SOCKS5 route from the transport chain for
+    /// plugin providers declaring `proxy_route` (mirrors the
+    /// RocketMQ proxy path). `None` = fall back to the static tunnel path.
+    async fn socks5_route_for_transport_layers(
+        &self,
+        connection_id: &str,
+        transport_layers: &[TransportLayerConfig],
+    ) -> Result<Option<PluginRuntimeProxy>, String> {
+        use crate::models::connection::ProxyType;
+
+        let Some(final_layer) = transport_layers.last() else {
+            return Ok(None);
+        };
+        match final_layer {
+            TransportLayerConfig::Ssh(_) => {
+                // The final SSH hop exposes a dynamic SOCKS5 endpoint so every
+                // advertised broker is reachable through one tunnel.
+                let local_port = db::transport_layer_tunnel::start_transport_layers_with_final_ssh_socks5(
+                    connection_id,
+                    transport_layers,
+                    &self.tunnels,
+                    &self.proxy_tunnels,
+                    &self.http_tunnels,
+                )
+                .await?;
+                Ok(Some(PluginRuntimeProxy::socks5("127.0.0.1".to_string(), local_port, String::new(), String::new())))
+            }
+            TransportLayerConfig::Proxy(proxy) if proxy.proxy_type == ProxyType::Socks5 => {
+                if transport_layers.len() == 1 {
+                    Ok(Some(PluginRuntimeProxy::socks5(
+                        proxy.host.clone(),
+                        proxy.port,
+                        proxy.username.clone(),
+                        proxy.password.clone(),
+                    )))
+                } else {
+                    let local_port = db::transport_layer_tunnel::start_transport_layers(
+                        connection_id,
+                        &transport_layers[..transport_layers.len() - 1],
+                        &proxy.host,
+                        proxy.port,
+                        &self.tunnels,
+                        &self.proxy_tunnels,
+                        &self.http_tunnels,
+                    )
+                    .await?;
+                    Ok(Some(PluginRuntimeProxy::socks5(
+                        "127.0.0.1".to_string(),
+                        local_port,
+                        proxy.username.clone(),
+                        proxy.password.clone(),
+                    )))
+                }
+            }
+            // HTTP-tunnel chains cannot serve arbitrary endpoints; fall back
+            // to the static tunnel path (guarded below for empty endpoints).
+            TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_) => Ok(None),
+        }
     }
 
     pub async fn invoke_plugin_connection_action(
@@ -3108,8 +3313,12 @@ impl AppState {
         let transport_id = format!("{}:plugin-action:{action_id}", config.id);
         let has_transport_layers = config.has_effective_transport_layers();
         let connection_id = if has_transport_layers { transport_id.as_str() } else { config.id.as_str() };
-        let result = match self.connection_host_port(connection_id, &config).await {
-            Ok((host, port)) => self.plugin_host.invoke_connection_action(&config, action_id, &host, port).await,
+        let result = match self.plugin_connection_endpoint(connection_id, &config).await {
+            Ok(endpoint) => {
+                self.plugin_host
+                    .invoke_connection_action(&config, action_id, &endpoint.host, endpoint.port, endpoint.proxy)
+                    .await
+            }
             Err(error) => Err(error),
         };
         if has_transport_layers {
@@ -4680,6 +4889,16 @@ impl AppState {
         }
     }
 
+    /// Persist the database resolved for a legacy empty-database connection and keep the
+    /// runtime config in sync so peer pool creations reuse the discovered database.
+    pub async fn save_connection_database(&self, connection_id: &str, database: &str) -> Result<(), String> {
+        self.storage.save_connection_database(connection_id, database).await?;
+        if let Some(config) = self.configs.write().await.get_mut(connection_id) {
+            config.database = Some(database.to_string());
+        }
+        Ok(())
+    }
+
     pub async fn save_connection_database_info(
         &self,
         connection_id: &str,
@@ -5036,6 +5255,21 @@ impl AppState {
         let removed = self.drain_connection_pools(connection_id).await;
         self.clear_metadata_gates_for_connection(connection_id).await;
         self.pool_routing_control().close_removed(removed).await;
+    }
+
+    /// Drop a connection's pools WITHOUT closing them. Only for plugin
+    /// connections on the connect path: the plugin's connection/connect is an
+    /// idempotent upsert, so a re-push/reconnect just replaces the pool entry.
+    /// Closing would send connection/disconnect to the sidecar, whose
+    /// semantics are "drop the registry entry AND kill every session of this
+    /// connection" — murdering the live terminals of sibling tabs. Explicit
+    /// user disconnect still goes through remove_connection_pools* and does
+    /// send connection/disconnect.
+    pub async fn drop_connection_pools_without_close(&self, connection_id: &str) {
+        self.rollback_manual_transaction_sessions(connection_id).await;
+        let removed = self.drain_connection_pools(connection_id).await;
+        self.clear_metadata_gates_for_connection(connection_id).await;
+        drop(removed);
     }
 
     pub async fn remove_connection_pools_detached(&self, connection_id: &str) {
@@ -5431,6 +5665,24 @@ async fn ping_keepalive_target(target: &mut KeepaliveTarget, timeout: Duration) 
 fn is_agent_validate_connection_unsupported(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
     lower.contains("validate_connection") && (lower.contains("unknown method") || lower.contains("method not found"))
+}
+
+/// Runtime dial endpoint handed to a plugin lifecycle call: the logical
+/// `host:port` plus an optional host-managed SOCKS5 route for providers
+/// declaring `proxy_route`. When `proxy` is set the plugin is
+/// expected to dial every endpoint (its seed list and metadata names) through
+/// the route, keeping the logical endpoint only for metadata discovery.
+#[derive(Debug, Clone)]
+pub struct ConnectionEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub proxy: Option<PluginRuntimeProxy>,
+}
+
+impl ConnectionEndpoint {
+    fn direct(host: String, port: u16) -> Self {
+        Self { host, port, proxy: None }
+    }
 }
 
 fn connection_remote_endpoint(config: &ConnectionConfig) -> (String, u16) {
@@ -7856,6 +8108,32 @@ mod tests {
             super::base_pool_key_for(Some(DatabaseType::MongoDb), "mongo-conn", Some("shop"), false),
             "mongo-conn:shop"
         );
+    }
+
+    #[test]
+    fn legacy_postgres_like_database_probe_only_applies_to_unconfigured_kingbase() {
+        let mut config = mysql_config(Some("SAMPLES"));
+        config.db_type = DatabaseType::Kingbase;
+        assert!(!super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.database = None;
+        assert!(super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.database = Some("   ".to_string());
+        assert!(super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.database = Some("application".to_string());
+        assert!(!super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.database = None;
+        config.db_type = DatabaseType::Vastbase;
+        assert!(super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.db_type = DatabaseType::Postgres;
+        assert!(!super::needs_legacy_postgres_like_database_probe(&config));
+
+        config.db_type = DatabaseType::Mysql;
+        assert!(!super::needs_legacy_postgres_like_database_probe(&config));
     }
 
     #[test]
