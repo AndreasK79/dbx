@@ -18,6 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 mod kingbase;
+mod mongodb_columns;
 
 macro_rules! extract_pool {
     ($pool:expr, $variant:ident) => {
@@ -3209,6 +3210,7 @@ mod tests {
             rows,
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -4077,6 +4079,7 @@ done
             ]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -4104,6 +4107,7 @@ done
             ]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -4128,6 +4132,7 @@ done
             rows: vec![vec![serde_json::json!("users"), serde_json::json!("CREATE TABLE `users` (`id` bigint);\n")]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -4156,6 +4161,7 @@ done
             ]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -4183,6 +4189,7 @@ done
             ]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5153,6 +5160,7 @@ for line in sys.stdin:
             ],
             affected_rows: 0,
             execution_time_ms: 1,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5201,6 +5209,7 @@ for line in sys.stdin:
             ],
             affected_rows: 0,
             execution_time_ms: 1,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5384,6 +5393,7 @@ for line in sys.stdin:
             rows: vec![vec![serde_json::json!("Customer table")]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5402,6 +5412,7 @@ for line in sys.stdin:
             rows: vec![vec![serde_json::json!("  ")]],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5438,6 +5449,7 @@ for line in sys.stdin:
             ],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5632,6 +5644,7 @@ for line in sys.stdin:
             ],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -5737,6 +5750,7 @@ for line in sys.stdin:
             ],
             affected_rows: 0,
             execution_time_ms: 0,
+            server_execute_time_us: None,
             truncated: false,
             session_id: None,
             has_more: false,
@@ -7001,6 +7015,9 @@ pub async fn get_columns_core_for_session(
     table: &str,
     client_session_id: Option<&str>,
 ) -> Result<Vec<db::ColumnInfo>, String> {
+    if connection_config(state, connection_id).await.is_some_and(|config| config.db_type == DatabaseType::MongoDb) {
+        return Box::pin(mongodb_columns::get_columns(state, connection_id, database, table)).await;
+    }
     if client_session_id.is_none() {
         let metadata_session =
             EphemeralAgentMetadataSession::open(state, connection_id, Some(database), "columns").await;
@@ -7694,7 +7711,8 @@ pub async fn list_triggers_core(
 
 /// Lists structured constraints for a relation. Exposed generically so the
 /// agent protocol and native drivers share one route; the built-in drivers
-/// that implement it today are PostgreSQL, OpenGauss, and the Xugu agent.
+/// that implement it today are PostgreSQL, OpenGauss, SQL Server, and the
+/// Xugu agent.
 pub async fn list_constraints_core(
     state: &AppState,
     connection_id: &str,
@@ -7702,12 +7720,16 @@ pub async fn list_constraints_core(
     schema: &str,
     table: &str,
 ) -> Result<Vec<db::ConstraintInfo>, String> {
+    if crate::sql_dialect::parse_sqlserver_linked_schema_ref(schema).is_some() {
+        return Ok(vec![]);
+    }
     retry_metadata_connection(state, connection_id, Some(database), || async {
         let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
         let db_config = connection_config(state, connection_id).await;
 
         {
             let pool_handle = state.pool_handle(&pool_key).await;
+            try_sqlserver!(pool_handle, list_constraints, schema, table);
             if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
                 let mut client = client.lock().await;
                 return client

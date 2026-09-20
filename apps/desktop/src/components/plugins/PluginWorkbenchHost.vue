@@ -5,7 +5,9 @@ import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { PluginHostBridge, pluginSandboxDocument, type PluginBridgeTheme, type PluginSaveFileRequest, type PluginSaveFileResult, type PluginWorkbenchContext } from "@/lib/plugins/pluginHostBridge";
-import type { InstalledPlugin, PluginWorkbenchContribution } from "@/types/database";
+import { buildPluginEditorAppearance } from "@/lib/plugins/pluginAppearance";
+import { downloadPluginFile, cancelPluginDownload } from "@/lib/plugins/pluginFileDownload";
+import type { InstalledPlugin, PluginUiContribution } from "@/types/database";
 import { useI18n } from "vue-i18n";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -14,7 +16,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 const props = withDefaults(
   defineProps<{
     plugin: InstalledPlugin;
-    contribution: PluginWorkbenchContribution;
+    contribution: PluginUiContribution;
     context?: PluginWorkbenchContext;
   }>(),
   { context: () => ({}) },
@@ -59,10 +61,15 @@ function currentBridgeTheme(): PluginBridgeTheme {
       }
     }
   }
-  return { appearance: isDark.value ? "dark" : "light", tokens };
+  return {
+    appearance: isDark.value ? "dark" : "light",
+    tokens,
+    editor: buildPluginEditorAppearance(settingsStore.editorSettings),
+  };
 }
 
 function createBridge() {
+  bridge?.dispose();
   bridge = new PluginHostBridge(
     props.plugin,
     props.contribution,
@@ -78,6 +85,8 @@ function createBridge() {
       reopenConnection: (pluginId, connectionId) => useConnectionStore().reopenPluginConnection(connectionId, pluginId),
       closeTab: () => emit("closeTab"),
       saveFile: (_pluginId, request, data) => savePluginFile(request, data),
+      downloadFile: isTauriRuntime() ? downloadPluginFile : undefined,
+      cancelDownload: isTauriRuntime() ? cancelPluginDownload : undefined,
       copyText: (_pluginId, text) => copyToClipboard(text),
     },
     appLocale.value,
@@ -249,11 +258,11 @@ watch(appLocale, (locale) => bridge?.updateLocale(locale));
 // path — dark/light, palette switch, custom colors — re-pushes the resolved
 // tokens; watching isDark/custom colors alone misses palette-only switches.
 watch(themeRevision, () => bridge?.updateTheme(currentBridgeTheme()));
-// Font settings are applied outside applyTheme() (see App.vue applyUiFontFamily)
-// and therefore never bump themeRevision; watch them explicitly so font token
-// changes reach live plugin bridges without waiting for the next theme switch.
+// Font families are mirrored onto root tokens by App.vue (writeRootToken) and
+// reach live bridges through the themeRevision bump above. fontSize and the
+// SQL editor syntax theme have no CSS-token carrier — watch them explicitly.
 watch(
-  () => [settingsStore.editorSettings.uiFontFamily, settingsStore.editorSettings.fontFamily, settingsStore.editorSettings.fontSize],
+  () => [settingsStore.editorSettings.fontSize, settingsStore.editorSettings.theme],
   () => bridge?.updateTheme(currentBridgeTheme()),
 );
 
