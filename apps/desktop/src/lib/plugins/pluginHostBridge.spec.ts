@@ -324,6 +324,205 @@ describe("PluginHostBridge", () => {
     expect(messages[2]).toMatchObject({ id: "not-plugin", error: "Connection is not plugin-backed" });
   });
 
+  // --- Plugin plan Host API (#9675) ----------------------------------------
+
+  const planCapabilities = {
+    dbType: "postgres",
+    dbVersion: "15.19",
+    supports: { estimatedPlan: true },
+    limits: { maxTimeoutMs: 60_000, maxPlanBytes: 4 * 1024 * 1024 },
+  };
+
+  function planCall(bridge: PluginHostBridge, target: Window, method: string, params: unknown, id: string): void {
+    bridge.handleWindowMessage({
+      source: target,
+      data: { source: "dbx-plugin", version: 1, type: "request", id, method, params },
+    } as MessageEvent);
+  }
+
+  function planHost() {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const getPlanCapabilities = vi.fn().mockResolvedValue(planCapabilities);
+    const explainPlan = vi.fn().mockResolvedValue({
+      dbType: "postgres",
+      format: "json",
+      rawPlan: [{ Plan: { "Node Type": "Seq Scan" } }],
+      truncated: false,
+      warnings: [],
+    });
+    return { messages, target, getPlanCapabilities, explainPlan };
+  }
+
+  it("requires host.plans:read before any plan call", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const getPlanCapabilities = vi.fn();
+    const explainPlan = vi.fn();
+    // Permission is the only gate: an undeclared plugin must not reach the host
+    // even when the host could serve the request.
+    const bridge = new PluginHostBridge(plugin(), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      getPlanCapabilities,
+      explainPlan,
+    });
+
+    planCall(bridge, target, "host.getPlanCapabilities", { connectionId: "c1" }, "caps");
+    planCall(bridge, target, "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated" }, "plan");
+    await vi.waitFor(() => expect(messages).toHaveLength(2));
+
+    expect(messages[0]).toMatchObject({ id: "caps", error: "Plugin has not declared permission 'host.plans:read'" });
+    expect(messages[1]).toMatchObject({ id: "plan", error: "Plugin has not declared permission 'host.plans:read'" });
+    expect(getPlanCapabilities).not.toHaveBeenCalled();
+    expect(explainPlan).not.toHaveBeenCalled();
+  });
+
+  it("dispatches an estimated plan request and returns the raw plan", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const getPlanCapabilities = vi.fn().mockResolvedValue(planCapabilities);
+    const explainPlan = vi.fn().mockResolvedValue({
+      dbType: "postgres",
+      format: "json",
+      rawPlan: [{ Plan: { "Node Type": "Seq Scan" } }],
+      truncated: true,
+      warnings: ["plan_truncated"],
+    });
+    const bridge = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      getPlanCapabilities,
+      explainPlan,
+    });
+
+    planCall(bridge, target, "host.getPlanCapabilities", { connectionId: "  c1  " }, "caps");
+    planCall(bridge, target, "host.explainPlan", { connectionId: "c1", database: "app", schema: "  ", sql: "  SELECT * FROM orders  ", mode: "estimated", timeoutMs: 1_500.4 }, "plan");
+    await vi.waitFor(() => expect(messages).toHaveLength(2));
+
+    expect(getPlanCapabilities).toHaveBeenCalledWith("c1");
+    // The plugin never sends EXPLAIN text: the host receives the source SQL,
+    // trimmed, with blank scopes dropped rather than forwarded as empty strings.
+    expect(explainPlan).toHaveBeenCalledWith({ connectionId: "c1", database: "app", sql: "SELECT * FROM orders", mode: "estimated", timeoutMs: 1_500 });
+    expect(messages[0]).toMatchObject({ id: "caps", result: planCapabilities });
+    expect(messages[1]).toMatchObject({
+      id: "plan",
+      result: { dbType: "postgres", format: "json", truncated: true, warnings: ["plan_truncated"] },
+    });
+  });
+
+  it("refuses every plan mode other than estimated", async () => {
+    const { messages, target, explainPlan } = planHost();
+    const bridge = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      explainPlan,
+    });
+
+    // Actual plans execute the statement, so an unexpected mode is refused
+    // rather than silently downgraded to an estimated one.
+    for (const [id, mode] of [
+      ["actual", "actual"],
+      ["analyze", "analyze"],
+      ["case", "Estimated"],
+      ["missing", undefined],
+    ] as const) {
+      planCall(bridge, target, "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode }, id);
+    }
+    await vi.waitFor(() => expect(messages).toHaveLength(4));
+
+    for (const message of messages) {
+      expect(message).toMatchObject({ error: 'host.explainPlan serves mode "estimated" only' });
+    }
+    expect(explainPlan).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed plan requests before they reach the host", async () => {
+    const { messages, target, getPlanCapabilities, explainPlan } = planHost();
+    const bridge = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      getPlanCapabilities,
+      explainPlan,
+    });
+
+    const cases: [string, string, unknown, string][] = [
+      ["caps-missing", "host.getPlanCapabilities", {}, "connectionId"],
+      ["caps-blank", "host.getPlanCapabilities", { connectionId: "   " }, "connectionId"],
+      ["caps-type", "host.getPlanCapabilities", { connectionId: 7 }, "connectionId"],
+      ["caps-long", "host.getPlanCapabilities", { connectionId: "c".repeat(257) }, "connectionId"],
+      ["sql-missing", "host.explainPlan", { connectionId: "c1", mode: "estimated" }, "sql"],
+      ["sql-blank", "host.explainPlan", { connectionId: "c1", sql: "  \n ", mode: "estimated" }, "sql"],
+      ["sql-long", "host.explainPlan", { connectionId: "c1", sql: "x".repeat(200_001), mode: "estimated" }, "sql"],
+      ["scope-type", "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated", database: 1 }, "database"],
+      ["timeout-type", "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated", timeoutMs: "soon" }, "timeoutMs"],
+      ["timeout-nan", "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated", timeoutMs: Number.NaN }, "timeoutMs"],
+    ];
+    for (const [id, method, params] of cases) planCall(bridge, target, method, params, id);
+    planCall(bridge, target, "host.explainPlan", "not an object", "params-object");
+    await vi.waitFor(() => expect(messages).toHaveLength(cases.length + 1));
+
+    cases.forEach(([id, , , expected], index) => {
+      expect(messages[index]).toMatchObject({ id });
+      expect((messages[index] as { error?: string }).error).toContain(expected);
+    });
+    expect(messages[cases.length]).toMatchObject({ id: "params-object", error: "host.explainPlan params must be an object" });
+    expect(getPlanCapabilities).not.toHaveBeenCalled();
+    expect(explainPlan).not.toHaveBeenCalled();
+  });
+
+  it("clamps the requested plan timeout to the host ceiling", async () => {
+    const { messages, target, explainPlan } = planHost();
+    const bridge = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      explainPlan,
+    });
+
+    planCall(bridge, target, "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated", timeoutMs: 10 * 60_000 }, "huge");
+    planCall(bridge, target, "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated", timeoutMs: -5 }, "tiny");
+    planCall(bridge, target, "host.explainPlan", { connectionId: "c1", sql: "SELECT 1", mode: "estimated" }, "absent");
+    await vi.waitFor(() => expect(messages).toHaveLength(3));
+
+    expect(explainPlan.mock.calls[0][0].timeoutMs).toBe(60_000);
+    expect(explainPlan.mock.calls[1][0].timeoutMs).toBe(1);
+    // No timeout is a host decision; the bridge must not invent one.
+    expect(explainPlan.mock.calls[2][0]).not.toHaveProperty("timeoutMs");
+  });
+
+  it("advertises the plan API only when the host can serve it", async () => {
+    const messages: any[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const base = { invoke: vi.fn(), notify: vi.fn(), sendBinary: vi.fn(), readAsset: vi.fn() };
+
+    const capable = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, {
+      ...base,
+      getPlanCapabilities: vi.fn().mockResolvedValue(planCapabilities),
+      explainPlan: vi.fn().mockResolvedValue({ dbType: "postgres", format: "json", rawPlan: {}, truncated: false, warnings: [] }),
+    });
+    capable.sendInit();
+    expect(messages[0].capabilities).toMatchObject({ planApi: true });
+
+    // An older host omits the adapters: the plugin must see planApi false and
+    // get an explicit failure instead of a silent no-op.
+    const legacy = new PluginHostBridge(plugin(["host.plans:read"]), workbench, {}, () => target, { ...base });
+    legacy.sendInit();
+    expect(messages[1].capabilities).toMatchObject({ planApi: false });
+    planCall(legacy, target, "host.getPlanCapabilities", { connectionId: "c1" }, "legacy");
+    await vi.waitFor(() => expect(messages).toHaveLength(3));
+    expect(messages[2]).toMatchObject({ id: "legacy", error: "Host plan API is unavailable" });
+  });
+
   it("opens only the owning plugin filesystem with explicit permission", async () => {
     const messages: unknown[] = [];
     const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
@@ -532,6 +731,34 @@ describe("PluginHostBridge", () => {
     expect(closed).toContain("host.stream.chunk");
   });
 
+  it("injects a <base> and widens resource CSP sources for the plugin asset origin", () => {
+    const document = pluginSandboxDocument("<html><head></head><body></body></html>", [], undefined, { baseUrl: "dbx-plugin://localhost/io.github.t8y2.s3/assets/" });
+    expect(document).toContain('<base href="dbx-plugin://localhost/io.github.t8y2.s3/assets/">');
+    expect(document).toContain("script-src 'unsafe-inline' blob: dbx-plugin:;");
+    expect(document).toContain("font-src data: blob: dbx-plugin:;");
+    // <base> leads the head injection so inlined CSS url() resolves against it.
+    expect(document.indexOf("<base ")).toBeLessThan(document.indexOf("<style>"));
+  });
+
+  it("allows the WebView2-mapped asset origin exactly", () => {
+    const document = pluginSandboxDocument("<html><head></head><body></body></html>", [], undefined, { baseUrl: "http://dbx-plugin.localhost/io.github.t8y2.s3/assets/" });
+    expect(document).toContain("script-src 'unsafe-inline' blob: http://dbx-plugin.localhost;");
+    expect(document).toContain('<base href="http://dbx-plugin.localhost/io.github.t8y2.s3/assets/">');
+  });
+
+  it("rejects malformed asset base URLs without touching the CSP", () => {
+    const document = pluginSandboxDocument("<html><head></head><body></body></html>", [], undefined, { baseUrl: "javascript:alert(1)" });
+    expect(document).not.toContain("<base ");
+    expect(document).toContain("script-src 'unsafe-inline' blob:;");
+  });
+
+  it("keeps the sandbox CSP untouched without an asset base URL", () => {
+    const document = pluginSandboxDocument("<html><head></head><body></body></html>");
+    expect(document).toContain("script-src 'unsafe-inline' blob:;");
+    expect(document).toContain("font-src data: blob:;");
+    expect(document).not.toContain("<base ");
+  });
+
   it("pre-seeds the current theme as the sandbox first paint", () => {
     const themed = pluginSandboxDocument("<html><head></head><body></body></html>", ["host.events"], { appearance: "dark", tokens: { "--color-background": "#131416", "--color-foreground": "rgb(215 215 219)" } });
     expect(themed).toContain("color-scheme: dark");
@@ -656,6 +883,83 @@ describe("PluginHostBridge", () => {
     expect(messages[0]).toMatchObject({ id: "nocopy", error: "Host clipboard is unavailable" });
   });
 
+  it("routes host.storage through the owning plugin, caps values, and needs the declared permission", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const storageGet = vi.fn().mockResolvedValue({ mode: "dark" });
+    const storageSet = vi.fn().mockResolvedValue(undefined);
+    const storageDelete = vi.fn().mockResolvedValue(undefined);
+    const send = (bridge: PluginHostBridge, id: string, method: string, params: unknown) => bridge.handleWindowMessage({ source: target, data: { source: "dbx-plugin", version: 1, type: "request", id, method, params } } as MessageEvent);
+
+    // No declared host.storage permission: every call is refused up front.
+    const denied = new PluginHostBridge(plugin(), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      storageGet,
+      storageSet,
+      storageDelete,
+    });
+    send(denied, "denied", "host.storageGet", { key: "theme" });
+    await vi.waitFor(() => expect(messages).toHaveLength(1));
+    expect(messages[0]).toMatchObject({ id: "denied", error: "Plugin has not declared permission 'host.storage'" });
+    expect(storageGet).not.toHaveBeenCalled();
+
+    const bridge = new PluginHostBridge(plugin(["host.storage"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      storageGet,
+      storageSet,
+      storageDelete,
+    });
+    bridge.sendInit();
+    expect((messages[1] as { capabilities?: { storage?: boolean } }).capabilities?.storage).toBe(true);
+
+    send(bridge, "get", "host.storageGet", { key: "theme" });
+    await vi.waitFor(() => expect(storageGet).toHaveBeenCalledWith("sample", "theme"));
+    await vi.waitFor(() => expect(messages[2]).toMatchObject({ id: "get", result: { mode: "dark" } }));
+
+    send(bridge, "set", "host.storageSet", { key: "theme", value: { mode: "light" } });
+    await vi.waitFor(() => expect(storageSet).toHaveBeenCalledWith("sample", "theme", { mode: "light" }));
+    await vi.waitFor(() => expect(messages[3]).toMatchObject({ id: "set", result: null }));
+
+    send(bridge, "delete", "host.storageDelete", { key: "theme" });
+    await vi.waitFor(() => expect(storageDelete).toHaveBeenCalledWith("sample", "theme"));
+
+    // `undefined` values normalize to null so the entry round-trips as JSON.
+    send(bridge, "nullish", "host.storageSet", { key: "empty", value: null });
+    await vi.waitFor(() => expect(storageSet).toHaveBeenLastCalledWith("sample", "empty", null));
+
+    send(bridge, "badkey", "host.storageGet", { key: "" });
+    send(bridge, "bigvalue", "host.storageSet", { key: "blob", value: "x".repeat(256 * 1024 + 1) });
+    await vi.waitFor(() => expect(messages).toHaveLength(8));
+    const byId = new Map(messages.map((message) => [(message as { id?: string }).id, message]));
+    expect(byId.get("badkey")).toMatchObject({ id: "badkey", error: "storage key is invalid" });
+    expect(String((byId.get("bigvalue") as { error?: string }).error)).toMatch(/value exceeds/);
+  });
+
+  it("does not advertise or serve host.storage without the host implementation", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const bridge = new PluginHostBridge(plugin(["host.storage"]), workbench, {}, () => target, {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+    });
+    bridge.sendInit();
+    expect((messages[0] as { capabilities?: { storage?: boolean } }).capabilities?.storage).toBe(false);
+    bridge.handleWindowMessage({
+      source: target,
+      data: { source: "dbx-plugin", version: 1, type: "request", id: "nostorage", method: "host.storageGet", params: { key: "theme" } },
+    } as MessageEvent);
+    await vi.waitFor(() => expect(messages).toHaveLength(2));
+    expect(messages[1]).toMatchObject({ id: "nostorage", error: "Host storage is unavailable" });
+  });
+
   it("rejects host.saveFile without payload or host support", async () => {
     const messages: unknown[] = [];
     const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
@@ -684,7 +988,11 @@ describe("PluginHostBridge", () => {
 
 describe("plugin SDK source", () => {
   interface SdkWindow {
-    dbxPlugin?: { invoke: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown> };
+    dbxPlugin?: {
+      invoke: (method: string, params?: unknown, options?: { timeoutMs?: number }) => Promise<unknown>;
+      getPlanCapabilities: (connectionId: string) => Promise<unknown>;
+      explainPlan: (request: unknown) => Promise<unknown>;
+    };
   }
 
   function loadSdk(posted: unknown[], initialTheme?: { appearance: "dark" | "light"; tokens: Record<string, string> }): SdkWindow {
@@ -751,5 +1059,97 @@ describe("plugin SDK source", () => {
     expect(params.count).toBe(3);
     expect(params.stamp).toBeInstanceOf(Date);
     expect(params.nested).toBeInstanceOf(Map);
+  });
+
+  it("exposes the plan Host API to plugin UI without defaulting the mode", () => {
+    const posted: unknown[] = [];
+    const { dbxPlugin } = loadSdk(posted);
+
+    void dbxPlugin!.getPlanCapabilities("c1");
+    void dbxPlugin!.explainPlan({ connectionId: "c1", sql: "SELECT 1", mode: "estimated" });
+    const requests = posted.filter((message) => (message as { type: string }).type === "request") as {
+      method: string;
+      params: Record<string, unknown>;
+    }[];
+
+    expect(requests.map((request) => request.method)).toEqual(["host.getPlanCapabilities", "host.explainPlan"]);
+    expect(requests[0].params).toEqual({ connectionId: "c1" });
+    // The SDK forwards the mode verbatim: defaulting it would let a plugin reach
+    // a plan mode it never asked for.
+    expect(requests[1].params).toEqual({ connectionId: "c1", sql: "SELECT 1", mode: "estimated" });
+  });
+
+  it("forwards fileTransfer requests to the host api", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const api = {
+      invoke: vi.fn(),
+      notify: vi.fn(),
+      sendBinary: vi.fn(),
+      readAsset: vi.fn(),
+      pickFiles: vi.fn().mockResolvedValue([{ handleId: "t1", name: "a.txt", size: 1, contentType: "text/plain" }]),
+      readFileChunk: vi.fn().mockResolvedValue({ dataBase64: "YQ==", length: 1, eof: true }),
+      beginFileSave: vi.fn().mockResolvedValue({ handleId: "t2", chunkBytes: 4 }),
+      writeFileChunk: vi.fn().mockResolvedValue({ written: 2, nextOffset: 2 }),
+      finishFileSave: vi.fn().mockResolvedValue(undefined),
+      closeFileHandle: vi.fn().mockResolvedValue(undefined),
+    };
+    const bridge = new PluginHostBridge(plugin(), workbench, {}, () => target, api);
+
+    const request = (id: string, method: string, params: unknown, data?: ArrayBuffer) => {
+      bridge.handleWindowMessage({ source: target, data: { source: "dbx-plugin", version: 1, type: "request", id, method, params, data } } as MessageEvent);
+    };
+    request("1", "host.pickFiles", { multiple: true });
+    request("2", "host.readFileChunk", { handleId: "t1", offset: 0, length: 10 });
+    request("3", "host.beginFileSave", { name: "out.bin" });
+    request("4", "host.writeFileChunk", { handleId: "t2", offset: 0 }, new ArrayBuffer(2));
+    request("5", "host.finishFileSave", { handleId: "t2" });
+    request("6", "host.closeFileHandle", { handleId: "t1" });
+
+    await vi.waitFor(() => expect(messages.filter((message) => (message as { type?: string }).type === "response")).toHaveLength(6));
+    expect(api.pickFiles).toHaveBeenCalledWith("sample", { multiple: true });
+    expect(api.readFileChunk).toHaveBeenCalledWith("sample", "t1", 0, 10);
+    expect(api.beginFileSave).toHaveBeenCalledWith("sample", { name: "out.bin", contentType: undefined, size: undefined });
+    expect(api.writeFileChunk).toHaveBeenCalledWith("sample", "t2", 0, expect.any(Uint8Array));
+    expect(api.finishFileSave).toHaveBeenCalledWith("sample", "t2");
+    expect(api.closeFileHandle).toHaveBeenCalledWith("sample", "t1");
+    for (const message of messages) expect((message as { error?: string }).error).toBeUndefined();
+  });
+
+  it("resolves a cancelled beginFileSave to null", async () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const bridge = new PluginHostBridge(plugin(), workbench, {}, () => target, { invoke: vi.fn(), notify: vi.fn(), sendBinary: vi.fn(), readAsset: vi.fn(), beginFileSave: vi.fn().mockResolvedValue(null) });
+
+    bridge.handleWindowMessage({ source: target, data: { source: "dbx-plugin", version: 1, type: "request", id: "1", method: "host.beginFileSave", params: { name: "out.bin" } } } as MessageEvent);
+
+    await vi.waitFor(() => expect(messages.filter((message) => (message as { type?: string }).type === "response")).toHaveLength(1));
+    expect(messages[0]).toMatchObject({ type: "response", id: "1", result: null });
+  });
+
+  it("pushes drag state and opened drop handles to the plugin", () => {
+    const messages: unknown[] = [];
+    const target = { postMessage: (message: unknown) => messages.push(message) } as unknown as Window;
+    const bridge = new PluginHostBridge(plugin(), workbench, {}, () => target, { invoke: vi.fn(), notify: vi.fn(), sendBinary: vi.fn(), readAsset: vi.fn() });
+
+    bridge.forwardDragState(true);
+    bridge.forwardFileDrop([{ handleId: "t1", name: "a.txt", size: 1, contentType: "text/plain" }]);
+
+    expect(messages[0]).toMatchObject({ source: "dbx-host", version: 1, type: "dragstate", active: true });
+    expect(messages[1]).toMatchObject({ source: "dbx-host", version: 1, type: "filedrop", files: [{ handleId: "t1", name: "a.txt" }] });
+  });
+
+  it("sdk exposes the fileTransfer namespace and drop listeners", () => {
+    const source = pluginSdkSource();
+    expect(source).toContain("fileTransfer");
+    expect(source).toContain("host.pickFiles");
+    expect(source).toContain("host.readFileChunk");
+    expect(source).toContain("host.beginFileSave");
+    expect(source).toContain("host.writeFileChunk");
+    expect(source).toContain("host.finishFileSave");
+    expect(source).toContain("onDrop");
+    expect(source).toContain("onDragState");
+    expect(source).toContain("type === 'filedrop'");
+    expect(source).toContain("type === 'dragstate'");
   });
 });
