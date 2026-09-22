@@ -129,6 +129,7 @@ const DamengJobAdmin = defineAsyncComponent(() => import("@/components/admin/Dam
 
 const DamengUserAdmin = defineAsyncComponent(() => import("@/components/admin/DamengUserAdmin.vue"));
 const DamengRoleAdmin = defineAsyncComponent(() => import("@/components/admin/DamengRoleAdmin.vue"));
+const SolrAdmin = defineAsyncComponent(() => import("@/components/solr/SolrAdmin.vue"));
 const PluginFilesystemTab = defineAsyncComponent(() => import("@/components/plugins/PluginFilesystemTab.vue"));
 const ExplainPlanViewer = defineAsyncComponent(() => import("@/components/explain/ExplainPlanViewer.vue"));
 const QueryChart = defineAsyncComponent(() => import("@/components/chart/QueryChart.vue"));
@@ -170,7 +171,9 @@ import { elasticsearchJsonResponseForResult } from "@/lib/elasticsearch/elastics
 import { elasticsearchProfileBodyForResult, parseElasticsearchProfile } from "@/lib/elasticsearch/elasticsearchProfile";
 import * as api from "@/lib/backend/api";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
-import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaseline, buildMongoUpdateDocument, formatMongoShellLiteral, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
+import { queryResultExportBaseName } from "@/lib/export/saveTextFile";
+import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaseline, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
+import { buildMongoQueryResultOperations, formatMongoQueryResultOperationPreview } from "@/lib/mongo/mongoQueryResultEditing";
 import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
 import { isDataGridToolbarCompact, type DataGridReloadIntent } from "@/lib/dataGrid/dataGridToolbar";
 import { useTabScroll } from "@/composables/useTabScroll";
@@ -420,6 +423,10 @@ function increaseTableFontSize() {
   setTableFontSize(tableFontSize.value + 1);
 }
 
+/** Export file base name for the query result grid: the result's label (nearby
+ *  comment or `schema.table`) names exports, matching the result tab (#9894). */
+const activeQueryResultExportBaseName = computed(() => queryResultExportBaseName(props.activeTab.result?.sourceLabel, props.activeTab.title));
+
 const activeTabDimension = computed(() => {
   const tab = props.activeTab;
   if (!tab.connectionId || tab.mode !== "vector") return undefined;
@@ -505,7 +512,7 @@ const activeStatementExecutionMarkers = computed(() =>
 const activeElasticsearchJsonResponse = computed(() => elasticsearchJsonResponseForResult(activeEffectiveDatabaseType.value, activeResultSql.value, props.activeTab.result));
 /** Whether the active result is an Elasticsearch _source table that also has a raw JSON toggle. */
 const activeElasticsearchRawBody = computed(() => {
-  if (activeEffectiveDatabaseType.value !== "elasticsearch" && activeEffectiveDatabaseType.value !== "easysearch") return undefined;
+  if (activeEffectiveDatabaseType.value !== "elasticsearch" && activeEffectiveDatabaseType.value !== "easysearch" && activeEffectiveDatabaseType.value !== "solr") return undefined;
   return props.activeTab.result?.elasticsearch_raw_body;
 });
 /** ES `_search?profile=true` body extracted from the active result, when present. */
@@ -626,50 +633,30 @@ type MongoQueryGridChanges = {
   columns: string[];
   rows: MongoInputValue[][];
 };
-function mongoCollectionExpression(collection: string): string {
-  return `db.getCollection(${JSON.stringify(collection)})`;
-}
-function mongoQueryResultDocumentId(rowIdx: number, fallback: unknown): unknown {
-  const document = props.activeTab.result?.mongo_documents?.[rowIdx];
-  if (!document || typeof document !== "object" || Array.isArray(document)) return fallback;
-  return (document as Record<string, unknown>)._id ?? fallback;
-}
 const mongoQueryResultSaveHandler = computed<CustomSaveHandler | undefined>(() => {
   const tab = props.activeTab;
   const target = tab.mongoEditTarget;
   if (tab.mode !== "query" || activeEffectiveDatabaseType.value !== "mongodb" || !target || !activeResultConnectionId.value || !activeResultDatabase.value || !tab.result) return undefined;
   if (!tab.result.columns.includes(target.idColumn)) return undefined;
 
+  const editTarget = { idColumn: target.idColumn, documentAt: (rowIdx: number) => tab.result?.mongo_documents?.[rowIdx] };
+
   const save: CustomSaveHandler["save"] = async (changes: MongoQueryGridChanges) => {
-    if (changes.newRows.length > 0 || changes.deletedRows.size > 0) {
-      throw new Error("MongoDB query result editing only supports updating existing rows.");
+    if (changes.newRows.length > 0) {
+      throw new Error("MongoDB query result editing does not support inserting rows.");
     }
-    const idColIdx = changes.columns.indexOf(target.idColumn);
-    if (idColIdx < 0) throw new Error("No _id column");
-    for (const [rowIdx, dirtyCols] of changes.dirtyRows) {
-      const row = changes.rows[rowIdx];
-      const id = row?.[idColIdx];
-      if (id === null || id === undefined || String(id).trim() === "") continue;
-      const updateDoc = buildMongoUpdateDocument(dirtyCols, changes.columns, tab.result?.mongo_documents?.[rowIdx]);
-      if (Object.keys(updateDoc).length === 0) continue;
-      await api.mongoUpdateDocument(activeResultConnectionId.value, activeResultDatabase.value, target.collection, serializeMongoDocumentId(mongoQueryResultDocumentId(rowIdx, id)), JSON.stringify(updateDoc));
+    if (!changes.columns.includes(target.idColumn)) throw new Error("No _id column");
+    for (const operation of buildMongoQueryResultOperations(changes, editTarget)) {
+      const id = serializeMongoDocumentId(operation.id);
+      if (operation.kind === "delete") {
+        await api.mongoDeleteDocument(activeResultConnectionId.value, activeResultDatabase.value, target.collection, id);
+      } else {
+        await api.mongoUpdateDocument(activeResultConnectionId.value, activeResultDatabase.value, target.collection, id, JSON.stringify(operation.update));
+      }
     }
   };
 
-  const preview: CustomSaveHandler["preview"] = async (changes: MongoQueryGridChanges) => {
-    const idColIdx = changes.columns.indexOf(target.idColumn);
-    if (idColIdx < 0) return [];
-    const stmts: string[] = [];
-    for (const [rowIdx, dirtyCols] of changes.dirtyRows) {
-      const row = changes.rows[rowIdx];
-      const id = row?.[idColIdx];
-      if (id === null || id === undefined || String(id).trim() === "") continue;
-      const updateDoc = buildMongoUpdateDocument(dirtyCols, changes.columns, tab.result?.mongo_documents?.[rowIdx]);
-      if (Object.keys(updateDoc).length === 0) continue;
-      stmts.push(`${mongoCollectionExpression(target.collection)}.updateOne({_id: ${formatMongoShellLiteral(mongoQueryResultDocumentId(rowIdx, id))}}, ${formatMongoShellLiteral(updateDoc)})`);
-    }
-    return stmts;
-  };
+  const preview: CustomSaveHandler["preview"] = async (changes: MongoQueryGridChanges) => buildMongoQueryResultOperations(changes, editTarget).map((operation) => formatMongoQueryResultOperationPreview(target.collection, operation));
 
   const applySavedChanges: NonNullable<CustomSaveHandler["applySavedChanges"]> = ({ dirtyRows, columns }) => {
     const documents = tab.result?.mongo_documents;
@@ -696,7 +683,7 @@ const mongoQueryResultSaveHandler = computed<CustomSaveHandler | undefined>(() =
     }
   };
 
-  return { save, preview, applySavedChanges, canInsert: false, canDelete: false, supportsInsert: false, readonlyColumns: [target.idColumn], targetLabel: target.collection };
+  return { save, preview, applySavedChanges, canInsert: false, canDelete: true, supportsInsert: false, readonlyColumns: [target.idColumn], targetLabel: target.collection };
 });
 const resultsPaneOpen = ref(false);
 const resultsPaneSize = ref(Number(safeLocalStorageGet("dbx-results-pane-size")) || DEFAULT_QUERY_RESULTS_PANE_SIZE);
@@ -964,6 +951,24 @@ function onHandleViewTableData(target: SqlObjectNavigationTarget) {
   emit("viewTableData", props.activeTab.id, target);
 }
 
+/**
+ * The structure/DDL editor only owns the object identity, so build the
+ * navigation target from the active tab and reuse the same "view data" path as
+ * the SQL editor context menu (issue #6724).
+ */
+function onHandleStructureViewData() {
+  const tab = props.activeTab;
+  const meta = tab.tableMeta;
+  const tableName = tab.structureTableName || meta?.tableName;
+  if (!tableName) return;
+  emit("viewTableData", tab.id, {
+    name: tableName,
+    database: meta?.database || tab.database,
+    schema: meta?.schema || tab.schema,
+    type: tab.structureTableType === "view" ? "view" : "table",
+  });
+}
+
 function onHandleViewTableDdl(target: SqlObjectNavigationTarget) {
   emit("viewTableDdl", props.activeTab.id, target);
 }
@@ -1029,6 +1034,10 @@ function refreshData(): boolean {
   if (props.activeTab.mode === "plugin-filesystem") {
     void pluginFilesystemTabRef.value?.refresh();
     return true;
+  }
+  if (props.activeTab.objectSource || props.activeTab.sourceLoad) {
+    if (queryStore.isTabDirty(props.activeTab) && !window.confirm(t("objects.refreshDiscardConfirm"))) return false;
+    return queryStore.refreshObjectSourceTab(props.activeTab.id);
   }
   // Restored data tabs intentionally omit row data, so refresh must work before DataGrid mounts.
   if (canReloadUnavailableDataTab(props.activeTab)) {
@@ -2141,7 +2150,7 @@ defineExpose({
                   }) => queryStore.buildQueryResultExportRequest(activeTab.id, options)
                 "
                 :all-export-results="allResultExportSheets"
-                :export-file-base-name="activeTab.title"
+                :export-file-base-name="activeQueryResultExportBaseName"
                 @update:order-by-input="(v: string) => (activeTab.orderByInput = v)"
                 @local-column-filters-change="(filters: Record<string, string[]>) => queryStore.updateDataGridLocalColumnFilters(activeTab.id, filters)"
                 @reload="(sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent) => emit('reload', activeTab.id, sql, searchText, whereInput, orderBy, limit, offset, intent)"
@@ -2806,6 +2815,7 @@ defineExpose({
           @saved="(commentChanged) => emit('structureEditorSaved', activeTab.id, commentChanged)"
           @close="emit('structureEditorClose', activeTab.id)"
           @open-settings="(initialTab, initialSection) => emit('openSettings', initialTab, initialSection)"
+          @view-data="onHandleStructureViewData"
         />
       </div>
     </template>
@@ -2843,6 +2853,12 @@ defineExpose({
     <template v-else-if="activeTab.mode === 'nacos-dashboard'">
       <div class="min-h-0 flex-1">
         <NacosDashboard :key="activeTab.id" :connection-id="activeTab.connectionId" />
+      </div>
+    </template>
+
+    <template v-else-if="activeTab.mode === 'solr-admin'">
+      <div class="min-h-0 flex-1">
+        <SolrAdmin :key="activeTab.id" :connection-id="activeTab.connectionId" />
       </div>
     </template>
 

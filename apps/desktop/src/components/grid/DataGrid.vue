@@ -45,6 +45,7 @@ import {
   RefreshCw,
   RefreshCcw,
   TableProperties,
+  Network,
   UserRound,
   Database,
   Eraser,
@@ -91,10 +92,11 @@ import TemporalCellEditor from "@/components/grid/TemporalCellEditor.vue";
 import EnumCellEditor from "@/components/grid/EnumCellEditor.vue";
 import DataGridReadonlyTextSelection from "@/components/grid/DataGridReadonlyTextSelection.vue";
 import GridSnapshotDialog from "@/components/grid/GridSnapshotDialog.vue";
-import type { QueryResult, ColumnInfo, ConstraintInfo, DatabaseType, ForeignKeyInfo, IndexInfo, TriggerInfo, TableInfoTab, QueryResultSourceColumnRef, QueryPageJumpProgress } from "@/types/database";
+import type { QueryResult, ColumnInfo, ConstraintInfo, DatabaseType, ForeignKeyInfo, IndexInfo, ObjectStatistics, PgTablePartitioning, TriggerInfo, TableInfoTab, QueryResultSourceColumnRef, QueryPageJumpProgress } from "@/types/database";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
 import { shouldNavigateFromTableInfoColumnClick } from "@/lib/table/tableInfoColumnNavigation";
 import { tableInfoTabForDrawerToggle } from "@/lib/table/tableInfoTabPreference";
+import { findTableStatistics } from "@/lib/dataGrid/tableInfoOverview";
 import * as api from "@/lib/backend/api";
 import { formatElapsedSeconds } from "@/lib/common/elapsedTime";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
@@ -6057,6 +6059,7 @@ const {
   restoreDetailOriginalValue,
   setValueEditorNull,
   formatValueEditorJson,
+  formatDetailJsonDraft,
   compactDetailJson,
   openDetailJsonCompare,
   setDetailNull,
@@ -10370,6 +10373,13 @@ const tableOwner = ref<string | null>(null);
 const tableOwnerLoading = ref(false);
 const tableOwnerError = ref("");
 const tableOwnerRequestGeneration = ref(0);
+// Overview tab state: row/size statistics plus the table comment, loaded lazily
+// when the tab is first selected.
+const tableOverviewStats = ref<ObjectStatistics | null>(null);
+const tableOverviewComment = ref<string | null>(null);
+const tableOverviewLoading = ref(false);
+const tableOverviewLoaded = ref(false);
+const tableOverviewRequestGeneration = ref(0);
 const canShowTableOwner = computed(() => resolvedDatabaseType.value === "postgres" && !!props.connectionId && !!props.database && !!props.tableMeta?.schema && !!props.tableMeta?.tableName);
 
 function scrollDdlSearchMatchIntoView(match: HTMLElement) {
@@ -10464,16 +10474,28 @@ const constraintsLoaded = ref(false);
 const constraintsLoading = ref(false);
 const constraintsError = ref("");
 const constraintsRequestGeneration = ref(0);
+const partitioning = ref<PgTablePartitioning | null>(null);
+const partitioningLoaded = ref(false);
+const partitioningLoading = ref(false);
+const partitioningError = ref("");
+const partitioningRequestGeneration = ref(0);
+// The Partitions tab is only offered for tables that actually are partitioned
+// (a partitioned parent or a member partition). Probed lazily with the cheap
+// partition-status query, not the full tree.
+const isPartitionedTable = ref(false);
+const partitionStatusResolved = ref(false);
 // The Constraints tab hides foreign keys when a dedicated Foreign Keys tab is
 // also shown (each constraint appears once; FK navigation stays in that tab).
 const constraintsForTab = computed(() => constraintsForConstraintsTab(constraints.value, tableMetadataCapabilities.value.foreignKeys));
 const searchQuery = ref("");
 const activeTableInfoLoading = computed(() => {
+  if (activeTableInfoTab.value === "info") return tableOverviewLoading.value;
   if (activeTableInfoTab.value === "ddl") return ddlLoading.value;
   if (activeTableInfoTab.value === "columns") return tableInfoColumnsLoading.value;
   if (activeTableInfoTab.value === "indexes") return indexesLoading.value;
   if (activeTableInfoTab.value === "foreignKeys") return foreignKeysLoading.value;
   if (activeTableInfoTab.value === "constraints") return constraintsLoading.value;
+  if (activeTableInfoTab.value === "partitions") return partitioningLoading.value;
   return activeTableInfoTab.value === "triggers" && triggersLoading.value;
 });
 const cellDetailPanelLayout = computed(() => settingsStore.editorSettings.cellDetailPanelLayout);
@@ -10576,6 +10598,30 @@ const mongoConnectionConfig = resolvedConnectionConfig;
 const canManageMongoIndexes = computed(() => resolvedDatabaseType.value === "mongodb" && !!props.connectionId && !!props.database && !!props.tableMeta?.tableName && supportsMongoIndexMutations(mongoConnectionConfig.value, props.tableMeta?.tableType));
 const canShowTableIndexes = computed(() => tableMetadataCapabilities.value.indexes && (resolvedDatabaseType.value !== "mongodb" || mongoCollectionSupportsIndexes(props.tableMeta?.tableType)));
 
+async function probeTablePartitionStatus() {
+  const connectionId = props.connectionId;
+  const database = props.database;
+  const schema = props.tableMeta?.schema || props.database || "";
+  const tableName = props.tableMeta?.tableName;
+  const identity = currentIndexTableIdentity.value;
+  if (!tableMetadataCapabilities.value.partitions || !connectionId || !database || !tableName || !identity) {
+    isPartitionedTable.value = false;
+    partitionStatusResolved.value = true;
+    return;
+  }
+  try {
+    const status = await api.getTablePartitionStatus(connectionId, database, schema, tableName);
+    if (identity !== currentIndexTableIdentity.value) return;
+    isPartitionedTable.value = status.isPartitionedParent || status.isPartition;
+  } catch {
+    // Fail closed: hide the tab rather than offering one that cannot load.
+    if (identity !== currentIndexTableIdentity.value) return;
+    isPartitionedTable.value = false;
+  } finally {
+    if (identity === currentIndexTableIdentity.value) partitionStatusResolved.value = true;
+  }
+}
+
 const metadataLoaders = useDataGridTableMetadataLoaders({
   props,
   state: {
@@ -10602,6 +10648,11 @@ const metadataLoaders = useDataGridTableMetadataLoaders({
     constraintsLoaded,
     constraintsLoading,
     constraintsError,
+    partitioning,
+    partitioningLoaded,
+    partitioningLoading,
+    partitioningError,
+    partitioningRequestGeneration,
     tableInfoColumnsRequestGeneration,
     tableOwnerRequestGeneration,
     indexesRequestGeneration,
@@ -10618,10 +10669,42 @@ const metadataLoaders = useDataGridTableMetadataLoaders({
   toastMongoIndexRefreshError: (message) => toast(t("contextMenu.mongoIndexRefreshFailed", { message }), 5000),
 });
 
-const { fetchDdl, fetchTableInfoColumns, fetchTableOwner, currentIndexTableIdentity, fetchIndexes, refreshMongoIndexMetadataAfterMutation, currentForeignKeyTableIdentity, fetchForeignKeys: fetchForeignKeysMetadata, fetchTriggers, fetchConstraints } = metadataLoaders;
+const { fetchDdl, fetchTableInfoColumns, fetchTableOwner, currentIndexTableIdentity, fetchIndexes, refreshMongoIndexMetadataAfterMutation, currentForeignKeyTableIdentity, fetchForeignKeys: fetchForeignKeysMetadata, fetchTriggers, fetchConstraints, fetchPartitions } = metadataLoaders;
+
+async function fetchTableOverview(force = false) {
+  const connectionId = props.connectionId;
+  const database = props.database;
+  const schema = props.tableMeta?.schema;
+  const tableName = props.tableMeta?.tableName;
+  if (!connectionId || !database || !tableName) return;
+  if (!force && tableOverviewLoaded.value) return;
+  const generation = ++tableOverviewRequestGeneration.value;
+  tableOverviewLoading.value = true;
+  try {
+    // Both lookups are best-effort: drivers without statistics support simply
+    // leave the corresponding rows hidden in the overview tab.
+    const [stats, comment] = await Promise.all([
+      api.listObjectStatistics(connectionId, database, schema ?? "").catch((error) => {
+        console.debug("table overview statistics unavailable", error);
+        return [] as ObjectStatistics[];
+      }),
+      api.getTableComment(connectionId, database, schema ?? "", tableName, props.tableMeta?.catalog).catch((error) => {
+        console.debug("table overview comment unavailable", error);
+        return null;
+      }),
+    ]);
+    if (generation !== tableOverviewRequestGeneration.value) return;
+    tableOverviewStats.value = findTableStatistics(stats, tableName, schema) ?? null;
+    tableOverviewComment.value = comment || null;
+    tableOverviewLoaded.value = true;
+  } finally {
+    if (generation === tableOverviewRequestGeneration.value) tableOverviewLoading.value = false;
+  }
+}
 tableMetadataLoaderFetchForeignKeys = fetchForeignKeysMetadata;
 const tableInfoTabs = computed(() => {
   const tabs: TableInfoTabItem[] = [];
+  tabs.push({ id: "info", label: t("grid.tableInfoOverview"), icon: Info });
   if (tableMetadataCapabilities.value.ddl) {
     tabs.push({ id: "ddl", label: "DDL", icon: Code2 });
   }
@@ -10665,6 +10748,14 @@ const tableInfoTabs = computed(() => {
       count: triggers.value.length,
     });
   }
+  if (tableMetadataCapabilities.value.partitions && isPartitionedTable.value) {
+    tabs.push({
+      id: "partitions",
+      label: t("structureEditor.partitions"),
+      icon: Network,
+      count: partitioning.value?.partitions.length,
+    });
+  }
   return tabs;
 });
 const tableInfoTabListStyle = computed(() => ({
@@ -10688,16 +10779,22 @@ function toggleTableInfoDrawerPinned() {
 }
 
 async function selectTableInfoTab(tab: TableInfoTab) {
+  // The drawer is often opened after the table was already selected, so the
+  // partition status may never have been probed; do it here (once) before the
+  // tab list is consulted, or the Partitions tab would be missing entirely.
+  if (!partitionStatusResolved.value) await probeTablePartitionStatus();
   const tabSupported = tableInfoTabs.value.some((item) => item.id === tab);
   const nextTab = tabSupported ? tab : tableInfoTabs.value[0]?.id;
   if (!nextTab) return;
   activeTableInfoTab.value = nextTab;
   if (tabSupported) settingsStore.updateEditorSettings({ tableInfoActiveTab: tab });
-  if (nextTab === "ddl") await fetchDdl();
+  if (nextTab === "info") await fetchTableOverview();
+  else if (nextTab === "ddl") await fetchDdl();
   else if (nextTab === "indexes") await fetchIndexes();
   else if (nextTab === "foreignKeys") await fetchForeignKeys();
   else if (nextTab === "constraints") await fetchConstraints();
   else if (nextTab === "triggers") await fetchTriggers();
+  else if (nextTab === "partitions") await fetchPartitions();
 }
 
 watch(
@@ -10722,7 +10819,10 @@ async function refreshActiveTableInfo() {
   if (!showTableInfo.value || !props.tableMeta) return;
   if (canShowTableOwner.value) void fetchTableOwner(true);
 
-  if (activeTableInfoTab.value === "ddl") await fetchDdl(true);
+  if (activeTableInfoTab.value === "info") {
+    tableOverviewLoaded.value = false;
+    await fetchTableOverview();
+  } else if (activeTableInfoTab.value === "ddl") await fetchDdl(true);
   else if (activeTableInfoTab.value === "columns") await fetchTableInfoColumns(true);
   else if (activeTableInfoTab.value === "indexes") {
     indexesLoaded.value = false;
@@ -10736,6 +10836,9 @@ async function refreshActiveTableInfo() {
   } else if (activeTableInfoTab.value === "triggers") {
     triggersLoaded.value = false;
     await fetchTriggers();
+  } else if (activeTableInfoTab.value === "partitions") {
+    partitioningLoaded.value = false;
+    await fetchPartitions(true);
   }
 }
 
@@ -10749,6 +10852,11 @@ watch(
     tableOwnerLoading.value = false;
     tableOwnerError.value = "";
     tableOwnerRequestGeneration.value += 1;
+    tableOverviewStats.value = null;
+    tableOverviewComment.value = null;
+    tableOverviewLoading.value = false;
+    tableOverviewLoaded.value = false;
+    tableOverviewRequestGeneration.value += 1;
     rawDdlContent.value = "";
     indexes.value = [];
     indexesLoaded.value = false;
@@ -10768,6 +10876,13 @@ watch(
     constraintsLoading.value = false;
     constraintsError.value = "";
     constraintsRequestGeneration.value += 1;
+    partitioning.value = null;
+    partitioningLoaded.value = false;
+    partitioningLoading.value = false;
+    partitioningError.value = "";
+    partitioningRequestGeneration.value += 1;
+    isPartitionedTable.value = false;
+    partitionStatusResolved.value = false;
     // 表身份变更后，主动触发索引加载，确保索引指示器在切换表后立即可见
     if (showIndexIndicatorsInHeader.value && canShowTableIndexes.value && currentIndexTableIdentity.value) {
       void fetchIndexes();
@@ -11103,7 +11218,7 @@ function copyDdl() {
 
 function openTableStructureEditor() {
   if (!props.connectionId || !props.database || !props.tableMeta?.tableName || !canOpenTableStructureEditor.value) return;
-  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, activeTableInfoTab.value, undefined, props.tableMeta.catalog);
+  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, activeTableInfoTab.value, undefined, props.tableMeta.catalog, (props.tableMeta.tableType || "").toUpperCase() === "VIEW" ? "view" : "table");
 }
 
 function toggleDdlWrap() {
@@ -13608,6 +13723,13 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               v-if="activeTableInfoTab !== 'ddl'"
               :active-tab="activeTableInfoTab"
               :search-query="searchQuery"
+              :table-name="props.tableMeta?.tableName ?? ''"
+              :table-schema="props.tableMeta?.schema ?? ''"
+              :database="props.database ?? ''"
+              :table-owner="tableOwner"
+              :overview-stats="tableOverviewStats"
+              :overview-comment="tableOverviewComment"
+              :overview-loading="tableOverviewLoading"
               :columns="filteredColumns"
               :columns-loading="tableInfoColumnsLoading"
               :indexes="filteredIndexes"
@@ -13623,6 +13745,9 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               :constraints="filteredConstraints"
               :constraints-loading="constraintsLoading"
               :constraints-error="constraintsError"
+              :partitioning="partitioning"
+              :partitions-loading="partitioningLoading"
+              :partitions-error="partitioningError"
               :is-protected-mongo-index="isProtectedMongoIndex"
               :format-column-type="gaussdbMColumnType"
               :can-copy-index-sql="canCopyIndexSql"
@@ -13700,6 +13825,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 :can-copy-sql-condition="canCopyPreparedDetailSqlCondition"
                 :database-type="resolvedDatabaseType"
                 @start-edit="startDetailEdit"
+                @format-json="formatDetailJsonDraft"
                 @compact-json="compactDetailJson"
                 @compare-json="openDetailJsonCompare"
                 @toggle-formatted="toggleCellDetailJsonFormatted"

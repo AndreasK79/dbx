@@ -110,6 +110,7 @@ pub enum PoolKind {
     SqlServer(Arc<tokio::sync::Mutex<db::sqlserver::SqlServerClient>>),
     Elasticsearch(db::elasticsearch_driver::EsClient),
     Easysearch(db::easysearch_driver::EasysearchClient),
+    Solr(db::solr_driver::SolrClient),
     Meilisearch(db::meilisearch_driver::MeilisearchClient),
     HBase(db::hbase_driver::HBaseClient),
     VectorDb(db::vector_driver::VectorClient),
@@ -383,6 +384,13 @@ pub struct AppState {
     /// PostgreSQL TLS cancel context, keyed by pool_key.
     /// Used to reconstruct a TLS connector compatible with the original connection when cancelling.
     postgres_cancel_contexts: Arc<RwLock<HashMap<String, db::postgres::PostgresCancelContext>>>,
+    /// Pool keys whose tab-scoped MySQL connection holds a transaction the user
+    /// opened explicitly and DBX deliberately kept open
+    /// (`preserve_explicit_transaction`). Keeping it here — not on the driver
+    /// connection — makes the state die with the pool: a reconnect, a rebuilt
+    /// pool, or a closed tab can never inherit a transaction that no longer
+    /// exists.
+    mysql_preserved_transactions: Arc<RwLock<HashSet<String>>>,
     pub transaction_sessions: Arc<RwLock<HashMap<String, TransactionSession>>>,
     /// `save_password=false` 连接本次运行期的临时密码（内存，进程退出即丢，
     /// 绝不落盘）。键为 `(owner_scope, connection_id)`：桌面端 owner 为空串，
@@ -531,6 +539,13 @@ struct PoolRoutingControl {
     connections: Arc<RwLock<ConnectionPoolRegistry>>,
     pool_activity: Arc<RwLock<HashMap<String, PoolActivity>>>,
     postgres_cancel_contexts: Arc<RwLock<HashMap<String, db::postgres::PostgresCancelContext>>>,
+    /// The same set as [`AppState::mysql_preserved_transactions`]. Every detach
+    /// path (including `ClientSessionPoolCleanupGuard`'s `Drop`, which never
+    /// reaches `AppState`) has to clear the marker together with the pool:
+    /// otherwise a pool rebuilt under the same key would read a stale
+    /// `already_preserved` and keep a leftover transaction the way #9479
+    /// described, even with the opt-in turned off.
+    mysql_preserved_transactions: Arc<RwLock<HashSet<String>>>,
     task_supervisor: TaskSupervisor,
 }
 
@@ -687,9 +702,11 @@ impl PoolRoutingControl {
         {
             let mut activity = self.pool_activity.write().await;
             let mut cancel_contexts = self.postgres_cancel_contexts.write().await;
+            let mut preserved = self.mysql_preserved_transactions.write().await;
             for (key, _) in &removed {
                 activity.remove(key);
                 cancel_contexts.remove(key);
+                preserved.remove(key);
             }
         }
         self.close_removed_in_background(removed);
@@ -1395,6 +1412,7 @@ impl AppState {
             connections: self.connections.clone(),
             pool_activity: self.pool_activity.clone(),
             postgres_cancel_contexts: self.postgres_cancel_contexts.clone(),
+            mysql_preserved_transactions: self.mysql_preserved_transactions.clone(),
             task_supervisor: self.task_supervisor.clone(),
         }
     }
@@ -1522,6 +1540,7 @@ impl AppState {
             duckdb_worker_process_isolation: AtomicBool::new(false),
             duckdb_worker_max_processes: AtomicUsize::new(DUCKDB_WORKER_MAX_PROCESSES_DEFAULT),
             postgres_cancel_contexts: Arc::new(RwLock::new(HashMap::new())),
+            mysql_preserved_transactions: Arc::new(RwLock::new(HashSet::new())),
             transaction_sessions: Arc::new(RwLock::new(HashMap::new())),
             session_credentials: SessionCredentialStore::new(),
             write_unlock_windows: crate::write_unlock::WriteUnlockWindows::default(),
@@ -2741,6 +2760,22 @@ impl AppState {
                 )?;
                 db::easysearch_driver::test_connection(&mut client, connect_timeout).await?;
                 PoolKind::Easysearch(client)
+            }
+            DatabaseType::Solr => {
+                let mut client = db::solr_driver::SolrClient::from_config(
+                    &url,
+                    Some(&db_config.username),
+                    Some(&db_config.password),
+                    db_config.ssl,
+                    db_config.url_params.as_deref(),
+                    db_config.external_config.as_ref(),
+                    connect_timeout,
+                    Some(db_config.ca_cert_path.as_str()),
+                    Some(db_config.client_cert_path.as_str()),
+                    Some(db_config.client_key_path.as_str()),
+                )?;
+                db::solr_driver::test_connection(&mut client, connect_timeout).await?;
+                PoolKind::Solr(client)
             }
             DatabaseType::Meilisearch => {
                 let client = db::meilisearch_driver::MeilisearchClient::new_for_config(
@@ -4084,6 +4119,17 @@ impl AppState {
                         }
                     }
                 }
+                PoolKind::Solr(client) => {
+                    let mut client = client.clone();
+                    let timeout = crate::db::connection_timeout();
+                    match db::solr_driver::test_connection(&mut client, timeout).await {
+                        Ok(()) => false,
+                        Err(err) => {
+                            log::warn!("Solr connection pool '{pool_key}' is stale: {err}");
+                            true
+                        }
+                    }
+                }
                 PoolKind::Meilisearch(client) => {
                     let client = client.clone();
                     let timeout = crate::db::connection_timeout();
@@ -4588,14 +4634,30 @@ impl AppState {
         self.stop_keepalive_task(&pool_key).await;
         self.pool_activity.write().await.remove(&pool_key);
         self.postgres_cancel_contexts.write().await.remove(&pool_key);
+        self.mysql_preserved_transactions.write().await.remove(&pool_key);
         let removed = self.update_connection_pools(|connections| connections.remove(&pool_key)).await;
         Ok(removed.map(|pool| (pool_key, pool)))
+    }
+
+    /// Whether `pool_key` keeps a transaction the user opened explicitly open
+    /// on purpose (MySQL auto-commit tabs with `preserve_explicit_transaction`).
+    pub(crate) async fn has_preserved_explicit_transaction(&self, pool_key: &str) -> bool {
+        self.mysql_preserved_transactions.read().await.contains(pool_key)
+    }
+
+    pub(crate) async fn mark_preserved_explicit_transaction(&self, pool_key: &str) {
+        self.mysql_preserved_transactions.write().await.insert(pool_key.to_string());
+    }
+
+    pub(crate) async fn clear_preserved_explicit_transaction(&self, pool_key: &str) {
+        self.mysql_preserved_transactions.write().await.remove(pool_key);
     }
 
     pub async fn remove_pool_by_key(&self, pool_key: &str) -> bool {
         self.stop_keepalive_task(pool_key).await;
         self.pool_activity.write().await.remove(pool_key);
         self.postgres_cancel_contexts.write().await.remove(pool_key);
+        self.mysql_preserved_transactions.write().await.remove(pool_key);
         let removed = self.connections.write().await.remove(pool_key);
         if let Some(pool) = removed {
             self.pool_routing_control().close_pool_with_timeout(pool_key.to_string(), pool).await;
@@ -5198,6 +5260,16 @@ impl AppState {
                         }
                     }
                 }
+                PoolKind::Solr(client) => {
+                    let mut client = client.clone();
+                    match db::solr_driver::test_connection(&mut client, timeout).await {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::warn!("Solr connection pool '{key}' is unhealthy: {e}");
+                            false
+                        }
+                    }
+                }
                 PoolKind::Meilisearch(client) => {
                     let client = client.clone();
                     match db::meilisearch_driver::test_connection(&client, timeout).await {
@@ -5599,6 +5671,7 @@ enum KeepaliveTarget {
     SqlServer(Arc<tokio::sync::Mutex<db::sqlserver::SqlServerClient>>),
     Elasticsearch(db::elasticsearch_driver::EsClient),
     Easysearch(db::easysearch_driver::EasysearchClient),
+    Solr(db::solr_driver::SolrClient),
     HBase(db::hbase_driver::HBaseClient),
     VectorDb(db::vector_driver::VectorClient),
     InfluxDb(db::influxdb_driver::InfluxdbClient),
@@ -5700,6 +5773,7 @@ fn keepalive_target_from_pool(pool: &PoolKind, config: &ConnectionConfig) -> Opt
         PoolKind::SqlServer(client) => Some(KeepaliveTarget::SqlServer(client.clone())),
         PoolKind::Elasticsearch(client) => Some(KeepaliveTarget::Elasticsearch(client.clone())),
         PoolKind::Easysearch(client) => Some(KeepaliveTarget::Easysearch(client.clone())),
+        PoolKind::Solr(client) => Some(KeepaliveTarget::Solr(client.clone())),
         PoolKind::HBase(client) => Some(KeepaliveTarget::HBase(client.clone())),
         PoolKind::VectorDb(client) => Some(KeepaliveTarget::VectorDb(client.clone())),
         PoolKind::InfluxDb(client) => Some(KeepaliveTarget::InfluxDb(client.clone())),
@@ -5742,6 +5816,7 @@ async fn ping_keepalive_target(target: &mut KeepaliveTarget, timeout: Duration) 
         KeepaliveTarget::Easysearch(client) => {
             db::easysearch_driver::test_connection(client, timeout).await.map_err(Into::into)
         }
+        KeepaliveTarget::Solr(client) => db::solr_driver::test_connection(client, timeout).await.map_err(Into::into),
         KeepaliveTarget::HBase(client) => {
             db::hbase_driver::test_connection(client, timeout).await.map(|_| ()).map_err(Into::into)
         }
@@ -6162,6 +6237,7 @@ fn clone_pool_kind(pool: &PoolKind) -> PoolKind {
         PoolKind::SqlServer(client) => PoolKind::SqlServer(client.clone()),
         PoolKind::Elasticsearch(client) => PoolKind::Elasticsearch(client.clone()),
         PoolKind::Easysearch(client) => PoolKind::Easysearch(client.clone()),
+        PoolKind::Solr(client) => PoolKind::Solr(client.clone()),
         PoolKind::Meilisearch(client) => PoolKind::Meilisearch(client.clone()),
         PoolKind::HBase(client) => PoolKind::HBase(client.clone()),
         PoolKind::VectorDb(client) => PoolKind::VectorDb(client.clone()),
@@ -6219,6 +6295,9 @@ async fn close_pool_kind(pool: PoolKind) -> Result<(), String> {
             drop(client);
         }
         PoolKind::Easysearch(client) => {
+            drop(client);
+        }
+        PoolKind::Solr(client) => {
             drop(client);
         }
         PoolKind::Meilisearch(client) => {
@@ -6319,6 +6398,7 @@ fn base_pool_key_for_with_catalog(
                     db_type,
                     DatabaseType::Elasticsearch
                         | DatabaseType::Easysearch
+                        | DatabaseType::Solr
                         | DatabaseType::Qdrant
                         | DatabaseType::Milvus
                         | DatabaseType::Weaviate
@@ -9796,10 +9876,15 @@ for line in sys.stdin:
         let pool = crate::db::sqlite::connect_path(":memory:").await.unwrap();
         state.connections.write().await.insert(pool_key.to_string(), PoolKind::Sqlite(pool));
         state.pool_activity.write().await.insert(pool_key.to_string(), super::PoolActivity::now());
+        // A tab that kept a user transaction and was then detached: the marker
+        // must not outlive the pool, otherwise rebuilding the same pool key
+        // would look like "already preserved".
+        state.mark_preserved_explicit_transaction(pool_key).await;
 
         assert!(state.detach_pool_by_key(pool_key, false).await);
         assert!(!state.connections.read().await.contains_key(pool_key));
         assert!(!state.pool_activity.read().await.contains_key(pool_key));
+        assert!(!state.has_preserved_explicit_transaction(pool_key).await);
 
         for _ in 0..100 {
             if state.supervised_task_count() == 0 {

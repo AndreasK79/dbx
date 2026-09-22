@@ -1,5 +1,6 @@
 import type { MongoDumpFormat, MongoDumpSourceInput, MongoDumpCatalog, MongoRestoreSourcePreview, MongoDatabaseDumpRequest, MongoDatabaseRestoreRequest, MongoDatabaseDumpProgress } from "./mongodbDumpTypes";
 import type { MongoRestoreUpload, MongoSourceReadOptions } from "./mongodbDumpTypes";
+import type { UserSkillRootSettings, UserSkillsListResult, UserSkillsReadResult } from "@/types/userSkills";
 import type {
   ConnectionConfig,
   ConnectionTestResult,
@@ -190,7 +191,7 @@ import type {
 } from "@/lib/dataGrid/dataGridSql";
 import type { DmlChangePreviewSqlOptions, DmlChangePreviewSqlResult } from "@/lib/sql/dmlChangePreview";
 import type { DataGridExtractRequest, DataGridExtractResult } from "@/lib/dataGrid/dataGridCopyExtractor";
-import type { BuildTableOwnerChangeSqlOptions, BuildTableStructureChangeSqlOptions, BuildSingleColumnAlterSqlOptions, SqliteTableStructureChangePreview, TableStructureChangeSql } from "@/lib/table/tableStructureEditorSql";
+import type { BuildCreatePartitionedTableSqlOptions, BuildTableOwnerChangeSqlOptions, BuildTableStructureChangeSqlOptions, BuildSingleColumnAlterSqlOptions, SqliteTableStructureChangePreview, TablePartitionSqlOptions, TableStructureChangeSql } from "@/lib/table/tableStructureEditorSql";
 import type { BuildTableSelectSqlOptions } from "@/lib/table/tableSelectSql";
 import type { DatabaseSearchSql, DatabaseSearchSqlOptions, SearchResultWhereOptions } from "@/lib/database/databaseSearch";
 import type { BuildEditableObjectSourceSqlInput, BuildRoutineRenameObjectSourceInput } from "@/lib/table/objectSourceEditor";
@@ -304,6 +305,8 @@ const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   driver_store_dir: null,
   plugin_store_dir: null,
   agent_store_dir: null,
+  custom_ai_skill_root_enabled: false,
+  custom_ai_skill_root: null,
   sidebar_table_page_size: 1000,
 };
 
@@ -895,6 +898,14 @@ export async function exportAgentsOffline(_path: string, _driverKeys: string[]):
   throw new Error("Offline Agent package export is only available in the desktop app.");
 }
 
+export async function listUserSkills(_settings: UserSkillRootSettings): Promise<UserSkillsListResult> {
+  throw new Error("AI skills are only available in the desktop app.");
+}
+
+export async function readUserSkills(_ids: string[], _settings: UserSkillRootSettings): Promise<UserSkillsReadResult> {
+  throw new Error("AI skills are only available in the desktop app.");
+}
+
 export async function importAgentDriver(dbType: string, pathOrFile: string | File): Promise<void> {
   let blob: Blob;
   let fileName: string;
@@ -1180,6 +1191,10 @@ export async function getTablePartitionStatus(connectionId: string, database: st
   return get(`/api/schema/table-partition-status?${qs({ connection_id: connectionId, database, schema, table })}`);
 }
 
+export async function getTablePartitioning(connectionId: string, database: string, schema: string, table: string): Promise<import("@/types/database").PgTablePartitioning> {
+  return get(`/api/schema/table-partitioning?${qs({ connection_id: connectionId, database, schema, table })}`);
+}
+
 export async function listInvalidIndexes(connectionId: string, database: string, schema: string, table: string): Promise<string[]> {
   return get(`/api/schema/invalid-indexes?${qs({ connection_id: connectionId, database, schema, table })}`);
 }
@@ -1372,6 +1387,10 @@ export async function executeMulti(
     useTransaction?: boolean;
     continueOnError?: boolean;
     executionMode?: "simple";
+    /** MySQL auto-commit tabs: keep a transaction the user opened explicitly
+     *  (`BEGIN` / `START TRANSACTION`) open across executions until COMMIT /
+     *  ROLLBACK instead of rolling it back when the batch ends. */
+    preserveExplicitTransaction?: boolean;
   },
 ): Promise<QueryResult[]> {
   return postQueryWithDiagnostics(
@@ -1420,6 +1439,7 @@ export async function executeMultiWithProgress(
     useTransaction?: boolean;
     continueOnError?: boolean;
     executionMode?: "simple";
+    preserveExplicitTransaction?: boolean;
     executionId?: string;
   },
 ): Promise<QueryResult[]> {
@@ -1463,13 +1483,14 @@ export async function closeClientConnectionSession(connectionId: string, databas
   });
 }
 
-export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number): Promise<QueryResult> {
+export async function executeBatch(connectionId: string, database: string, statements: string[], schema?: string, timeoutSecs?: number, useTransaction?: boolean): Promise<QueryResult> {
   return post("/api/query/execute-batch", {
     connectionId,
     database,
     statements,
     schema,
     timeoutSecs,
+    useTransaction,
   });
 }
 
@@ -1715,6 +1736,14 @@ export async function buildTableStructureChangeSql(options: BuildTableStructureC
 
 export async function buildTableOwnerChangeSql(options: BuildTableOwnerChangeSqlOptions): Promise<TableStructureChangeSql> {
   return post("/api/query/build-table-owner-change-sql", { options });
+}
+
+export async function buildTablePartitionOperationSql(options: TablePartitionSqlOptions): Promise<TableStructureChangeSql> {
+  return post("/api/query/build-table-partition-operation-sql", { options });
+}
+
+export async function buildCreatePartitionedTableSql(options: BuildCreatePartitionedTableSqlOptions): Promise<TableStructureChangeSql> {
+  return post("/api/query/build-create-partitioned-table-sql", { options: options.options, partitioning: options.partitioning });
 }
 
 export async function previewSqliteTableStructureChange(connectionId: string, database: string, options: BuildTableStructureChangeSqlOptions): Promise<SqliteTableStructureChangePreview> {
@@ -2097,6 +2126,19 @@ export async function saveMaxAgentTurns(maxAgentTurns: number): Promise<void> {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ maxAgentTurns }),
+  });
+  if (!res.ok) throw await backendResponseError(res);
+}
+
+export async function loadHistoryRetentionLimit(): Promise<number> {
+  return get("/api/app-settings/history-retention-limit");
+}
+
+export async function saveHistoryRetentionLimit(limit: number): Promise<void> {
+  const res = await fetch(apiUrl("/api/app-settings/history-retention-limit"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit }),
   });
   if (!res.ok) throw await backendResponseError(res);
 }
