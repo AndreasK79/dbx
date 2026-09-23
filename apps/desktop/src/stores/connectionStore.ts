@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import type { SqlFilePreview } from "@/lib/backend/api";
 import { uuid } from "@/lib/common/utils";
 import { containsHan, orderedSubsequenceSpan, pinyinFirstLetters } from "@/lib/common/pinyin";
 import { ref, computed, watch, markRaw } from "vue";
@@ -56,7 +57,6 @@ import {
   expandGroups as expandGroupsOp,
   collapseAllGroups as collapseAllGroupsOp,
   moveConnectionToGroup as moveConnectionToGroupOp,
-  remapSidebarLayoutConnectionIds,
   mergeSidebarLayout,
   reorderEntry as reorderEntryOp,
   reorderEntries as reorderEntriesOp,
@@ -94,11 +94,11 @@ import {
 } from "@/lib/table/tableVGroup";
 import {
   buildConnectionConfigBundle,
-  filterSidebarLayoutByConnectionIds,
-  filterTunnelProfilesByIds,
   parseConnectionConfigObject,
-  referencedTunnelProfileIds,
+  prepareConnectionConfigImport,
   selectConnectionConfigBundle,
+  scrubConnectionForPlaintextExport,
+  scrubTunnelProfileForPlaintextExport,
   snapshotConnectionsForExport,
   type ConnectionConfigBundle,
   type ConnectionExportProtection,
@@ -576,7 +576,7 @@ export const useConnectionStore = defineStore("connection", () => {
     schema?: string;
     tableName?: string;
   } | null>(null);
-  const sqlFileSource = ref<{ connectionId: string; database: string; filePath?: string } | null>(null);
+  const sqlFileSource = ref<{ connectionId: string; database: string; filePath?: string; preview?: SqlFilePreview } | null>(null);
   const diagramSource = ref<{
     connectionId: string;
     database: string;
@@ -9353,7 +9353,12 @@ export const useConnectionStore = defineStore("connection", () => {
       const payload = await encryptConfig(json, protection.passphrase);
       content = JSON.stringify(payload, null, 2);
     } else {
-      content = JSON.stringify(exportData, null, 2);
+      const scrubbedData = {
+        ...exportData,
+        connections: exportData.connections.map(scrubConnectionForPlaintextExport),
+        tunnelProfiles: exportData.tunnelProfiles?.map(scrubTunnelProfileForPlaintextExport),
+      };
+      content = JSON.stringify(scrubbedData, null, 2);
     }
 
     if (isTauriRuntime()) {
@@ -9593,40 +9598,19 @@ export const useConnectionStore = defineStore("connection", () => {
 
   async function applyConnectionsImport(preview: ConnectionConfigBundle, selectedConnectionIds?: Iterable<string>): Promise<{ count: number; layout?: SidebarLayout }> {
     const selected = selectConnectionConfigBundle(preview, selectedConnectionIds);
-    const imported = selected.connections.map((connection) => ({ ...connection }));
-    let importedLayout = selected.layout;
-    const importedConnections: ConnectionConfig[] = [];
-    const importedConnectionIdMap = new Map<string, string>();
-    for (const config of imported) {
-      const duplicate = [...connections.value, ...importedConnections].find((connection) => connection.name === config.name && connection.host === config.host && connection.port === config.port);
-      if (duplicate) {
-        if (typeof config.id === "string") importedConnectionIdMap.set(config.id, duplicate.id);
-        continue;
-      }
-      const importedId = config.id;
-      config.id = uuid();
-      if (typeof importedId === "string") importedConnectionIdMap.set(importedId, config.id);
-      importedConnections.push(normalizeConnection(config));
+    const importedTunnelProfileStore = useTunnelProfileStore();
+    await importedTunnelProfileStore.init();
+    const imported = prepareConnectionConfigImport(
+      selected,
+      connections.value,
+      importedTunnelProfileStore.profiles.map((profile) => profile.id),
+      uuid,
+    );
+    if (imported.tunnelProfiles?.length) {
+      await importedTunnelProfileStore.saveProfiles([...importedTunnelProfileStore.profiles, ...imported.tunnelProfiles]);
     }
-    const importedTunnelProfileIds = referencedTunnelProfileIds(importedConnections);
-    const importedTunnelProfiles = filterTunnelProfilesByIds(selected.tunnelProfiles ?? [], importedTunnelProfileIds);
-    if (importedTunnelProfiles.length) {
-      const importedTunnelProfileStore = useTunnelProfileStore();
-      await importedTunnelProfileStore.init();
-      const merged = [...importedTunnelProfileStore.profiles];
-      for (const profile of importedTunnelProfiles) {
-        if (!profile || typeof profile.id !== "string" || !profile.id) continue;
-        const index = merged.findIndex((existing) => existing.id === profile.id);
-        if (index >= 0) merged[index] = profile;
-        else merged.push(profile);
-      }
-      await importedTunnelProfileStore.saveProfiles(merged);
-    }
-    for (const connection of importedConnections) await addConnection(connection);
-    if (importedLayout) {
-      importedLayout = filterSidebarLayoutByConnectionIds(remapSidebarLayoutConnectionIds(importedLayout, importedConnectionIdMap), importedConnectionIdMap.values());
-    }
-    return { count: importedConnections.length, layout: importedLayout };
+    for (const connection of imported.connections) await addConnection(normalizeConnection(connection));
+    return { count: imported.connections.length, layout: imported.layout };
   }
 
   async function importConnectionsFromFile(content: string, passphrase: string | null, selectedConnectionIds?: Iterable<string>): Promise<{ count: number; layout?: SidebarLayout }> {
