@@ -55,6 +55,7 @@ import { createColumnReferencePayload, tableReferenceInsertText } from "@/lib/ed
 import { clearRememberedFocusedQueryEditorView, focusedQueryEditorView, queryEditorInsertContext, registerQueryEditorInsertContext, rememberFocusedQueryEditorView, unregisterQueryEditorInsertContext } from "@/lib/editor/focusedQueryEditorView";
 import { loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
 import { structurePeekPanelId } from "@/lib/editor/structurePeekPanel";
+import SnippetQuickAddDialog from "./SnippetQuickAddDialog.vue";
 import CodeSnapshotDialog from "@/components/codeSnapshot/CodeSnapshotDialog.vue";
 import QueryEditorContextMenu, { type QueryEditorContextMenuState, type QueryEditorContextMenuActions } from "./QueryEditorContextMenu.vue";
 
@@ -95,7 +96,7 @@ import { createQueryEditorSqlShortcutDomHandler, isCharacterProducingShortcut } 
 import { createQueryEditorReplaceShortcutBindings, createQueryEditorReplaceShortcutHandler, createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { createQueryEditorEscapeHandler } from "@/lib/editor/queryEditorEscape";
 import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignmentExtension } from "@/lib/editor/queryEditorLineNumbers";
-import { searchKeymapWithoutModD } from "@/lib/editor/codemirrorSearchKeymap";
+import { searchKeymapWithoutShortcutConflicts } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { createShowWhitespaceExtension } from "@/lib/editor/codemirrorShowWhitespace";
 
@@ -370,6 +371,17 @@ function syncQueryEditorInsertContext(currentView: EditorViewType | null = view.
     schema: props.schema,
     databaseType: props.databaseType,
   });
+}
+
+// Snippet quick-add dialog state
+const snippetQuickAddOpen = ref(false);
+const snippetQuickAddPrefillBody = ref("");
+
+function openSnippetQuickAddDialog() {
+  // Seed the body from the selection the context menu was opened on, if any;
+  // with nothing selected the dialog starts with an empty body.
+  snippetQuickAddPrefillBody.value = selectedSql.value.trim() ? selectedSql.value : "";
+  snippetQuickAddOpen.value = true;
 }
 
 function insertStructurePeekValue(panel: StructurePeekPanelState, value: string, kind: TableStructurePeekInsertKind) {
@@ -1132,11 +1144,11 @@ const contextMenuActions: QueryEditorContextMenuActions = {
   selectAllSqlFromContextMenu,
   emitContextObjectAction,
   openCodeSnapshot,
+  openSnippetQuickAddDialog,
   sendSelectionToAi: () => {
     if (selectedSql.value.trim()) emit("sendSelectionToAi", selectedSql.value);
   },
 };
-
 function getContextMenuState(): QueryEditorContextMenuState {
   const target = selectStarExpansionTarget.value;
   return {
@@ -1290,6 +1302,10 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.undo, (view) => codeMirrorRuntime.codeMirrorUndo?.(view) ?? false),
         ...binding(shortcuts.redo, (view) => codeMirrorRuntime.codeMirrorRedo?.(view) ?? false),
         ...binding(shortcuts.selectAll, (view) => codeMirrorRuntime.codeMirrorSelectAll?.(view) ?? false),
+        ...binding(shortcuts.convertSelectionToDelimited, () => {
+          openDelimitedListDialog();
+          return true;
+        }),
         ...binding(shortcuts.extendSelection, extendQueryEditorSelectionForView),
         ...binding(shortcuts.addNextSelectionOccurrence, addNextQueryEditorSelectionOccurrence),
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
@@ -1866,7 +1882,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
         initializedRuntime.vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
         initializedRuntime.defaultKeymapComp.of(defaultKeymapExtension()),
-        keymap.of([...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+        keymap.of([...searchKeymapWithoutShortcutConflicts(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
         Prec.highest(keymap.of([{ key: "Space", run: acceptSqlServerCompletionOnSpace }])),
         initializedRuntime.sqlLanguageComp.of(sqlExtensions.buildSqlLanguageExtension()),
         initializedRuntime.sqlSemanticHighlightComp.of(sqlExtensions.buildSqlSemanticHighlightExtension()),
@@ -2596,6 +2612,7 @@ function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: Editor
 defineExpose({
   openSearch,
   openReplace,
+  focusEditor,
   scrollCursorIntoView,
   beginExecutionViewportTracking,
   acceptGutterExecutionViewport,
@@ -2651,6 +2668,7 @@ defineExpose({
       @activate="bringStructurePeekToFront(panel.id)"
       @insert-value="(value, kind) => insertStructurePeekValue(panel, value, kind)"
     />
+    <SnippetQuickAddDialog v-model:open="snippetQuickAddOpen" :prefill-body="snippetQuickAddPrefillBody" />
     <CodeSnapshotDialog v-model:open="codeSnapshotOpen" :source="codeSnapshotSource" />
     <QueryEditorIntentionPopup :state="intentionPopup" @close="closeIntentionPopup" @confirm="executeIntentionAction" @select="intentionPopup && (intentionPopup.selectedIndex = $event)" />
   </div>

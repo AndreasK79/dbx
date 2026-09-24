@@ -365,13 +365,23 @@ function decodeMyBatisXmlComparisonEntities(sql: string, databaseType?: Database
   return result + sql.slice(cursor);
 }
 
+// An untouched value field means NULL, not an empty string literal: a blank
+// :name in `where name = :name` should compare against NULL (matching nothing)
+// rather than silently matching empty-string rows. Typed whitespace still
+// counts as data for text kinds; number/raw values were already trimmed. Raw's
+// separate "empty keeps the placeholder" contract is applied earlier, in
+// substituteSqlParameters, before any literal is rendered — so an explicit
+// empty string stays reachable as Raw `''`.
+function isEmptyParameterValue(input: SqlParameterInput): boolean {
+  if (input.kind === "number" || input.kind === "raw") return !input.value.trim();
+  return !input.value;
+}
+
 export function sqlParameterLiteral(input: SqlParameterInput): string {
-  if (input.kind === "null") return "NULL";
-  const raw = input.value;
-  if (input.kind === "raw") return raw.trim() || "NULL";
-  if (input.kind === "number") return raw.trim() || "NULL";
-  if (input.kind === "boolean") return normalizeBooleanLiteral(raw);
-  return quoteSqlString(raw);
+  if (input.kind === "null" || isEmptyParameterValue(input)) return "NULL";
+  if (input.kind === "raw" || input.kind === "number") return input.value.trim();
+  if (input.kind === "boolean") return normalizeBooleanLiteral(input.value);
+  return quoteSqlString(input.value);
 }
 
 function findSqlParameterOccurrences(sql: string, options?: SqlParameterOptions): ParameterOccurrence[] {
@@ -1799,12 +1809,14 @@ function quoteSqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+// The one placement where empty cannot mean NULL: the fragment is spliced
+// inside a surrounding string literal, so an empty value contributes nothing.
 function sqlParameterStringFragment(input: SqlParameterInput): string {
   return input.value.replace(/'/g, "''");
 }
 
 function sqlParameterQuotedString(input: SqlParameterInput): string {
-  if (input.kind === "null" || ((input.kind === "number" || input.kind === "raw") && !input.value.trim())) return "NULL";
+  if (input.kind === "null" || isEmptyParameterValue(input)) return "NULL";
   return quoteSqlString(input.value);
 }
 

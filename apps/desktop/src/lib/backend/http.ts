@@ -197,7 +197,7 @@ import type {
 } from "@/lib/backend/tauri";
 import type { QueryEditability } from "@/lib/sql/sqlAnalysis";
 import type { PluginTableMetadata, PluginTableMetadataRequest } from "@/types/pluginSchemaMetadata";
-import type { CsvQuoteMode } from "@/lib/export/csvQuoteMode";
+import type { CsvQuoteMode, CsvTextFormatOptions } from "@/lib/export/csvQuoteMode";
 import type { MigrationPreflight, MigrationReport } from "./migration";
 export type { MigrationPreflight, MigrationReport } from "./migration";
 export const migrationStatus = (): Promise<MigrationPreflight> => get("/api/migration/status");
@@ -3255,9 +3255,9 @@ export async function cancelQueryResultExport(exportId: string, executionId?: st
   });
 }
 
-export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[], csvQuoteMode: CsvQuoteMode = "all"): Promise<void> {
+export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[], csvQuoteMode: CsvQuoteMode = "all", csvOptions: Omit<Partial<CsvTextFormatOptions>, "quoteMode"> = {}): Promise<void> {
   const { formatCsv } = await import("@/lib/export/exportFormats");
-  const content = formatCsv(columns, rows as (string | number | boolean | null)[][], csvQuoteMode);
+  const content = formatCsv(columns, rows as (string | number | boolean | null)[][], { quoteMode: csvQuoteMode, ...csvOptions });
   const fileName = filePath.split(/[\\/]/).pop() || "export.csv";
   const blob = new Blob(["\uFEFF", content], {
     type: "text/csv;charset=utf-8",

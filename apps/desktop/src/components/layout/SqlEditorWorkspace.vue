@@ -74,6 +74,8 @@ defineExpose({
     return group?.focusSearch(element) ?? false;
   },
   openGoToColumn: () => activeEditorGroup()?.openGoToColumn() ?? false,
+  openDatabaseSelect: () => activeEditorGroup()?.openDatabaseSelect() ?? false,
+  commitTransaction: () => activeEditorGroup()?.commitTransaction() ?? false,
   refreshData: (target: Element | null = null) => {
     const element = commandTargetElement(target);
     if (element?.closest("[data-shared-result-surface]")) {

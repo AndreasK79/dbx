@@ -341,6 +341,16 @@ export const AI_PROVIDER_PRESETS: Record<AiProvider, AiProviderPreset> = {
     authMethod: "bearer",
     requiresApiKey: false,
   },
+  "github-copilot": {
+    label: "GitHub Copilot",
+    iconSlug: "githubcopilot",
+    provider: "github-copilot",
+    endpoint: "https://api.githubcopilot.com/chat/completions",
+    model: "gpt-4.1",
+    apiStyle: "completions",
+    authMethod: "bearer",
+    requiresApiKey: true,
+  },
   "anthropic-compatible": {
     label: "Anthropic Compatible",
     iconSlug: "anthropic",

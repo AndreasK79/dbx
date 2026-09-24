@@ -1,14 +1,19 @@
 import type { DatabaseType, QueryResult } from "@/types/database";
 import * as api from "@/lib/backend/api";
-import { escapeCsvField, type CsvQuoteMode } from "@/lib/export/csvQuoteMode";
+import { escapeCsvField, type CsvQuoteMode, type CsvTextFormatOptions } from "@/lib/export/csvQuoteMode";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
 
 export type ExportCellValue = string | number | boolean | null;
 
-export function formatCsv(columns: string[], rows: ExportCellValue[][], quoteMode: CsvQuoteMode = "all"): string {
-  const header = columns.map((column) => escapeCsvField(column, quoteMode)).join(",");
-  const body = rows.map((row) => row.map((cell) => (cell === null ? "" : escapeCsvField(String(cell), quoteMode))).join(",")).join("\n");
-  return `${header}\n${body}`;
+/**
+ * The third argument accepts both the export dialog's full options object and
+ * the bare quote-mode string callers pass elsewhere in the codebase.
+ */
+export function formatCsv(columns: string[], rows: ExportCellValue[][], options: Partial<CsvTextFormatOptions> | CsvQuoteMode = {}): string {
+  const { quoteMode = "all", delimiter = ",", quoteChar = '"', includeHeader = true } = typeof options === "string" ? { quoteMode: options } : options;
+  const header = columns.map((column) => escapeCsvField(column, quoteMode, delimiter, quoteChar)).join(delimiter);
+  const body = rows.map((row) => row.map((cell) => (cell === null ? "" : escapeCsvField(String(cell), quoteMode, delimiter, quoteChar))).join(delimiter)).join("\n");
+  return includeHeader ? `${header}\n${body}` : body;
 }
 
 // Tab-separated values with a header row, mirroring Navicat's "Text File (*.txt)"

@@ -79,6 +79,9 @@ const emit = defineEmits<{
   changeConnection: [connectionId: string];
   changeCatalog: [catalog: string | undefined, database: string];
   changeDatabase: [database: string];
+  /** Emitted after a database picked from the F3-opened dropdown settles, so
+   *  the group can move focus into the query editor. */
+  focusQueryEditor: [];
   changeSchema: [schema: string | undefined];
   setDefaultDatabase: [];
   clearDefaultDatabase: [];
@@ -100,7 +103,33 @@ const { loadSchemaOptions, getSchemaOptionsForDb, isLoadingSchemas, isSchemaAwar
 
 const toolbarRootRef = ref<HTMLElement | null>(null);
 const toolbarActionsRef = ref<HTMLElement | null>(null);
+const databaseSelectRef = ref<InstanceType<typeof SearchableSelect> | null>(null);
+// Set while the database dropdown was opened programmatically via the F3
+// shortcut (openDatabaseSelect): picking a database then — Enter or click —
+// hands focus to the query editor. Cleared when the dropdown closes without
+// a selection (Escape / outside click), restoring the plain trigger focus.
+const databaseSelectOpenedViaShortcut = ref(false);
 const toolbarTier = ref<EditorToolbarTier>(0);
+
+// F3 (settings.shortcutFocusDatabaseSelect): open the database selector's
+// dropdown programmatically. False when the selector is not rendered (single
+// database / connection types without one) so the caller leaves F3 alone.
+defineExpose({
+  openDatabaseSelect: () => {
+    const opened = databaseSelectRef.value?.openDropdown() ?? false;
+    if (opened) databaseSelectOpenedViaShortcut.value = true;
+    return opened;
+  },
+});
+
+// The database change settles first (EditorGroup switches the tab's database);
+// the popover then restores focus to the trigger button on close. Defer the
+// emit to the next frame so it runs after that restore instead of racing it.
+function emitFocusQueryEditorAfterShortcutSelection() {
+  if (!databaseSelectOpenedViaShortcut.value) return;
+  databaseSelectOpenedViaShortcut.value = false;
+  requestAnimationFrame(() => emit("focusQueryEditor"));
+}
 // Available width when the current tier was condensed into; anchors the
 // step-down hysteresis so a static narrow layout cannot oscillate.
 const condensedAtWidth = ref(0);
@@ -847,6 +876,7 @@ async function changeCatalog(selectedCatalog: string) {
         :class="{ 'database-required-prompt': databaseRequiredVisible }"
       >
         <SearchableSelect
+          ref="databaseSelectRef"
           :model-value="activeDatabaseValue"
           :options="activeDatabaseOptions.length ? activeDatabaseOptions : activeDatabaseValue ? [activeDatabaseValue] : []"
           :placeholder="t('editor.selectDatabase')"
@@ -858,10 +888,19 @@ async function changeCatalog(selectedCatalog: string) {
           trigger-variant="ghost"
           trigger-class="gap-1.5"
           trigger-icon-class="h-3 w-3"
-          @update:model-value="(database) => emit('changeDatabase', database)"
+          @update:model-value="
+            (database: string) => {
+              emit('changeDatabase', database);
+              emitFocusQueryEditorAfterShortcutSelection();
+            }
+          "
           @update:open="
             (open: boolean) => {
-              if (!open || !activeConnection) return;
+              if (!open) {
+                databaseSelectOpenedViaShortcut = false;
+                return;
+              }
+              if (!activeConnection) return;
               if (activeTab.catalog) loadCatalogDatabaseOptions(activeConnection.id, activeTab.catalog).catch(() => {});
               else loadDatabaseOptions(activeConnection.id).catch(() => {});
             }

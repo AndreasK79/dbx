@@ -74,6 +74,8 @@ pub fn static_effort_capability(config: &AiConfig, model_id: &str) -> Option<AiE
 
     match config.provider {
         AiProvider::Openai => openai_capability(&model, source),
+        // Copilot serves OpenAI's models, so its effort capabilities match.
+        AiProvider::GithubCopilot => openai_capability(&model, source),
         AiProvider::Gemini => gemini_capability(&model, source),
         AiProvider::Deepseek => deepseek_capability(&model, source),
         AiProvider::Kimi => kimi_capability(&model, source),
@@ -204,6 +206,7 @@ fn ollama_capability(model: &str, source: AiCapabilitySource) -> Option<AiEffort
 pub fn registry_source_url(provider: &AiProvider) -> Option<&'static str> {
     match provider {
         AiProvider::Openai => Some(OPENAI_REASONING_DOCS),
+        AiProvider::GithubCopilot => Some(OPENAI_REASONING_DOCS),
         AiProvider::Gemini => Some(GEMINI_THINKING_DOCS),
         AiProvider::Deepseek => Some(DEEPSEEK_THINKING_DOCS),
         AiProvider::Kimi => Some(KIMI_REASONING_DOCS),
@@ -289,7 +292,7 @@ pub fn apply_runtime_effort(body: &mut Value, config: &AiConfig) {
         AiProvider::Qwen => apply_qwen_effort(object, selection),
         AiProvider::Zhipu | AiProvider::Ollama => apply_openai_effort(object, &config.api_style, selection),
         AiProvider::MiniMax => apply_minimax_effort(object, selection),
-        AiProvider::Openai | AiProvider::OpenaiCompatible => apply_openai_effort(object, &config.api_style, selection),
+        AiProvider::Openai | AiProvider::GithubCopilot | AiProvider::OpenaiCompatible => apply_openai_effort(object, &config.api_style, selection),
         AiProvider::Custom => {
             if config.api_style == AiApiStyle::AnthropicMessages {
                 apply_claude_effort(object, selection);

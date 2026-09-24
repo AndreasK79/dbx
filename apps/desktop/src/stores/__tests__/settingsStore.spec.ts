@@ -884,6 +884,20 @@ describe("settingsStore AI API key normalization", () => {
     expect(normalizeAiConfig({ endpoint: "https://api.z.ai/api/paas/v4", model: "glm-5.2" }).provider).toBe("zhipu");
   });
 
+  it("provides GitHub Copilot defaults", () => {
+    expect(AI_PROVIDER_PRESETS["github-copilot"]).toMatchObject({
+      label: "GitHub Copilot",
+      iconSlug: "githubcopilot",
+      provider: "github-copilot",
+      endpoint: "https://api.githubcopilot.com/chat/completions",
+      model: "gpt-4.1",
+      apiStyle: "completions",
+      authMethod: "bearer",
+      requiresApiKey: true,
+    });
+    expect(normalizeAiConfig({ provider: "github-copilot" }).endpoint).toBe("https://api.githubcopilot.com/chat/completions");
+  });
+
   it("provides the current partner default models", () => {
     expect(AI_PROVIDER_PARTNER_PRESETS.find((preset) => preset.id === "jalapeno-cloud")).toMatchObject({
       model: "GLM-5.3",

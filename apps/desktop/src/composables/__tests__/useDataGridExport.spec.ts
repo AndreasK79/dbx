@@ -53,6 +53,11 @@ vi.mock("@/lib/backend/api", async (importOriginal) => {
   };
 });
 
+// CSV 导出现在先弹选项对话框；单测里直接给默认选项，导出流程照常走完。
+vi.mock("@/lib/export/csvExportDialog", () => ({
+  showCsvExportDialog: vi.fn().mockResolvedValue({ quoteMode: "all" as const, delimiter: ",", quoteChar: '"', includeHeader: true }),
+}));
+
 function row(data: unknown[]) {
   return {
     id: 1,
@@ -1574,7 +1579,7 @@ describe("useDataGridExport prepared row statements", () => {
 
     setActivePinia(createPinia());
     await state.exportCurrentPageCsv();
-    expect(exportQueryResultCsv).toHaveBeenCalledWith(expect.any(String), ["_id", "nullable"], [["1", null]], expect.anything());
+    expect(exportQueryResultCsv).toHaveBeenCalledWith(expect.any(String), ["_id", "nullable"], [["1", null]], expect.anything(), expect.anything());
 
     const reservedString = MONGO_DOCUMENT_GRID_NULL;
     const fullExportState = createMongoExportState({
@@ -1593,7 +1598,7 @@ describe("useDataGridExport prepared row statements", () => {
     });
 
     await fullExportState.exportCsv();
-    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["_id", "value"], [["1", reservedString]], expect.anything());
+    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["_id", "value"], [["1", reservedString]], expect.anything(), expect.anything());
   });
 
   it("exports only visible Mongo columns from the full result set", async () => {
@@ -1616,7 +1621,7 @@ describe("useDataGridExport prepared row statements", () => {
 
     await state.exportCsv();
 
-    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["name"], [["Visible"], ["Other"]], expect.anything());
+    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["name"], [["Visible"], ["Other"]], expect.anything(), expect.anything());
   });
 
   it("applies visible Mongo columns when the complete result is already local", async () => {
@@ -1645,7 +1650,7 @@ describe("useDataGridExport prepared row statements", () => {
 
     await state.exportCsv();
 
-    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["name"], [["Visible"], ["Other"]], expect.anything());
+    expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["name"], [["Visible"], ["Other"]], expect.anything(), expect.anything());
   });
 
   it("exports missing Mongo fields as null while retaining explicit empty strings", async () => {

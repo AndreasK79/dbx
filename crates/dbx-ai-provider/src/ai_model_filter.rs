@@ -90,6 +90,7 @@ pub(crate) fn model_is_assistant_compatible(provider: &AiProvider, model_id: &st
         AiProvider::Qwen => !is_qwen_non_assistant_model(&model),
         AiProvider::Claude
         | AiProvider::AnthropicCompatible
+        | AiProvider::GithubCopilot
         | AiProvider::Deepseek
         | AiProvider::Kimi
         | AiProvider::Zhipu

@@ -54,6 +54,7 @@ async function mountDialog(sql: string, extraProps: Record<string, unknown> = {}
   app.mount(container);
   await nextTick();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  return { state };
 }
 
 afterEach(() => {
@@ -187,5 +188,94 @@ describe("DangerConfirmDialog running/cancel footer state", () => {
     const buttons = footerButtons();
     expect(buttons.some((button) => button.textContent?.trim() === "Cancel Query")).toBe(false);
     expect(buttons.some((button) => button.textContent?.trim() === "Cancel")).toBe(true);
+  });
+});
+
+describe("DangerConfirmDialog keyboard activation", () => {
+  function dialogForm() {
+    return document.body.querySelector("form");
+  }
+
+  function submitForm() {
+    dialogForm()?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  }
+
+  function pressEscape() {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  }
+
+  it("confirms and closes on form submit (Enter), with the confirm button as the only submit control", async () => {
+    const onConfirm = vi.fn();
+    const { state } = await mountDialog("DELETE FROM users WHERE uid = 42;", { confirmLabel: "Delete" }, { onConfirm });
+
+    const buttons = Array.from(document.body.querySelectorAll("button"));
+    const submitButtons = buttons.filter((button) => button.type === "submit");
+    expect(submitButtons).toHaveLength(1);
+    expect(submitButtons[0]?.textContent?.trim()).toBe("Delete");
+    // Cancel and the code-preview helpers must never join the submit path.
+    const cancelButton = buttons.find((button) => button.textContent?.trim() === "Cancel");
+    expect(cancelButton?.type).toBe("button");
+    for (const helper of Array.from(document.body.querySelectorAll('[data-testid="danger-code-actions"] button'))) {
+      expect(helper.type).toBe("button");
+    }
+
+    submitForm();
+    await nextTick();
+
+    expect(onConfirm).toHaveBeenCalledOnce();
+    expect(state.open).toBe(false);
+  });
+
+  it("keeps the dialog open on submit when closeOnConfirm is false (update/delete flow)", async () => {
+    const onConfirm = vi.fn();
+    const { state } = await mountDialog("UPDATE users SET name = 'x' WHERE uid = 42;", { closeOnConfirm: false }, { onConfirm });
+
+    submitForm();
+    await nextTick();
+
+    expect(onConfirm).toHaveBeenCalledOnce();
+    expect(state.open).toBe(true);
+  });
+
+  it("ignores submit while loading or confirmDisabled", async () => {
+    const onConfirm = vi.fn();
+    const { state } = await mountDialog("DELETE FROM users;", { loading: true }, { onConfirm });
+
+    submitForm();
+    await nextTick();
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(state.open).toBe(true);
+
+    const onConfirmDisabled = vi.fn();
+    const { state: disabledState } = await mountDialog("DELETE FROM users;", { confirmDisabled: true }, { onConfirm: onConfirmDisabled });
+
+    submitForm();
+    await nextTick();
+    expect(onConfirmDisabled).not.toHaveBeenCalled();
+    expect(disabledState.open).toBe(true);
+  });
+
+  it("still confirms through a plain click on the confirm button", async () => {
+    const onConfirm = vi.fn();
+    await mountDialog("DELETE FROM users;", { confirmLabel: "Delete" }, { onConfirm });
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.type === "submit");
+    confirmButton?.click();
+    await nextTick();
+
+    expect(onConfirm).toHaveBeenCalledOnce();
+  });
+
+  it("closes on Escape, but not while loading", async () => {
+    const { state } = await mountDialog("DELETE FROM users;");
+
+    pressEscape();
+    await nextTick();
+    expect(state.open).toBe(false);
+
+    const { state: loadingState } = await mountDialog("DELETE FROM users;", { loading: true });
+    pressEscape();
+    await nextTick();
+    expect(loadingState.open).toBe(true);
   });
 });

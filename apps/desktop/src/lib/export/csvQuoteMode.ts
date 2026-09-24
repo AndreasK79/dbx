@@ -1,16 +1,35 @@
-export type CsvQuoteMode = "all" | "necessary";
+export type CsvQuoteMode = "all" | "necessary" | "never";
 
 export const DEFAULT_CSV_QUOTE_MODE: CsvQuoteMode = "all";
 
 export function normalizeCsvQuoteMode(value: unknown): CsvQuoteMode {
-  return value === "necessary" ? "necessary" : DEFAULT_CSV_QUOTE_MODE;
+  return value === "necessary" || value === "never" ? value : DEFAULT_CSV_QUOTE_MODE;
 }
 
-export function csvFieldNeedsQuotes(value: string): boolean {
-  return /[",\r\n]/.test(value);
+/** 导出对话框一次选定的 CSV 文本格式（分隔符/引号字符/引号模式/表头开关）。 */
+export interface CsvTextFormatOptions {
+  quoteMode: CsvQuoteMode;
+  /** 单字符分隔符；发送到后端时按字符串原样传，Rust 取首字符。 */
+  delimiter: string;
+  /** 单字符引号字符。 */
+  quoteChar: string;
+  includeHeader: boolean;
 }
 
-export function escapeCsvField(value: string, quoteMode: CsvQuoteMode): string {
-  if (quoteMode === "necessary" && !csvFieldNeedsQuotes(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
+export const DEFAULT_CSV_DELIMITER = ",";
+export const DEFAULT_CSV_QUOTE_CHAR = '"';
+
+export function csvFieldNeedsQuotes(value: string, delimiter = DEFAULT_CSV_DELIMITER, quoteChar = DEFAULT_CSV_QUOTE_CHAR): boolean {
+  return value.includes(quoteChar) || value.includes(delimiter) || value.includes("\r") || value.includes("\n");
+}
+
+export function escapeCsvField(value: string, quoteMode: CsvQuoteMode, delimiter = DEFAULT_CSV_DELIMITER, quoteChar = DEFAULT_CSV_QUOTE_CHAR): string {
+  if (quoteMode === "never") return value;
+  if (quoteMode === "necessary" && !csvFieldNeedsQuotes(value, delimiter, quoteChar)) return value;
+  return `${quoteChar}${value.split(quoteChar).join(quoteChar + quoteChar)}${quoteChar}`;
+}
+
+/** 制表符分隔的导出按惯例落成 .tsv，其余仍是 .csv。 */
+export function csvFileExtension(delimiter: string): string {
+  return delimiter === "\t" ? "tsv" : "csv";
 }

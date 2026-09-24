@@ -103,8 +103,10 @@ import {
   isBrowserReloadShortcut,
   isCloseOtherTabsShortcut,
   isCloseTabShortcut,
+  isCommitTransactionShortcut,
   isExecuteSqlInNewResultTabShortcut,
   isExecuteSqlShortcut,
+  isFocusDatabaseSelectShortcut,
   isFocusSearchShortcut,
   isGoToColumnShortcut,
   isModRShortcut,
@@ -133,6 +135,7 @@ import { createTabNavigationHistory, moveInTabNavigationHistory, recordTabVisit 
 import { canSaveSqlTab } from "@/lib/tabs/sqlTabSaveTarget";
 import { initialTabSwitcherSelection, moveTabSwitcherSelection, tabSwitcherOrder } from "@/lib/tabs/tabSwitcher";
 import { createTabSwitcherKeyboardController } from "@/lib/tabs/tabSwitcherKeyboard";
+import { createDoubleShiftGestureDetector } from "@/lib/keyboard/doubleShiftGesture";
 import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import { supportsSqlFileExecution } from "@/lib/database/databaseCapabilities";
 import { classifyAiSqlExecution } from "@/lib/ai/aiSqlExecutionPolicy";
@@ -194,6 +197,7 @@ const CloseActionPromptDialog = defineAsyncComponent(() => import("@/components/
 const AiRunsClosePromptDialog = defineAsyncComponent(() => import("@/components/layout/AiRunsClosePromptDialog.vue"));
 const LoginPage = defineAsyncComponent(() => import("@/components/auth/LoginPage.vue"));
 const QuickOpenDialog = defineAsyncComponent(() => import("@/components/quick-open/QuickOpenDialog.vue"));
+const DatabaseObjectSearchDialog = defineAsyncComponent(() => import("@/components/object-search/DatabaseObjectSearchDialog.vue"));
 const TabSwitcherDialog = defineAsyncComponent(() => import("@/components/tabs/TabSwitcherDialog.vue"));
 const QueryEditorDdlViewDialog = defineAsyncComponent(() => import("@/components/objects/DdlViewDialog.vue"));
 const QueryEditorObjectSourceDialog = defineAsyncComponent(() => import("@/components/objects/ObjectSourceDialog.vue"));
@@ -390,6 +394,7 @@ const showPluginCenter = computed(() => pluginCenterTabOpen.value && pluginCente
 const showSettingsPage = computed(() => Boolean(settingsPageTabOpen.value && settingsStore.settingsPageActive));
 const showQuickOpen = ref(false);
 const quickOpenForceContent = ref(false);
+const showDatabaseObjectSearch = ref(false);
 const showTabSwitcher = ref(false);
 const tabSwitcherIndex = ref(0);
 const agentDriverUpdateCount = ref(0);
@@ -3443,6 +3448,45 @@ async function handleQuickOpenSelect(item: any) {
   }
 }
 
+// Double-Shift database search defaults to the object's definition: tables open
+// the structure editor on the DDL tab, views/materialized views open the DDL
+// view dialog (the same surfaces Ctrl+click's DDL mode uses — views stay out of
+// the table editor). The result rows also carry a View button whose "data"
+// target opens the object's data tab — the search's original behavior. Routines
+// were already source-only; everything else reuses the quick-open handler
+// unchanged. Ctrl+P quick-open keeps opening data tabs.
+async function handleDatabaseObjectSearchSelect(item: any, target: "source" | "data" = "source") {
+  if (item.type === "table" || item.type === "view" || item.type === "materialized_view") {
+    connectionStore.activeConnectionId = item.connectionId;
+    try {
+      await connectionStore.ensureConnected(item.connectionId);
+    } catch (error) {
+      console.error("Failed to connect:", error);
+      return;
+    }
+    const objectName = item.objectName || item.tableName;
+    if (target === "data") {
+      await openTableTarget({
+        connectionId: item.connectionId,
+        database: item.database,
+        schema: item.schema,
+        tableName: objectName,
+        tableType: item.type === "view" ? "VIEW" : item.type === "materialized_view" ? "MATERIALIZED_VIEW" : "TABLE",
+      });
+      return;
+    }
+    const objectType = item.type === "view" ? "VIEW" : item.type === "materialized_view" ? "MATERIALIZED_VIEW" : undefined;
+    if (objectType) {
+      queryEditorDdlTarget.value = { connectionId: item.connectionId, database: item.database, schema: item.schema, tableName: objectName, objectType };
+      showQueryEditorDdlDialog.value = true;
+      return;
+    }
+    queryStore.openTableStructure(item.connectionId, item.database, item.schema, objectName, "ddl");
+    return;
+  }
+  await handleQuickOpenSelect(item);
+}
+
 function dispatchBeforeTabSwitch(tabId: string) {
   if (tabId === queryStore.activeTabId) return;
   window.dispatchEvent(new CustomEvent("dbx:before-tab-switch", { detail: { tabId, fromTabId: queryStore.activeTabId } }));
@@ -3522,6 +3566,28 @@ function handleGlobalSearchKeydownCapture(e: KeyboardEvent) {
   e.stopPropagation();
   quickOpenForceContent.value = true;
   showQuickOpen.value = true;
+}
+
+// Double-Shift opens the active-database object search (JetBrains Search
+// Everywhere gesture). Observed on the capture phase so keydowns stopped by
+// other handlers still reset the gesture; the detector itself never
+// prevents or stops propagation.
+function anySearchDialogOpen(): boolean {
+  if (showQuickOpen.value || showDatabaseObjectSearch.value || showTabSwitcher.value) return true;
+  return typeof document !== "undefined" && !!document.querySelector('[data-slot="dialog-content"]');
+}
+
+const doubleShiftGesture = createDoubleShiftGestureDetector(() => {
+  if (anySearchDialogOpen()) return;
+  showDatabaseObjectSearch.value = true;
+});
+
+function handleDoubleShiftKeydownCapture(e: KeyboardEvent) {
+  doubleShiftGesture.handleKeyDown(e);
+}
+
+function handleDoubleShiftWindowBlur() {
+  doubleShiftGesture.reset();
 }
 
 function handleAuxiliarySearchKeydownCapture(e: KeyboardEvent) {
@@ -3725,6 +3791,23 @@ async function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     contentAreaRef.value?.refreshData();
+    return;
+  }
+  // F3 (default) opens the toolbar's database selector. The grid's pagination
+  // listener runs first inside DataGrid (stopPropagation) and the editor's
+  // search keymap only yields F3 here while its search panel is closed, so
+  // this branch never steals a more specific in-context F3.
+  if (isFocusDatabaseSelectShortcut(e, shortcuts) && contentAreaRef.value?.openDatabaseSelect()) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  // Ctrl+Shift+C (default) commits the active tab's transaction — the toolbar
+  // commit button as a shortcut. commitTransaction reports unhandled when no
+  // transaction is open, leaving the keys free for anything more specific.
+  if (isCommitTransactionShortcut(e, shortcuts) && contentAreaRef.value?.commitTransaction()) {
+    e.preventDefault();
+    e.stopPropagation();
     return;
   }
   if (isToggleResultsPaneShortcut(e, shortcuts) && contentAreaRef.value?.toggleResultsPane()) {
@@ -3998,9 +4081,11 @@ onMounted(async () => {
   window.addEventListener("keydown", handleGlobalSearchKeydownCapture, true);
   window.addEventListener("keydown", handleTabSwitcherKeydownCapture, true);
   window.addEventListener("keydown", handleAuxiliarySearchKeydownCapture, true);
+  window.addEventListener("keydown", handleDoubleShiftKeydownCapture, true);
   window.addEventListener("keydown", handleKeydown);
   window.addEventListener("keyup", handleKeyup, true);
   window.addEventListener("blur", handleTabSwitcherWindowBlur);
+  window.addEventListener("blur", handleDoubleShiftWindowBlur);
   document.addEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
   window.addEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
   window.addEventListener(COMPONENT_UPDATES_CHANGED_EVENT, handleComponentUpdatesChanged);
@@ -4083,9 +4168,11 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalSearchKeydownCapture, true);
   window.removeEventListener("keydown", handleTabSwitcherKeydownCapture, true);
   window.removeEventListener("keydown", handleAuxiliarySearchKeydownCapture, true);
+  window.removeEventListener("keydown", handleDoubleShiftKeydownCapture, true);
   window.removeEventListener("keydown", handleKeydown);
   window.removeEventListener("keyup", handleKeyup, true);
   window.removeEventListener("blur", handleTabSwitcherWindowBlur);
+  window.removeEventListener("blur", handleDoubleShiftWindowBlur);
   document.removeEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
   tabSwitcherKeyboard.reset();
   window.removeEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
@@ -4608,6 +4695,7 @@ onUnmounted(() => {
         <CloseActionPromptDialog v-if="isDesktop && showCloseActionPrompt" :open="showCloseActionPrompt" @update:open="handleCloseActionPromptOpenChange" @quit="chooseQuit" @minimize="chooseMinimize" />
         <AiRunsClosePromptDialog v-if="isDesktop && showAiRunsClosePrompt" v-model:open="showAiRunsClosePrompt" :count="blockingAiRunCount" @cancel="cancelPendingAppClose" @quit="confirmQuitWithActiveAiRuns" />
         <QuickOpenDialog :open="showQuickOpen" :initial-content-mode="quickOpenForceContent" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
+        <DatabaseObjectSearchDialog :open="showDatabaseObjectSearch" @update:open="showDatabaseObjectSearch = $event" @select="handleDatabaseObjectSearchSelect" />
         <TabSwitcherDialog :open="showTabSwitcher" :tabs="tabSwitcherTabs" :selected-index="tabSwitcherIndex" :shortcut-hint="tabSwitcherShortcutHint" @update:open="handleTabSwitcherOpenChange" @update:selected-index="tabSwitcherIndex = $event" @select="handleTabSwitcherSelect" />
       </div>
       <Teleport to="body">

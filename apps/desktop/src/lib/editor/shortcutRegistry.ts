@@ -46,6 +46,7 @@ export type ShortcutActionId =
   | "closeTab"
   | "closeOtherTabs"
   | "focusSearch"
+  | "focusDatabaseSelect"
   | "quickOpen"
   | "globalSearch"
   | "toggleAiPanel"
@@ -81,7 +82,8 @@ export type ShortcutActionId =
   | "openDataInNewTab"
   | "viewTableDdl"
   | "sendSelectionToAi"
-  | "sqlIntentionActions";
+  | "sqlIntentionActions"
+  | "commitTransaction";
 
 export type ShortcutScope = "global" | "editor" | "grid" | "search" | "sidebar";
 
@@ -427,6 +429,17 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: "Mod+F",
   },
   {
+    id: "focusDatabaseSelect",
+    labelKey: "settings.shortcutFocusDatabaseSelect",
+    scope: "global",
+    // F3 与 grid 作用域的 goToNextPage 同键（跨作用域重叠仅提示，见
+    // findCrossScopeShortcutConflicts 的注释）：焦点在结果网格内时网格的
+    // 翻页监听器 stopPropagation 优先；编辑器内搜索面板打开时 F3 仍是
+    // 查找下一个（codemirrorSearchKeymap 的条件绑定），面板关闭时冒泡
+    // 到 App.vue 打开数据库选择下拉。
+    defaultShortcut: "F3",
+  },
+  {
     id: "quickOpen",
     labelKey: "settings.shortcutQuickOpen",
     scope: "global",
@@ -569,6 +582,16 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutRefreshData",
     scope: "global",
     defaultShortcut: "F5",
+  },
+  {
+    id: "commitTransaction",
+    labelKey: "settings.shortcutCommitTransaction",
+    scope: "global",
+    // Mirrors the toolbar's commit button. The shortcut is only consumed when
+    // the active tab actually holds an open transaction (App.vue keydown), so
+    // the key stays free for in-context bindings (e.g. a user SQL shortcut
+    // action) whenever no transaction exists.
+    defaultShortcut: "Shift+Mod+C",
   },
   {
     id: "toggleResultsPane",

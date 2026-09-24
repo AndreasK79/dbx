@@ -91,6 +91,8 @@ pub enum AiProvider {
     Zhipu,
     MiniMax,
     Ollama,
+    #[serde(rename = "github-copilot")]
+    GithubCopilot,
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible,
     #[serde(rename = "codex-cli")]
@@ -125,6 +127,7 @@ impl AiProvider {
             AiProvider::Zhipu => "zhipu",
             AiProvider::MiniMax => "minimax",
             AiProvider::Ollama => "ollama",
+            AiProvider::GithubCopilot => "github-copilot",
             AiProvider::OpenaiCompatible => "openai-compatible",
             AiProvider::ClaudeCodeCli => "claude-code-cli",
             AiProvider::PiAgentCli => "pi-agent-cli",
@@ -909,6 +912,21 @@ pub fn resolve_endpoint(config: &AiConfig) -> String {
             format!("{base}/chat/completions")
         };
     }
+    if matches!(config.provider, AiProvider::GithubCopilot) {
+        // GitHub's Copilot API is OpenAI chat-completions shaped, but it sits
+        // directly under the host — there is no `/v1` version prefix to add, so
+        // a bare origin must not gain one (unlike every other OpenAI-style host).
+        let base = ep
+            .strip_suffix("/chat/completions")
+            .or_else(|| ep.strip_suffix("/responses"))
+            .unwrap_or(ep)
+            .trim_end_matches('/');
+        return if config.api_style == AiApiStyle::Responses {
+            format!("{base}/responses")
+        } else {
+            format!("{base}/chat/completions")
+        };
+    }
     // An OpenAI-style path typed in full is normally respected, but for the
     // providers whose route is derived from `api_style` it must track the
     // selected style: keeping a stale `/chat/completions` is what sent a
@@ -951,6 +969,7 @@ pub fn resolve_endpoint(config: &AiConfig) -> String {
         }
         AiProvider::Claude
         | AiProvider::AnthropicCompatible
+        | AiProvider::GithubCopilot
         | AiProvider::CodexCli
         | AiProvider::ClaudeCodeCli
         | AiProvider::PiAgentCli
@@ -1024,6 +1043,12 @@ pub fn resolve_model_list_endpoint(config: &AiConfig) -> Result<String, String> 
 
     if uses_anthropic_messages_api(config) {
         let base = ensure_anthropic_version_prefix(base);
+        return Ok(format!("{base}/models"));
+    }
+
+    // GitHub's Copilot API serves /models directly under the host, without the
+    // /v1 prefix every other OpenAI-style provider expects.
+    if matches!(config.provider, AiProvider::GithubCopilot) {
         return Ok(format!("{base}/models"));
     }
 
@@ -1737,6 +1762,7 @@ fn provider_requires_api_key(provider: &AiProvider) -> bool {
         AiProvider::Claude
             | AiProvider::Openai
             | AiProvider::Gemini
+            | AiProvider::GithubCopilot
             | AiProvider::Deepseek
             | AiProvider::Kimi
             | AiProvider::Qwen
@@ -1766,6 +1792,10 @@ fn validate_config(config: &AiConfig) -> Result<(), String> {
     }
     if matches!(config.provider, AiProvider::MiniMax) && config.api_style != AiApiStyle::Completions {
         return Err("MiniMax currently supports the Chat Completions API style in DBX; select Completions and retry"
+            .to_string());
+    }
+    if matches!(config.provider, AiProvider::GithubCopilot) && config.api_style != AiApiStyle::Completions {
+        return Err("GitHub Copilot currently supports the Chat Completions API style in DBX; select Completions and retry"
             .to_string());
     }
     if provider_requires_api_key(&config.provider) && config.api_key.trim().is_empty() {
@@ -2228,6 +2258,7 @@ pub async fn list_models_core(config: &AiConfig) -> Result<Vec<AiModelInfo>, Str
                     retain_ollama_completion_models(&client, config, models).await
                 }
                 AiProvider::Openai
+                | AiProvider::GithubCopilot
                 | AiProvider::Deepseek
                 | AiProvider::Kimi
                 | AiProvider::Qwen
@@ -3665,6 +3696,7 @@ pub async fn complete(request: &AiCompletionRequest) -> Result<String, String> {
                     unreachable!()
                 }
                 AiProvider::Openai
+                | AiProvider::GithubCopilot
                 | AiProvider::Deepseek
                 | AiProvider::Kimi
                 | AiProvider::Qwen
@@ -3728,6 +3760,7 @@ pub async fn stream(
             unreachable!()
         }
         AiProvider::Openai
+        | AiProvider::GithubCopilot
         | AiProvider::Deepseek
         | AiProvider::Kimi
         | AiProvider::Qwen
@@ -6702,6 +6735,44 @@ mod tests {
         let provider_json = serde_json::to_string(&AiProvider::Kimi).unwrap();
         assert_eq!(provider_json, r#""kimi""#);
         assert!(matches!(serde_json::from_str::<AiProvider>(&provider_json).unwrap(), AiProvider::Kimi));
+    }
+
+    #[test]
+    fn github_copilot_endpoints_have_no_v1_prefix_and_require_an_api_key() {
+        let config = AiConfig {
+            max_output_tokens: None,
+            provider: AiProvider::GithubCopilot,
+            api_key: "ghp_token".to_string(),
+            auth_method: AiAuthMethod::Bearer,
+            endpoint: "https://api.githubcopilot.com/chat/completions".to_string(),
+            model: "gpt-4.1".to_string(),
+            ..test_config(AiProvider::GithubCopilot)
+        };
+
+        // The preset's full URL is respected verbatim, and the model list sits
+        // directly under the host too.
+        assert_eq!(resolve_endpoint(&config), "https://api.githubcopilot.com/chat/completions");
+        assert_eq!(resolve_model_list_endpoint(&config).unwrap(), "https://api.githubcopilot.com/models");
+
+        // A bare origin must NOT gain the /v1 prefix every other OpenAI-style host gets.
+        let origin = AiConfig { endpoint: "https://api.githubcopilot.com".to_string(), ..config.clone() };
+        assert_eq!(resolve_endpoint(&origin), "https://api.githubcopilot.com/chat/completions");
+        assert_eq!(resolve_model_list_endpoint(&origin).unwrap(), "https://api.githubcopilot.com/models");
+
+        assert!(provider_requires_api_key(&config.provider));
+        assert_eq!(
+            validate_config(&AiConfig { api_key: String::new(), ..config.clone() }).unwrap_err(),
+            "API key is required"
+        );
+        // Copilot is chat-completions only; a hand-edited Responses config is rejected.
+        assert_eq!(
+            validate_config(&AiConfig { api_style: AiApiStyle::Responses, ..config.clone() }).unwrap_err(),
+            "GitHub Copilot currently supports the Chat Completions API style in DBX; select Completions and retry"
+        );
+
+        let provider_json = serde_json::to_string(&AiProvider::GithubCopilot).unwrap();
+        assert_eq!(provider_json, r#""github-copilot""#);
+        assert!(matches!(serde_json::from_str::<AiProvider>(&provider_json).unwrap(), AiProvider::GithubCopilot));
     }
 
     #[test]

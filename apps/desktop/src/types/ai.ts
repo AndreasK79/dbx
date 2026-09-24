@@ -8,6 +8,7 @@ export type AiProvider =
   | "zhipu"
   | "minimax"
   | "ollama"
+  | "github-copilot"
   | "anthropic-compatible"
   | "openai-compatible"
   | "claude-code-cli"

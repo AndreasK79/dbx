@@ -69,10 +69,21 @@ const contentEmits = createContentSurfaceEventForwarders(emit);
 const surfaceBindings = computed(() => ({ ...surfaceProps.value, ...contentEmits }));
 
 const activeSurfaceRef = ref<QueryEditorSurfaceHandle | null>(null);
+const editorToolbarRef = ref<InstanceType<typeof EditorToolbar> | null>(null);
 
 defineExpose({
   focusSearch: (target: Element | null = null) => activeSurfaceRef.value?.focusSearch(target) ?? false,
   openGoToColumn: () => activeSurfaceRef.value?.openGoToColumn() ?? false,
+  openDatabaseSelect: () => editorToolbarRef.value?.openDatabaseSelect() ?? false,
+  // Same action as the toolbar's commit button (Shift+Mod+C default). Only
+  // reports handled when the active tab holds a committable transaction, so
+  // the shortcut stays unconsumed for everything else.
+  commitTransaction: () => {
+    const tab = activeTab.value;
+    if (!tab || !(tab.txnSessionId || tab.autoCommitOpenTransaction)) return false;
+    void queryStore.commitTransaction(tab.id);
+    return true;
+  },
   refreshData: () => activeSurfaceRef.value?.refreshData() ?? false,
   toggleResultsPane: () => activeSurfaceRef.value?.toggleResultsPane() ?? false,
   refreshQueryEditorCompletionCache: () => activeSurfaceRef.value?.refreshQueryEditorCompletionCache() ?? false,
@@ -177,6 +188,7 @@ const groupExecutableSql = computed(() => {
     <div v-show="!contentSuppressed" class="flex min-h-0 min-w-0 flex-1 flex-col">
       <EditorToolbar
         v-if="activeTab && showGroupToolbar"
+        ref="editorToolbarRef"
         :active-tab="activeTab"
         :active-connection="activeConnection"
         :executable-sql="groupExecutableSql"
@@ -203,6 +215,7 @@ const groupExecutableSql = computed(() => {
         "
         @commit="activeTab && queryStore.commitTransaction(activeTab.id)"
         @rollback="activeTab && queryStore.rollbackTransaction(activeTab.id)"
+        @focus-query-editor="activeSurfaceRef?.focusQueryEditor()"
         @dismiss-txn-rolled-back="activeTab && (activeTab.txnAutoRolledBack = false)"
         @dismiss-auto-commit-txn-rolled-back="activeTab && (activeTab.autoCommitTxnRolledBack = false)"
         @dismiss-auto-commit-session-txn-rolled-back="activeTab && (activeTab.autoCommitSessionTxnRolledBack = false)"

@@ -47,7 +47,7 @@ import { appendDebugLog, isDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { decodeMeilisearchDocumentPage, decodeMeilisearchSearchResult, type MeilisearchDocumentPage, type MeilisearchDocumentPageWire, type MeilisearchSearchResult, type MeilisearchSearchWireResult } from "@/lib/backend/meilisearchTransport";
 import type { XuguTablespaceInfo } from "@/types/database";
 import type { CreatedKey, EnqueuedTaskSummary, KeyCreateInput, KeyListItem, KeyPage, KeyUpdateInput, MeilisearchCreateIndexInput, MeilisearchSystemOverview, MeilisearchTask, TaskListInput, TaskPage, TaskSelector } from "@/types/meilisearchManagement";
-import type { CsvQuoteMode } from "@/lib/export/csvQuoteMode";
+import type { CsvQuoteMode, CsvTextFormatOptions } from "@/lib/export/csvQuoteMode";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
 
 /** Normalize Tauri rejections once at the public backend boundary. */
@@ -5625,6 +5625,11 @@ export interface TableExportRequest {
   format: "csv" | "xlsx" | "json" | "markdown" | "sql" | "txt";
   insertMode?: SqlInsertMode;
   csvQuoteMode?: CsvQuoteMode;
+  /** CSV 列分隔符（单字符字符串；后端取首字符）。 */
+  csvDelimiter?: string;
+  /** CSV 引号字符（单字符字符串；后端取首字符）。 */
+  csvQuoteChar?: string;
+  csvIncludeHeader?: boolean;
   columns?: string[];
   columnTypes?: Array<string | null | undefined>;
   /** 与 `columns` 对齐的列 EXTRA 元数据（identity 等），用于 SQL INSERT 导出的 `SET IDENTITY_INSERT`。 */
@@ -5654,6 +5659,9 @@ export interface TableCsvExportOptions {
   pageSize?: number;
   timeoutSecs?: number;
   csvQuoteMode?: CsvQuoteMode;
+  csvDelimiter?: string;
+  csvQuoteChar?: string;
+  csvIncludeHeader?: boolean;
 }
 
 export interface TableExportProgress {
@@ -5680,6 +5688,11 @@ export interface QueryResultExportRequest {
   format: "csv" | "xlsx" | "json" | "txt" | "sql";
   insertMode?: SqlInsertMode;
   csvQuoteMode?: CsvQuoteMode;
+  /** CSV 列分隔符（单字符字符串；后端取首字符）。 */
+  csvDelimiter?: string;
+  /** CSV 引号字符（单字符字符串；后端取首字符）。 */
+  csvQuoteChar?: string;
+  csvIncludeHeader?: boolean;
   includeSqlSheet?: boolean;
   pageSize: number;
   rowLimit?: number | null;
@@ -5836,13 +5849,16 @@ export async function recordDatabaseExportDestination(directory: string): Promis
   await invoke("record_database_export_destination", { directory });
 }
 
-export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[], csvQuoteMode: CsvQuoteMode = "all"): Promise<void> {
+export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[], csvQuoteMode: CsvQuoteMode = "all", csvOptions: Omit<Partial<CsvTextFormatOptions>, "quoteMode"> = {}): Promise<void> {
   return invoke("export_query_result_csv", {
     request: {
       filePath,
       columns,
       rows,
       csvQuoteMode,
+      csvDelimiter: csvOptions.delimiter ?? ",",
+      csvQuoteChar: csvOptions.quoteChar ?? '"',
+      csvIncludeHeader: csvOptions.includeHeader ?? true,
     },
   });
 }

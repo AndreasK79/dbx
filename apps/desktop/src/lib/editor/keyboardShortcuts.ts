@@ -216,6 +216,10 @@ export function isRefreshDataShortcut(event: ShortcutLikeEvent, shortcuts?: Part
   return matchesShortcut(event, actionShortcut("refreshData", shortcuts));
 }
 
+export function isCommitTransactionShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("commitTransaction", shortcuts));
+}
+
 export function isToggleResultsPaneShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
   return matchesShortcut(event, actionShortcut("toggleResultsPane", shortcuts));
 }
@@ -287,6 +291,10 @@ export function isGoToPreviousPageShortcut(event: ShortcutLikeEvent, shortcuts?:
 
 export function isGoToNextPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
   return matchesShortcut(event, actionShortcut("goToNextPage", shortcuts));
+}
+
+export function isFocusDatabaseSelectShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("focusDatabaseSelect", shortcuts));
 }
 
 export function isGoToLastPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {

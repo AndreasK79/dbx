@@ -12,6 +12,9 @@ export interface StatementRange {
 
 export interface QueryEditorSurfaceHandle {
   focusSearch(target?: Element | null): boolean;
+  /** Move focus into the tab's query editor (e.g. after a shortcut-driven
+   *  database selection); false when the surface has no editor. */
+  focusQueryEditor(): boolean;
   openGoToColumn(): boolean;
   refreshData(target?: Element | null): boolean;
   toggleResultsPane(): boolean;

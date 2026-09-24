@@ -972,7 +972,26 @@ describe("substituteSqlParameters", () => {
         empty_raw: { kind: "raw", value: "  " },
         empty_string: { kind: "string", value: "" },
       }),
-    ).toBe("select NULL, NULL, '${empty_raw}', ''");
+    ).toBe("select NULL, NULL, '${empty_raw}', NULL");
+  });
+
+  it("substitutes NULL for untouched parameters instead of empty string literals", () => {
+    const sql = "select :blank_string, :blank_boolean, :missing, :typed_spaces";
+    expect(
+      substituteSqlParameters(sql, {
+        blank_string: { kind: "string", value: "" },
+        blank_boolean: { kind: "boolean", value: "" },
+        typed_spaces: { kind: "string", value: " " },
+      }),
+    ).toBe("select NULL, NULL, NULL, ' '");
+  });
+
+  it("keeps an explicit empty string reachable through Raw SQL", () => {
+    expect(substituteSqlParameters("select :empty_text", { empty_text: { kind: "raw", value: "''" } })).toBe("select ''");
+  });
+
+  it("keeps empty embedded fragments empty (NULL cannot live inside a string literal)", () => {
+    expect(substituteSqlParameters("select 'pre${blank}post'", { blank: { kind: "string", value: "" } })).toBe("select 'prepost'");
   });
 
   it("replaces placeholders embedded in ordinary SQL string values", () => {
@@ -1170,5 +1189,12 @@ describe("enabledSyntaxes option", () => {
 describe("sqlParameterLiteral", () => {
   it("falls back to quoted strings for invalid boolean input", () => {
     expect(sqlParameterLiteral({ kind: "boolean", value: "maybe" })).toBe("'maybe'");
+  });
+
+  it("renders an empty value of every kind as NULL", () => {
+    expect(sqlParameterLiteral({ kind: "string", value: "" })).toBe("NULL");
+    expect(sqlParameterLiteral({ kind: "boolean", value: "" })).toBe("NULL");
+    expect(sqlParameterLiteral({ kind: "number", value: "  " })).toBe("NULL");
+    expect(sqlParameterLiteral({ kind: "raw", value: "  " })).toBe("NULL");
   });
 });

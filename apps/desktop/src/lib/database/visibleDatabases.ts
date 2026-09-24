@@ -78,7 +78,11 @@ const SYSTEM_DATABASE_RULES: Partial<Record<DatabaseType, ReadonlySet<string>>> 
 
 const POSTGRES_LIKE_SYSTEM_SCHEMA_RULES: SystemNameRules = {
   exact: new Set(["information_schema", "pg_catalog", "pg_toast"]),
-  prefixes: ["pg_temp_", "pg_toast_temp_"],
+  // Numbered per-table toast namespaces (pg_toast_16416, one per table with
+  // toastable columns) are system schemas exactly like the temp ones — without
+  // the plain pg_toast_ prefix they survive every filter and crowd out user
+  // schemas in alphabetical lists.
+  prefixes: ["pg_temp_", "pg_toast_temp_", "pg_toast_"],
 };
 
 const ORACLE_SYSTEM_SCHEMA_NAMES = new Set([

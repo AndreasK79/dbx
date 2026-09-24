@@ -24,8 +24,8 @@ function mountSelect(props: Record<string, unknown> = {}) {
     "onUpdate:open": (value: unknown) => emitted.open.push(value),
   });
   mountedApps.push(app);
-  app.mount(root);
-  return { root, emitted };
+  const handle = app.mount(root) as unknown as { openDropdown: () => boolean };
+  return { root, emitted, handle };
 }
 
 afterEach(() => {
@@ -83,5 +83,31 @@ describe("SearchableSelect trigger", () => {
     const { root } = mountSelect({ clearable: true });
 
     expect(root.querySelector("button .invisible")).not.toBeNull();
+  });
+});
+
+describe("SearchableSelect programmatic open", () => {
+  it("opens the dropdown and focuses the search input from the exposed handle", async () => {
+    const { emitted, handle } = mountSelect();
+    expect(document.body.textContent).not.toContain("LineString");
+
+    expect(handle.openDropdown()).toBe(true);
+    await nextTick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The option list teleports to body and keyboard focus lands in the
+    // filter input, ready to type — this is what F3 (focusDatabaseSelect)
+    // activates.
+    expect(document.body.textContent).toContain("LineString");
+    expect(document.activeElement?.tagName).toBe("INPUT");
+    expect(emitted.open).toEqual([true]);
+  });
+
+  it("refuses to open while disabled", async () => {
+    const { handle } = mountSelect({ disabled: true });
+
+    expect(handle.openDropdown()).toBe(false);
+    await nextTick();
+    expect(document.body.textContent).not.toContain("LineString");
   });
 });

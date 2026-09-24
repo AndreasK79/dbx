@@ -1111,6 +1111,12 @@ function refreshQueryEditorCompletionCache(): boolean {
   return true;
 }
 
+function focusQueryEditor(): boolean {
+  if (props.activeTab.mode !== "query" || props.resultOnly) return false;
+  queryEditorRef.value?.focusEditor();
+  return !!queryEditorRef.value;
+}
+
 function reloadUnavailableDataTab() {
   const { whereInput, orderBy } = restoredDataTabReloadFilters(props.activeTab);
   emit("reload", props.activeTab.id, undefined, undefined, whereInput, orderBy);
@@ -1554,6 +1560,7 @@ function locateExecutionSummaryError(item: ExecutionSummaryItem) {
 
 defineExpose({
   focusSearch,
+  focusQueryEditor,
   openGoToColumn,
   refreshData,
   toggleResultsPane,

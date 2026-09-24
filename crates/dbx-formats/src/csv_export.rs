@@ -9,89 +9,132 @@ pub enum CsvQuoteMode {
     #[default]
     All,
     Necessary,
+    Never,
 }
 
-/// CSV 转义直写目标 buffer：包引号 + 内部 `"` 翻倍。值不含 `"` 时整段拷贝，
+/// 分隔符 + 引号模式 + 引号字符 + 表头开关：导出对话框一次选定后随请求下发，
+/// 格式化函数按它写单元格。`Default` 保持旧语义（逗号 + `"` + 全部加引号 + 含表头），
+/// legacy `_with_quote_mode` 系列委托到这里的默认变体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsvTextFormat {
+    pub quote_mode: CsvQuoteMode,
+    pub delimiter: char,
+    pub quote_char: char,
+    pub include_header: bool,
+}
+
+impl Default for CsvTextFormat {
+    fn default() -> Self {
+        Self { quote_mode: CsvQuoteMode::All, delimiter: ',', quote_char: '"', include_header: true }
+    }
+}
+
+impl From<CsvQuoteMode> for CsvTextFormat {
+    fn from(quote_mode: CsvQuoteMode) -> Self {
+        Self { quote_mode, ..Default::default() }
+    }
+}
+
+/// 请求里的分隔符是字符串（serde 兼容旧前端缺省）；取首字符，空串回退逗号。
+pub fn resolve_csv_delimiter(value: &str) -> char {
+    value.chars().next().unwrap_or(',')
+}
+
+/// 请求里的引号字符同样是字符串；取首字符，空串回退 `"`。
+pub fn resolve_csv_quote_char(value: &str) -> char {
+    value.chars().next().unwrap_or('"')
+}
+
+/// CSV 转义直写目标 buffer：包引号 + 内部引号字符翻倍。值不含引号字符时整段拷贝，
 /// 不做 replace 分配（逐批流式导出对每个单元格调用，是导出热路径）。
-fn push_csv_escaped_content(out: &mut String, value: &str) {
+fn push_csv_escaped_content(out: &mut String, value: &str, quote_char: char) {
     let mut rest = value;
-    while let Some(pos) = rest.find('"') {
+    while let Some(pos) = rest.find(quote_char) {
         out.push_str(&rest[..=pos]);
-        out.push('"');
-        rest = &rest[pos + 1..];
+        out.push(quote_char);
+        rest = &rest[pos + quote_char.len_utf8()..];
     }
     out.push_str(rest);
 }
 
 pub fn push_csv_escaped(out: &mut String, value: &str) {
-    out.push('"');
-    push_csv_escaped_content(out, value);
-    out.push('"');
+    push_csv_escaped_with_quote(out, value, '"');
 }
 
-fn csv_field_needs_quotes(value: &str) -> bool {
-    value.bytes().any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'))
+pub fn push_csv_escaped_with_quote(out: &mut String, value: &str, quote_char: char) {
+    out.push(quote_char);
+    push_csv_escaped_content(out, value, quote_char);
+    out.push(quote_char);
+}
+
+fn csv_field_needs_quotes(value: &str, delimiter: char, quote_char: char) -> bool {
+    value.chars().any(|ch| matches!(ch, '\n' | '\r') || ch == delimiter || ch == quote_char)
 }
 
 pub fn push_csv_field(out: &mut String, value: &str, quote_mode: CsvQuoteMode) {
-    if quote_mode == CsvQuoteMode::All || csv_field_needs_quotes(value) {
-        push_csv_escaped(out, value);
-    } else {
-        out.push_str(value);
+    push_csv_field_with_format(out, value, CsvTextFormat::from(quote_mode));
+}
+
+pub fn push_csv_field_with_format(out: &mut String, value: &str, format: CsvTextFormat) {
+    match format.quote_mode {
+        CsvQuoteMode::All => push_csv_escaped_with_quote(out, value, format.quote_char),
+        // Never 显式不加引号（即使值含分隔符/引号/换行，由用户自担）；
+        // Necessary 只在破坏字段结构时加引号。
+        CsvQuoteMode::Necessary if csv_field_needs_quotes(value, format.delimiter, format.quote_char) => {
+            push_csv_escaped_with_quote(out, value, format.quote_char);
+        }
+        _ => out.push_str(value),
     }
 }
 
-struct CsvEscapedWriter<'a>(&'a mut String);
+struct CsvEscapedWriter<'a>(&'a mut String, char);
 
 impl fmt::Write for CsvEscapedWriter<'_> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
-        push_csv_escaped_content(self.0, value);
+        push_csv_escaped_content(self.0, value, self.1);
         Ok(())
     }
 }
 
 /// 将表导出 CSV 值直接写入已有 buffer；包括 NULL 在内的值均保留分页导出的带引号旧语义。
 pub fn push_csv_text_value(out: &mut String, value: &Value) {
-    out.push('"');
+    push_csv_text_value_with_quote(out, value, '"');
+}
+
+pub fn push_csv_text_value_with_quote(out: &mut String, value: &Value, quote_char: char) {
+    out.push(quote_char);
     match value {
         Value::Null => {}
-        Value::String(value) => push_csv_escaped_content(out, value),
+        Value::String(value) => push_csv_escaped_content(out, value, quote_char),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
         Value::Number(value) => {
             fmt::write(out, format_args!("{value}")).expect("writing a number into a String cannot fail")
         }
         // 数组和对象可能包含引号，通过转义 writer 格式化，避免分配中间 JSON 字符串
-        other => fmt::write(&mut CsvEscapedWriter(out), format_args!("{other}"))
+        other => fmt::write(&mut CsvEscapedWriter(out, quote_char), format_args!("{other}"))
             .expect("writing JSON into a String cannot fail"),
     }
-    out.push('"');
+    out.push(quote_char);
 }
 
-fn push_csv_value_with_quote_mode(out: &mut String, value: &Value, quote_mode: CsvQuoteMode, quote_null: bool) {
-    if quote_mode == CsvQuoteMode::All {
+fn push_csv_value_formatted(out: &mut String, value: &Value, format: CsvTextFormat, quote_null: bool) {
+    if format.quote_mode == CsvQuoteMode::All {
         if value.is_null() && !quote_null {
             return;
         }
-        push_csv_text_value(out, value);
+        push_csv_text_value_with_quote(out, value, format.quote_char);
         return;
     }
 
     match value {
         Value::Null => {}
-        Value::String(value) => push_csv_field(out, value, quote_mode),
+        Value::String(value) => push_csv_field_with_format(out, value, format),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
         Value::Number(value) => {
             fmt::write(out, format_args!("{value}")).expect("writing a number into a String cannot fail")
         }
-        other => push_csv_field(out, &other.to_string(), quote_mode),
+        other => push_csv_field_with_format(out, &other.to_string(), format),
     }
-}
-
-fn push_csv_value(out: &mut String, value: &Value) {
-    if value.is_null() {
-        return;
-    }
-    push_csv_text_value(out, value);
 }
 
 /// TSV 转义直写：仅含特殊字符时包引号（语义与原 escape_tsv 一致）。
@@ -137,18 +180,6 @@ pub fn estimated_rows_capacity(rows: &[Vec<Value>]) -> usize {
 pub fn escape_csv(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     push_csv_escaped(&mut out, value);
-    out
-}
-
-fn escape_csv_with_quote_mode(value: &str, quote_mode: CsvQuoteMode) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    push_csv_field(&mut out, value, quote_mode);
-    out
-}
-
-fn format_csv_value(value: &Value) -> String {
-    let mut out = String::new();
-    push_csv_value(&mut out, value);
     out
 }
 
@@ -198,11 +229,15 @@ pub fn push_query_result_csv_row(out: &mut String, row: &[Value]) {
 }
 
 pub fn push_query_result_csv_row_with_quote_mode(out: &mut String, row: &[Value], quote_mode: CsvQuoteMode) {
+    push_query_result_csv_row_with_format(out, row, CsvTextFormat::from(quote_mode));
+}
+
+pub fn push_query_result_csv_row_with_format(out: &mut String, row: &[Value], format: CsvTextFormat) {
     for (cell_index, cell) in row.iter().enumerate() {
         if cell_index > 0 {
-            out.push(',');
+            out.push(format.delimiter);
         }
-        push_csv_value_with_quote_mode(out, cell, quote_mode, false);
+        push_csv_value_formatted(out, cell, format, false);
     }
 }
 
@@ -211,11 +246,15 @@ pub fn push_table_csv_row(out: &mut String, row: &[Value]) {
 }
 
 pub fn push_table_csv_row_with_quote_mode(out: &mut String, row: &[Value], quote_mode: CsvQuoteMode) {
+    push_table_csv_row_with_format(out, row, CsvTextFormat::from(quote_mode));
+}
+
+pub fn push_table_csv_row_with_format(out: &mut String, row: &[Value], format: CsvTextFormat) {
     for (cell_index, cell) in row.iter().enumerate() {
         if cell_index > 0 {
-            out.push(',');
+            out.push(format.delimiter);
         }
-        push_csv_value_with_quote_mode(out, cell, quote_mode, true);
+        push_csv_value_formatted(out, cell, format, true);
     }
 }
 
@@ -254,21 +293,29 @@ pub fn format_csv(columns: &[String], rows: &[Vec<Value>]) -> String {
 }
 
 pub fn format_csv_with_quote_mode(columns: &[String], rows: &[Vec<Value>], quote_mode: CsvQuoteMode) -> String {
+    format_csv_with_format(columns, rows, CsvTextFormat::from(quote_mode))
+}
+
+pub fn format_csv_with_format(columns: &[String], rows: &[Vec<Value>], format: CsvTextFormat) -> String {
     let mut out = String::with_capacity(
         estimated_rows_capacity(rows).saturating_add(columns.len().saturating_mul(12)).min(ROWS_CAPACITY_ESTIMATE_MAX),
     );
-    for (index, column) in columns.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
+    // 表头关闭时首行直接是数据行；各流式导出路径的表头也统一走这里（空表头
+    // 返回空串，写侧 write_all 空串等价于跳过，行写入各自前置 '\n' 不受影响）。
+    if format.include_header {
+        for (index, column) in columns.iter().enumerate() {
+            if index > 0 {
+                out.push(format.delimiter);
+            }
+            push_csv_field_with_format(&mut out, column, format);
         }
-        push_csv_field(&mut out, column, quote_mode);
+        out.push('\n');
     }
-    out.push('\n');
     for (row_index, row) in rows.iter().enumerate() {
         if row_index > 0 {
             out.push('\n');
         }
-        push_query_result_csv_row_with_quote_mode(&mut out, row, quote_mode);
+        push_query_result_csv_row_with_format(&mut out, row, format);
     }
     out
 }
@@ -282,7 +329,11 @@ pub fn format_query_result_csv_with_quote_mode(
     rows: &[Vec<Value>],
     quote_mode: CsvQuoteMode,
 ) -> String {
-    format_csv_with_quote_mode(columns, rows, quote_mode)
+    format_csv_with_format(columns, rows, CsvTextFormat::from(quote_mode))
+}
+
+pub fn format_query_result_csv_with_format(columns: &[String], rows: &[Vec<Value>], format: CsvTextFormat) -> String {
+    format_csv_with_format(columns, rows, format)
 }
 
 pub fn write_csv_text_row(
@@ -290,13 +341,24 @@ pub fn write_csv_text_row(
     values: impl IntoIterator<Item = String>,
     quote_mode: CsvQuoteMode,
 ) -> Result<(), String> {
+    write_csv_text_row_with_format(writer, values, CsvTextFormat::from(quote_mode))
+}
+
+pub fn write_csv_text_row_with_format(
+    writer: &mut impl Write,
+    values: impl IntoIterator<Item = String>,
+    format: CsvTextFormat,
+) -> Result<(), String> {
+    let delimiter = format.delimiter.to_string();
     let mut first = true;
     for value in values {
         if !first {
-            writer.write_all(b",").map_err(|err| err.to_string())?;
+            writer.write_all(delimiter.as_bytes()).map_err(|err| err.to_string())?;
         }
         first = false;
-        writer.write_all(escape_csv_with_quote_mode(&value, quote_mode).as_bytes()).map_err(|err| err.to_string())?;
+        let mut formatted = String::with_capacity(value.len() + 2);
+        push_csv_field_with_format(&mut formatted, &value, format);
+        writer.write_all(formatted.as_bytes()).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -306,17 +368,30 @@ pub fn write_csv_value_row(
     values: impl IntoIterator<Item = Value>,
     quote_mode: CsvQuoteMode,
 ) -> Result<(), String> {
+    write_csv_value_row_with_format(writer, values, CsvTextFormat::from(quote_mode))
+}
+
+pub fn write_csv_value_row_with_format(
+    writer: &mut impl Write,
+    values: impl IntoIterator<Item = Value>,
+    format: CsvTextFormat,
+) -> Result<(), String> {
+    let delimiter = format.delimiter.to_string();
     let mut first = true;
     for value in values {
         if !first {
-            writer.write_all(b",").map_err(|err| err.to_string())?;
+            writer.write_all(delimiter.as_bytes()).map_err(|err| err.to_string())?;
         }
         first = false;
-        let formatted = if quote_mode == CsvQuoteMode::All {
-            format_csv_value(&value)
+        let formatted = if format.quote_mode == CsvQuoteMode::All {
+            let mut formatted = String::new();
+            if !value.is_null() {
+                push_csv_text_value_with_quote(&mut formatted, &value, format.quote_char);
+            }
+            formatted
         } else {
             let mut formatted = String::new();
-            push_csv_value_with_quote_mode(&mut formatted, &value, quote_mode, false);
+            push_csv_value_formatted(&mut formatted, &value, format, false);
             formatted
         };
         writer.write_all(formatted.as_bytes()).map_err(|err| err.to_string())?;
@@ -369,6 +444,107 @@ mod tests {
     #[test]
     fn csv_quote_mode_defaults_to_all_for_backward_compatibility() {
         assert_eq!(CsvQuoteMode::default(), CsvQuoteMode::All);
+    }
+
+    #[test]
+    fn semicolon_delimiter_separates_and_quotes_only_delimiter_occurrences() {
+        let out = super::format_csv_with_format(
+            &["id".to_string(), "comma".to_string(), "semi".to_string()],
+            &[
+                vec![json!(1), json!("a,b"), json!("x;y")],
+                vec![json!(2), json!("line 1\n\"line 2\""), json!("plain")],
+            ],
+            super::CsvTextFormat { quote_mode: CsvQuoteMode::Necessary, delimiter: ';', ..Default::default() },
+        );
+        // 逗号不再触发引号（它不再是分隔符）；分号/引号/换行仍按需加引号。
+        assert_eq!(out, "id;comma;semi\n1;a,b;\"x;y\"\n2;\"line 1\n\"\"line 2\"\"\";plain");
+    }
+
+    #[test]
+    fn never_quote_mode_writes_fields_raw_even_with_special_characters() {
+        let out = super::format_csv_with_format(
+            &["a,b".to_string(), "plain".to_string()],
+            &[vec![json!("line 1\n\"line 2\""), json!(Value::Null)]],
+            super::CsvTextFormat { quote_mode: CsvQuoteMode::Never, delimiter: ',', ..Default::default() },
+        );
+        // Never 显式不转义：含逗号的表头/含换行的值原样输出，会与结构字符
+        // 混在一起（空单元格为裸空）。这正是该模式的风险，由用户自担。
+        assert_eq!(out, "a,b,plain\nline 1\n\"line 2\",");
+    }
+
+    #[test]
+    fn never_quote_mode_deserializes_from_camel_case_json() {
+        assert_eq!(serde_json::from_str::<CsvQuoteMode>("\"never\"").unwrap(), CsvQuoteMode::Never);
+        assert_eq!(serde_json::from_str::<CsvQuoteMode>("\"necessary\"").unwrap(), CsvQuoteMode::Necessary);
+    }
+
+    #[test]
+    fn resolve_csv_delimiter_takes_the_first_character_and_falls_back_to_comma() {
+        assert_eq!(super::resolve_csv_delimiter(";"), ';');
+        assert_eq!(super::resolve_csv_delimiter("\t"), '\t');
+        assert_eq!(super::resolve_csv_delimiter(""), ',');
+        assert_eq!(super::resolve_csv_delimiter(";;"), ';');
+    }
+
+    #[test]
+    fn custom_quote_character_wraps_and_doubles_itself() {
+        let out = super::format_csv_with_format(
+            &["id".to_string(), "name".to_string()],
+            &[vec![json!(1), json!("O'Brien"), json!("plain")]],
+            super::CsvTextFormat { quote_mode: CsvQuoteMode::All, delimiter: ',', quote_char: '\'', ..Default::default() },
+        );
+        // 引号字符换成 ' 后：包裹用它、内部出现时翻倍；默认的 " 退化为普通字符。
+        assert_eq!(out, "'id','name'\n'1','O''Brien','plain'");
+    }
+
+    #[test]
+    fn necessary_mode_quotes_custom_quote_char_and_delimiter_but_not_default_quotes() {
+        let out = super::format_csv_with_format(
+            &["id".to_string(), "note".to_string()],
+            &[vec![json!(7), json!("it's a, \"test\"")]],
+            super::CsvTextFormat { quote_mode: CsvQuoteMode::Necessary, delimiter: ',', quote_char: '\'', ..Default::default() },
+        );
+        // `'` 触发引号（自定义引号字符）、`,` 触发（分隔符）；`"` 不再触发。
+        assert_eq!(out, "id,note\n7,'it''s a, \"test\"'");
+    }
+
+    #[test]
+    fn include_header_false_omits_the_header_row() {
+        let out = super::format_csv_with_format(
+            &["id".to_string(), "name".to_string()],
+            &[vec![json!(1), json!("Ada")], vec![json!(2), json!("Bob")]],
+            super::CsvTextFormat { include_header: false, ..Default::default() },
+        );
+        assert_eq!(out, "\"1\",\"Ada\"\n\"2\",\"Bob\"");
+    }
+
+    #[test]
+    fn include_header_false_with_no_rows_yields_empty_output() {
+        let out = super::format_csv_with_format(
+            &["id".to_string(), "name".to_string()],
+            &[],
+            super::CsvTextFormat { include_header: false, ..Default::default() },
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn resolve_csv_quote_char_takes_the_first_character_and_falls_back_to_double_quote() {
+        assert_eq!(super::resolve_csv_quote_char("'"), '\'');
+        assert_eq!(super::resolve_csv_quote_char("`"), '`');
+        assert_eq!(super::resolve_csv_quote_char(""), '"');
+        assert_eq!(super::resolve_csv_quote_char("''"), '\'');
+    }
+
+    #[test]
+    fn table_csv_rows_keep_quoted_nulls_in_all_mode_with_custom_delimiter() {
+        let mut out = String::new();
+        super::push_table_csv_row_with_format(
+            &mut out,
+            &[Value::Null, json!("NULL"), json!("tab\there")],
+            super::CsvTextFormat { quote_mode: CsvQuoteMode::All, delimiter: '\t', ..Default::default() },
+        );
+        assert_eq!(out, "\"\"\t\"NULL\"\t\"tab\there\"");
     }
 
     #[test]

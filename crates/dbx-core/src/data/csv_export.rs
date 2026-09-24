@@ -28,6 +28,12 @@ pub struct TableCsvExportOptions {
     pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub csv_quote_mode: CsvQuoteMode,
+    #[serde(default)]
+    pub csv_delimiter: String,
+    #[serde(default)]
+    pub csv_quote_char: String,
+    #[serde(default)]
+    pub csv_include_header: bool,
 }
 
 async fn connection_database_type(state: &AppState, connection_id: &str) -> Result<DatabaseType, String> {
@@ -43,6 +49,12 @@ async fn connection_database_type(state: &AppState, connection_id: &str) -> Resu
 pub async fn export_table_data_csv_core(state: &AppState, options: TableCsvExportOptions) -> Result<u64, String> {
     let database_type = connection_database_type(state, &options.connection_id).await?;
     let page_size = options.page_size.unwrap_or(TABLE_DATA_EXPORT_PAGE_SIZE).max(1);
+    let csv_format = CsvTextFormat {
+        quote_mode: options.csv_quote_mode,
+        delimiter: resolve_csv_delimiter(&options.csv_delimiter),
+        quote_char: resolve_csv_quote_char(&options.csv_quote_char),
+        include_header: options.csv_include_header,
+    };
     let mut writer =
         BufWriter::new(File::create(&options.file_path).map_err(|err| format!("Failed to write CSV file: {err}"))?);
     writer.write_all("\u{FEFF}".as_bytes()).map_err(|err| err.to_string())?;
@@ -83,7 +95,9 @@ pub async fn export_table_data_csv_core(state: &AppState, options: TableCsvExpor
         .await?;
 
         if !wrote_header {
-            write_csv_text_row(&mut writer, result.columns, options.csv_quote_mode)?;
+            if csv_format.include_header {
+                write_csv_text_row_with_format(&mut writer, result.columns, csv_format)?;
+            }
             wrote_header = true;
         }
 
@@ -93,7 +107,7 @@ pub async fn export_table_data_csv_core(state: &AppState, options: TableCsvExpor
         }
         for row in result.rows {
             writer.write_all(b"\n").map_err(|err| err.to_string())?;
-            write_csv_value_row(&mut writer, row, options.csv_quote_mode)?;
+            write_csv_value_row_with_format(&mut writer, row, csv_format)?;
         }
 
         rows_exported += fetched as u64;

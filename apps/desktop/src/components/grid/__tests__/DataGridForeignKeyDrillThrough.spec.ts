@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const dataGridSource = readFileSync(new URL("../DataGrid.vue", import.meta.url), "utf8");
 const contentAreaSource = readFileSync(new URL("../../layout/ContentArea.vue", import.meta.url), "utf8");
-const postgresSource = readFileSync(new URL("../../../../../../crates/dbx-core/src/db/postgres.rs", import.meta.url), "utf8");
+const postgresSource = readFileSync(new URL("../../../../../../crates/dbx-drivers/src/db/postgres.rs", import.meta.url), "utf8");
 const queryStoreSource = readFileSync(new URL("../../../stores/queryStore.ts", import.meta.url), "utf8");
 const sourceForeignKeysSource = readFileSync(new URL("../../../composables/useDataGridSourceForeignKeys.ts", import.meta.url), "utf8");
 const navigationTargetsSource = readFileSync(new URL("../../../composables/useNavigationTargets.ts", import.meta.url), "utf8");

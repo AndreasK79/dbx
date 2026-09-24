@@ -5208,6 +5208,9 @@ const aiEndpointHint = computed(() => {
   if (aiUsesCompatibleAnthropicApi.value) {
     return t("ai.anthropicMessagesHint");
   }
+  if (aiEditProvider.value === "github-copilot") {
+    return t("ai.gitHubCopilotEndpointHint");
+  }
   if (aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "custom") {
     return t("ai.openAiCompatibleEndpointHint");
   }

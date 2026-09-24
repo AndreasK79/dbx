@@ -16,6 +16,8 @@ import { clearDataGridClipboardCopy, rememberDataGridClipboardCopy } from "@/lib
 import { buildDataGridCopyInsertStatement, type DataGridCopyInsertMode, type DataGridTableMeta } from "@/lib/dataGrid/dataGridSql";
 import { formatSqlInsert, formatTsv } from "@/lib/export/exportFormats";
 import { showSqlInsertModeDialog, type SqlExportOptions, type SqlInsertMode } from "@/lib/export/sqlInsertMode";
+import { showCsvExportDialog } from "@/lib/export/csvExportDialog";
+import { csvFileExtension, type CsvTextFormatOptions } from "@/lib/export/csvQuoteMode";
 import { summarizeExportRows } from "@/lib/export/exportDiagnostics";
 import { appendDebugLog, appendNativeProcessMemoryLog, getBrowserMemorySnapshot, isDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { uuid } from "@/lib/common/utils";
@@ -821,8 +823,10 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
   async function exportCsv(rowIds?: number[]) {
     await runExclusiveExport(async () => {
       try {
-        if (await exportQueryResultViaBackend("csv", rowIds)) return;
-        if (await exportFullTableDataViaBackend("csv", rowIds)) return;
+        const csvOptions = await showCsvExportDialog({ quoteMode: useSettingsStore().editorSettings.csvQuoteMode });
+        if (!csvOptions) return;
+        if (await exportQueryResultViaBackend("csv", rowIds, false, "name", true, undefined, csvOptions)) return;
+        if (await exportFullTableDataViaBackend("csv", rowIds, "name", true, undefined, csvOptions)) return;
 
         const needsFullExport = rowIds === undefined && !!fullExportResult && !hasCompleteLocalResult?.value;
         if (needsFullExport && exportProgressDialog && exportProgressState) {
@@ -868,12 +872,13 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
             totalRows: result.rows.length,
           };
         }
-        let outputPath = exportFileName("export", "csv");
+        const csvExtension = csvFileExtension(csvOptions.delimiter);
+        let outputPath = exportFileName("export", csvExtension);
         if (isTauriRuntime()) {
           const { save } = await import("@tauri-apps/plugin-dialog");
           const path = await save({
             defaultPath: outputPath,
-            filters: [{ name: "CSV", extensions: ["csv"] }],
+            filters: [{ name: csvExtension.toUpperCase(), extensions: [csvExtension] }],
           });
           if (!path) {
             if (exportProgressDialog) exportProgressDialog.value = false;
@@ -881,7 +886,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           }
           outputPath = path as string;
         }
-        await api.exportQueryResultCsv(outputPath, result.columns, rows, useSettingsStore().editorSettings.csvQuoteMode);
+        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, csvOptions);
         if (needsFullExport && exportProgressState) {
           exportProgressState.value = {
             ...exportProgressState.value,
@@ -909,19 +914,22 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
   async function exportCurrentPageCsv() {
     await runExclusiveExport(async () => {
       try {
-        let outputPath = exportFileName("export-page", "csv", { page: true });
+        const csvOptions = await showCsvExportDialog({ quoteMode: useSettingsStore().editorSettings.csvQuoteMode });
+        if (!csvOptions) return;
+        const csvExtension = csvFileExtension(csvOptions.delimiter);
+        let outputPath = exportFileName("export-page", csvExtension, { page: true });
         if (isTauriRuntime()) {
           const { save } = await import("@tauri-apps/plugin-dialog");
           const path = await save({
             defaultPath: outputPath,
-            filters: [{ name: "CSV", extensions: ["csv"] }],
+            filters: [{ name: csvExtension.toUpperCase(), extensions: [csvExtension] }],
           });
           if (!path) return;
           outputPath = path as string;
         }
         const result = await resultToExport(undefined, undefined, false);
         const rows = forceCsvTextForTemporalColumns(result.rows, result.columnTypes);
-        await api.exportQueryResultCsv(outputPath, result.columns, rows, useSettingsStore().editorSettings.csvQuoteMode);
+        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, csvOptions);
         toast(t("grid.exported"));
       } catch (e: any) {
         toast(t("grid.exportFailed", { message: translateBackendError(t, e) }), 5000);
@@ -1296,7 +1304,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     return excludeColumns ? { excludePrimaryKeys: true, primaryKeys: excludeColumns } : {};
   }
 
-  async function exportFullTableDataViaBackend(format: "csv" | "xlsx" | "json" | "markdown" | "sql" | "txt", rowIds?: number[], headerMode: XlsxHeaderMode = "name", autoFilter = true, sqlExportOptions?: SqlExportOptions): Promise<boolean> {
+  async function exportFullTableDataViaBackend(format: "csv" | "xlsx" | "json" | "markdown" | "sql" | "txt", rowIds?: number[], headerMode: XlsxHeaderMode = "name", autoFilter = true, sqlExportOptions?: SqlExportOptions, csvOptions?: CsvTextFormatOptions): Promise<boolean> {
     const meta = tableMeta.value;
     // The backend table exporter currently builds two-part table names. External
     // Doris/StarRocks catalogs need the data-tab paginator's three-part SQL.
@@ -1306,8 +1314,10 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
 
     const fmt = FORMAT_META[format];
     const splitSqlOutput = format === "sql" && sqlExportOptions?.splitMaxMb !== undefined;
-    const extension = splitSqlOutput ? "zip" : (fmt?.ext ?? format);
-    const filterName = splitSqlOutput ? "ZIP" : (fmt?.label ?? format.toUpperCase());
+    // 制表符分隔的 CSV 按惯例落成 .tsv。
+    const csvExtension = format === "csv" && csvOptions ? csvFileExtension(csvOptions.delimiter) : undefined;
+    const extension = splitSqlOutput ? "zip" : (csvExtension ?? fmt?.ext ?? format);
+    const filterName = splitSqlOutput ? "ZIP" : csvExtension ? csvExtension.toUpperCase() : (fmt?.label ?? format.toUpperCase());
     let outputPath = exportFileName(meta.tableName || "export", extension, { preferFallback: true });
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -1357,7 +1367,8 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           filePath: outputPath,
           format,
           ...(format === "sql" && sqlExportOptions ? { insertMode: sqlExportOptions.insertMode, splitMaxMb: sqlExportOptions.splitMaxMb } : {}),
-          csvQuoteMode: editorSettings.csvQuoteMode,
+          csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : editorSettings.csvQuoteMode,
+          ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
           columns: columns.value,
           columnTypes: columnTypes.value,
           ...(format === "sql" ? { columnExtras: sqlExportColumnExtras(columns.value) } : {}),
@@ -1399,7 +1410,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     return true;
   }
 
-  async function exportQueryResultViaBackend(format: "csv" | "xlsx" | "json" | "txt" | "sql", rowIds?: number[], includeSqlSheet = false, headerMode: XlsxHeaderMode = "name", autoFilter = true, insertMode?: SqlInsertMode): Promise<boolean> {
+  async function exportQueryResultViaBackend(format: "csv" | "xlsx" | "json" | "txt" | "sql", rowIds?: number[], includeSqlSheet = false, headerMode: XlsxHeaderMode = "name", autoFilter = true, insertMode?: SqlInsertMode, csvOptions?: CsvTextFormatOptions): Promise<boolean> {
     if (rowIds !== undefined || context.value !== "results" || !queryResultExportRequest) {
       return false;
     }
@@ -1409,8 +1420,9 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     if (hasCompleteLocalResult?.value) return false;
 
     const fmt = FORMAT_META[format];
-    const extension = fmt?.ext ?? format;
-    const filterName = fmt?.label ?? format.toUpperCase();
+    // 制表符分隔的 CSV 按惯例落成 .tsv。
+    const extension = format === "csv" && csvOptions ? csvFileExtension(csvOptions.delimiter) : (fmt?.ext ?? format);
+    const filterName = extension === "tsv" ? "TSV" : (fmt?.label ?? format.toUpperCase());
     let outputPath = exportFileName("query-result", extension);
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -1437,7 +1449,8 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     const request = baseRequest
       ? {
           ...baseRequest,
-          csvQuoteMode: useSettingsStore().editorSettings.csvQuoteMode,
+          csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : useSettingsStore().editorSettings.csvQuoteMode,
+          ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
           ...sqlExportPrimaryKeyOptions(),
           dateTimeFormat: useSettingsStore().editorSettings.globalDateTimeExportFormat || undefined,
           numericColumnRightAlign: useSettingsStore().editorSettings.numericColumnRightAlign ?? true,
