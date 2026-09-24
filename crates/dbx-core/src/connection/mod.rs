@@ -4044,8 +4044,14 @@ impl AppState {
                             true
                         }
                         Ok(mut conn) => {
+                            // The probe runs no statement, so a shared pool can take
+                            // the connection back without COM_RESET_CONNECTION and the
+                            // setup replay, and a connection verified moments ago (by
+                            // this probe or the checkout that follows it) is not
+                            // pinged again.
+                            conn.reset_connection(false);
                             let timeout = crate::db::connection_timeout();
-                            match tokio::time::timeout(timeout, conn.ping()).await {
+                            match tokio::time::timeout(timeout, db::mysql::verify_pooled_conn(&pool, &mut conn)).await {
                                 Ok(Ok(())) => false,
                                 Ok(Err(err)) => {
                                     log::warn!("MySQL connection pool '{pool_key}' is stale: {err}");
@@ -4904,15 +4910,17 @@ impl AppState {
         Ok(closed)
     }
 
-    pub async fn active_agent_connection_driver_keys(&self) -> HashSet<String> {
+    pub async fn active_agent_connection_driver_connections(&self) -> HashMap<String, Vec<String>> {
         let configs = self.configs.read().await;
         let connections = self.connection_pools_snapshot().await;
-        let mut keys = HashSet::new();
+        let mut connections_by_key: HashMap<String, Vec<String>> = HashMap::new();
 
         for (pool_key, pool) in connections.iter() {
             #[cfg(feature = "duckdb-sidecar")]
             if matches!(pool, PoolKind::DuckDbWorker(_)) {
-                keys.insert("duckdb".to_string());
+                if let Some(config) = config_for_pool_key(pool_key, &configs) {
+                    connections_by_key.entry("duckdb".to_string()).or_default().push(config.name.clone());
+                }
                 continue;
             }
             if !matches!(pool, PoolKind::Agent(_)) {
@@ -4925,25 +4933,33 @@ impl AppState {
                 &config.db_type,
                 config.driver_profile.as_deref(),
             ) {
-                keys.insert(agent_key.to_string());
+                connections_by_key.entry(agent_key.to_string()).or_default().push(config.name.clone());
             }
         }
 
-        keys
+        for names in connections_by_key.values_mut() {
+            names.sort();
+            names.dedup();
+        }
+        connections_by_key
     }
 
-    pub async fn prepare_agent_driver_updates(&self, driver_keys: &[String]) -> HashSet<String> {
+    pub async fn active_agent_connection_driver_keys(&self) -> HashSet<String> {
+        self.active_agent_connection_driver_connections().await.into_keys().collect()
+    }
+
+    pub async fn prepare_agent_driver_updates(&self, driver_keys: &[String]) -> HashMap<String, Vec<String>> {
         let candidates = driver_keys.iter().cloned().collect::<HashSet<_>>();
         if candidates.is_empty() {
-            return HashSet::new();
+            return HashMap::new();
         }
 
         let blockers = self
-            .active_agent_connection_driver_keys()
+            .active_agent_connection_driver_connections()
             .await
             .into_iter()
-            .filter(|key| candidates.contains(key))
-            .collect::<HashSet<_>>();
+            .filter(|(key, _)| candidates.contains(key))
+            .collect::<HashMap<_, _>>();
         if !blockers.is_empty() {
             return blockers;
         }
@@ -4953,7 +4969,11 @@ impl AppState {
         }
 
         // A connection may have started while idle runtimes were stopping.
-        self.active_agent_connection_driver_keys().await.into_iter().filter(|key| candidates.contains(key)).collect()
+        self.active_agent_connection_driver_connections()
+            .await
+            .into_iter()
+            .filter(|(key, _)| candidates.contains(key))
+            .collect()
     }
 
     pub async fn connection_identifier_quote(
@@ -5892,8 +5912,14 @@ fn keepalive_target_from_pool(pool: &PoolKind, config: &ConnectionConfig) -> Opt
 async fn ping_keepalive_target(target: &mut KeepaliveTarget, timeout: Duration) -> Result<(), KeepaliveError> {
     match target {
         KeepaliveTarget::Mysql(pool) => {
+            // The checkout health check is the keepalive round trip: it pings
+            // the idle connection (unless it was verified moments ago) and
+            // replaces it when it died. A ping leaves no session state behind,
+            // so return the connection without the COM_RESET_CONNECTION and
+            // setup replay a shared pool would run.
             let mut conn = db::mysql::get_conn_with_health_check(pool).await?;
-            conn.ping().await.map_err(|error| KeepaliveError::Legacy(error.to_string()))
+            conn.reset_connection(false);
+            Ok(())
         }
         KeepaliveTarget::Postgres(pool) => {
             let client = pool.get().await.map_err(|e| format!("PostgreSQL pool error: {e}"))?;
@@ -7842,8 +7868,13 @@ mod tests {
         let (state, dir) = test_app_state().await;
         let mut config = mysql_config(None);
         config.id = "dameng-conn".to_string();
+        config.name = "达梦生产".to_string();
         config.db_type = DatabaseType::Dameng;
+        let mut replica_config = config.clone();
+        replica_config.id = "dameng-replica".to_string();
+        replica_config.name = "达梦报表".to_string();
         state.configs.write().await.insert(config.id.clone(), config);
+        state.configs.write().await.insert(replica_config.id.clone(), replica_config);
         state
             .agent_manager
             .daemons
@@ -7851,14 +7882,19 @@ mod tests {
             .await
             .insert("oracle".to_string(), crate::db::agent_driver::AgentDriverClient::test_stub());
         state.connections.write().await.insert("dameng-conn".to_string(), agent_pool_stub());
+        state.connections.write().await.insert("dameng-replica".to_string(), agent_pool_stub());
 
         assert_eq!(
-            state.active_agent_connection_driver_keys().await,
-            std::collections::HashSet::from(["dameng".to_string()])
+            state.active_agent_connection_driver_connections().await,
+            std::collections::HashMap::from([(
+                "dameng".to_string(),
+                vec!["达梦报表".to_string(), "达梦生产".to_string()]
+            )])
         );
 
         state.connections.write().await.remove("dameng-conn");
-        assert!(state.active_agent_connection_driver_keys().await.is_empty());
+        state.connections.write().await.remove("dameng-replica");
+        assert!(state.active_agent_connection_driver_connections().await.is_empty());
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -7886,6 +7922,7 @@ mod tests {
         let (state, dir) = test_app_state().await;
         let mut config = mysql_config(None);
         config.id = "dameng-conn".to_string();
+        config.name = "达梦生产".to_string();
         config.db_type = DatabaseType::Dameng;
         state.configs.write().await.insert(config.id.clone(), config);
         state.connections.write().await.insert("dameng-conn".to_string(), agent_pool_stub());
@@ -7898,7 +7935,7 @@ mod tests {
 
         let blockers = state.prepare_agent_driver_updates(&["dameng".to_string()]).await;
 
-        assert_eq!(blockers, std::collections::HashSet::from(["dameng".to_string()]));
+        assert_eq!(blockers, std::collections::HashMap::from([("dameng".to_string(), vec!["达梦生产".to_string()])]));
         assert_eq!(state.agent_manager.active_daemon_keys().await, vec!["dameng".to_string()]);
 
         let _ = std::fs::remove_dir_all(dir);
