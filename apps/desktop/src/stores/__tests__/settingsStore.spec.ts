@@ -907,6 +907,14 @@ describe("settingsStore AI API key normalization", () => {
       model: "deepseek-v4.1-flash",
       models: [{ name: "deepseek-v4.1-flash" }],
     });
+    expect(AI_PROVIDER_PARTNER_PRESETS.find((preset) => preset.id === "aicodemirror")).toMatchObject({
+      endpoint: "https://api.aicodemirror.ai/v1",
+      provider: "openai-compatible",
+      authMethod: "bearer",
+      requiresApiKey: true,
+      websiteUrl: "https://www.aicodemirror.ai/register?invitecode=DK44NH",
+      badgeKey: "ai.aicodemirrorSponsored",
+    });
   });
 
   it("uses the mainland MiniMax endpoint only for new zh-CN presets", () => {

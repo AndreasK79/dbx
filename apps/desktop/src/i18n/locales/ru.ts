@@ -278,6 +278,8 @@ export default withEnglishFallback({
     workbenchUnavailableFallback: "Рабочая среда плагина недоступна",
     pluginIncompatible: "Плагин несовместим",
     loadingTitle: "Загрузка {title}",
+    clipboardReadConsent: "«{name}» запрашивает чтение системного буфера обмена. Его рабочая область получит текущее содержимое буфера обмена (возможно, содержащее скопированные вами пароли или токены). Разрешить чтение в этом запуске?",
+    clipboardReadConsentTitle: "Запрос на чтение буфера обмена",
   },
   auth: {
     rateLimited: "Повторите попытку через {seconds} с",
@@ -3005,9 +3007,12 @@ export default withEnglishFallback({
     builtinProviders: "Встроенная поддержка",
     partnerProviders: "Премиум-спонсоры",
     jalapenoSponsored: "$1 бесплатного кредита",
+    hualongSponsored: "$1 бесплатного кредита",
+    aicodemirrorSponsored: "8 юаней бесплатного кредита",
     jalapenoDescription: "🎉 ИИ корпоративного уровня, которому доверяют ведущие команды, теперь доступен и вам! Попробуйте передовые модели со скидкой 50% и получайте больше бонусных кредитов при пополнении!",
     hualongDescription:
       "🐉 Официальный ретранслятор моделей для активных ИИ-разработчиков! 100% подлинные модели серий Codex и Claude с проверяемой токен-биллинговой детализацией, корпоративными контрактами и выставлением счетов.\n🎉Зарегистрируйтесь с промокодом DBX&HUALONG и получите $1 бесплатного кредита!",
+    aicodemirrorDescription: "⚡ AICodeMirror — корпоративная масштабируемость, быстрые счета и поддержка 7×24; новые пользователи получают 8 юаней бесплатного кредита и скидку 20% на первое пополнение.",
     visitPartner: "Посетить сайт партнёра",
     getApiKey: "Получить ключ API",
     providerStatusActive: "Активен",
@@ -9358,6 +9363,8 @@ export default withEnglishFallback({
     shortcutLowercaseSelection: "Преобразовать выделенное в нижний регистр",
     shortcutConvertNamingStyle: "Переключить стиль именования",
     shortcutExPasteSqlInCondition: "ExPaste: вставить как условие IN",
+    showResultSourceDatabase: "Имя набора результатов содержит имя базы данных",
+    showResultSourceDatabaseDescription: "После отключения вкладки наборов результатов будут отображать только имена таблиц; полное имя (включая имя базы данных) по-прежнему можно посмотреть во всплывающей подсказке.",
   },
   driverStore: {
     jreDirRemoveFailed: "Не удалось удалить старый каталог JRE: {path} (исходная ошибка: {error})",
