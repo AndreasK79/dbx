@@ -24,6 +24,7 @@ const treeGroupNodeTypes = new Set<TreeNodeType>([
   "group-partitions",
   "group-extensions",
   "group-foreign-servers",
+  "group-event-triggers",
   "group-tablespaces",
   "group-datafiles",
   "type-attributes",

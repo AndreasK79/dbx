@@ -417,6 +417,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-green-400" };
     case "group-extensions":
       return { icon: Package, colorClass: "text-violet-500" };
+    case "group-event-triggers":
+      return { icon: Package, colorClass: "text-violet-500" };
     case "group-tablespaces":
       return { icon: Database, colorClass: "text-orange-500" };
     case "group-datafiles":
@@ -427,6 +429,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Network, colorClass: "text-violet-500" };
     case "postgres-foreign-server":
       return { icon: Server, colorClass: "text-violet-400" };
+    case "event-trigger":
+      return { icon: Package, colorClass: "text-violet-400" };
     case "load-more":
       return { icon: Plus, colorClass: "text-primary" };
     default:

@@ -1,3 +1,4 @@
+import { normalizePluginShortcutSettings, type PluginShortcutSettings } from "@/lib/plugins/pluginShortcuts";
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { aiConfigToItem, generateId, getConfigKey } from "@/lib/ai/aiConfigList";
@@ -24,7 +25,7 @@ import { REDIS_DATABASE_DISPLAY_LIMIT_DEFAULT, REDIS_DATABASE_DISPLAY_LIMIT_MIN,
 import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebar/sidebarTableNameDisplay";
 import { normalizeSidebarCopyTableNameSeparator } from "@/lib/sidebar/sidebarTableNameCopy";
 import type { SidebarActivation } from "@/lib/sidebar/treeNodeClick";
-import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlCompletion";
+import { DEFAULT_SQL_SNIPPETS } from "@/lib/sql/sqlSnippetTemplates";
 import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
 import { canonicalSqlShortcutSql, DEFAULT_SQL_SHORTCUTS, deriveSqlShortcutDatabaseTypes, mergeDefaultSqlShortcuts, normalizeSqlShortcutDatabaseTypes, normalizeSqlShortcutKind, normalizeSqlShortcutLimit, normalizeSqlShortcutSqlByDatabaseType } from "@/lib/sql/sqlShortcutActions";
 import { normalizeSqlVariableSyntaxOverrides, type SqlVariableSyntaxOverrides } from "@/lib/sql/sqlVariableSyntax";
@@ -85,6 +86,13 @@ export interface McpConnectionPolicy {
   databaseScope: "all" | "selected" | "none";
   allowedDatabases: string[];
   databasePolicies: McpDatabasePolicy[];
+  /**
+   * Per-connection opt-in for AI-agent writes to a Salesforce org. Off by default and
+   * forced off by `readOnly`: SOQL reads need nothing beyond the execution mode, but
+   * Salesforce DML has no transaction and no rollback, so it also requires the
+   * two-step prepare/apply confirmation on every single write.
+   */
+  allowSalesforceDml: boolean;
 }
 
 export interface McpDatabasePolicy {
@@ -173,6 +181,9 @@ export function normalizeMcpGlobalPolicy(policy: Partial<McpGlobalPolicy> | null
         databaseScope,
         allowedDatabases,
         databasePolicies,
+        // Same fail-closed shape as allowDangerousSql: read-only wins, and a policy
+        // saved before the switch existed (field absent) normalizes to off.
+        allowSalesforceDml: rule.readOnly !== true && rule.allowSalesforceDml === true,
       };
       return rules;
     }, {}),
@@ -870,6 +881,7 @@ export interface EditorSettings {
   mongoViewMode: "document" | "table";
   showColumnCommentsInHeader: boolean;
   showColumnTypesInHeader: boolean;
+  showColumnHeaderTooltips: boolean;
   /** 结果集页签/结果列表的名称是否带上库名（关闭后只显示表名，完整名称仍在悬浮提示中）。 */
   showResultSourceDatabase: boolean;
   dataGridShowTransposeFieldMetadata: boolean;
@@ -973,6 +985,7 @@ export interface EditorSettings {
   queryExportKeysetOptimizationEnabled: boolean;
   updateDownloadSource: UpdateDownloadSource;
   ignoredUpdateVersion: string;
+  pluginShortcuts: PluginShortcutSettings;
   toolbarItems: ToolbarItems;
   objectBrowserShowCheckbox: boolean;
   objectBrowserViewMode: "list" | "grid";
@@ -1149,6 +1162,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   mongoViewMode: "document",
   showColumnCommentsInHeader: true,
   showColumnTypesInHeader: true,
+  showColumnHeaderTooltips: true,
   showResultSourceDatabase: true,
   dataGridShowTransposeFieldMetadata: false,
   colorizeDataGridCellTypes: false,
@@ -1245,6 +1259,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   queryExportKeysetOptimizationEnabled: true,
   updateDownloadSource: "official",
   ignoredUpdateVersion: "",
+  pluginShortcuts: normalizePluginShortcutSettings(undefined),
   toolbarItems: { ...DEFAULT_TOOLBAR_ITEMS },
   objectBrowserShowCheckbox: false,
   objectBrowserViewMode: "list",
@@ -1704,6 +1719,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     mongoViewMode: settings.mongoViewMode === "table" ? "table" : DEFAULT_EDITOR_SETTINGS.mongoViewMode,
     showColumnCommentsInHeader: settings.showColumnCommentsInHeader ?? DEFAULT_EDITOR_SETTINGS.showColumnCommentsInHeader,
     showColumnTypesInHeader: settings.showColumnTypesInHeader ?? DEFAULT_EDITOR_SETTINGS.showColumnTypesInHeader,
+    showColumnHeaderTooltips: settings.showColumnHeaderTooltips ?? DEFAULT_EDITOR_SETTINGS.showColumnHeaderTooltips,
     showResultSourceDatabase: settings.showResultSourceDatabase ?? DEFAULT_EDITOR_SETTINGS.showResultSourceDatabase,
     dataGridShowTransposeFieldMetadata: settings.dataGridShowTransposeFieldMetadata === true,
     colorizeDataGridCellTypes: settings.colorizeDataGridCellTypes ?? DEFAULT_EDITOR_SETTINGS.colorizeDataGridCellTypes,
@@ -1850,6 +1866,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     queryExportKeysetOptimizationEnabled: typeof settings.queryExportKeysetOptimizationEnabled === "boolean" ? settings.queryExportKeysetOptimizationEnabled : DEFAULT_EDITOR_SETTINGS.queryExportKeysetOptimizationEnabled,
     updateDownloadSource: normalizeUpdateDownloadSource(settings.updateDownloadSource),
     ignoredUpdateVersion: typeof settings.ignoredUpdateVersion === "string" ? settings.ignoredUpdateVersion : DEFAULT_EDITOR_SETTINGS.ignoredUpdateVersion,
+    pluginShortcuts: normalizePluginShortcutSettings(settings.pluginShortcuts),
     toolbarItems: normalizeToolbarItems(settings.toolbarItems),
     objectBrowserShowCheckbox: typeof settings.objectBrowserShowCheckbox === "boolean" ? settings.objectBrowserShowCheckbox : DEFAULT_EDITOR_SETTINGS.objectBrowserShowCheckbox,
     objectBrowserViewMode: settings.objectBrowserViewMode === "grid" ? "grid" : DEFAULT_EDITOR_SETTINGS.objectBrowserViewMode,
@@ -1956,6 +1973,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const isMcpGlobalPolicyLoaded = ref(false);
   const isEditorSettingsLoaded = ref(false);
   let initEditorSettingsPromise: Promise<void> | null = null;
+  let initAiConfigsPromise: Promise<void> | null = null;
   let pendingEditorSettingsPatches: Partial<EditorSettings>[] = [];
   let editorSettingsOperationQueue: Promise<void> | null = null;
   let editorSettingsPatchRevision = 0;
@@ -2161,7 +2179,15 @@ export const useSettingsStore = defineStore("settings", () => {
 
   async function initAiConfigs(): Promise<void> {
     if (isAiConfigLoaded.value) return;
+    if (!initAiConfigsPromise) {
+      initAiConfigsPromise = loadAiConfigurationState().finally(() => {
+        initAiConfigsPromise = null;
+      });
+    }
+    await initAiConfigsPromise;
+  }
 
+  async function loadAiConfigurationState(): Promise<void> {
     // 尝试加载新格式
     const newConfigs = await api.loadAiConfigs();
 
@@ -2525,6 +2551,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.mongoViewMode !== undefined) editorSettings.value.mongoViewMode = partial.mongoViewMode;
     if (partial.showColumnCommentsInHeader !== undefined) editorSettings.value.showColumnCommentsInHeader = partial.showColumnCommentsInHeader;
     if (partial.showColumnTypesInHeader !== undefined) editorSettings.value.showColumnTypesInHeader = partial.showColumnTypesInHeader;
+    if (partial.showColumnHeaderTooltips !== undefined) editorSettings.value.showColumnHeaderTooltips = partial.showColumnHeaderTooltips;
     if (partial.showResultSourceDatabase !== undefined) editorSettings.value.showResultSourceDatabase = partial.showResultSourceDatabase;
     if (partial.dataGridShowTransposeFieldMetadata !== undefined) editorSettings.value.dataGridShowTransposeFieldMetadata = partial.dataGridShowTransposeFieldMetadata === true;
     if (partial.colorizeDataGridCellTypes !== undefined) editorSettings.value.colorizeDataGridCellTypes = partial.colorizeDataGridCellTypes === true;
@@ -2638,6 +2665,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.queryExportKeysetOptimizationEnabled !== undefined) editorSettings.value.queryExportKeysetOptimizationEnabled = partial.queryExportKeysetOptimizationEnabled;
     if (partial.updateDownloadSource !== undefined) editorSettings.value.updateDownloadSource = normalizeUpdateDownloadSource(partial.updateDownloadSource);
     if (partial.ignoredUpdateVersion !== undefined) editorSettings.value.ignoredUpdateVersion = typeof partial.ignoredUpdateVersion === "string" ? partial.ignoredUpdateVersion : "";
+    if (partial.pluginShortcuts !== undefined) editorSettings.value.pluginShortcuts = normalizePluginShortcutSettings(partial.pluginShortcuts);
     if (partial.toolbarItems !== undefined) editorSettings.value.toolbarItems = normalizeToolbarItems(partial.toolbarItems);
     if (partial.objectBrowserShowCheckbox !== undefined) editorSettings.value.objectBrowserShowCheckbox = partial.objectBrowserShowCheckbox === true;
     if (partial.objectBrowserViewMode !== undefined) editorSettings.value.objectBrowserViewMode = partial.objectBrowserViewMode === "grid" ? "grid" : "list";

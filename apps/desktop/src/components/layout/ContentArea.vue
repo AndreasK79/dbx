@@ -61,7 +61,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { Switch } from "@/components/ui/switch";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
-import QueryEditor from "@/components/editor/QueryEditor.vue";
 import ColumnInfoPanel from "@/components/editor/ColumnInfoPanel.vue";
 import QueryLoadingState from "@/components/common/QueryLoadingState.vue";
 import QueryErrorActions from "@/components/common/QueryErrorActions.vue";
@@ -93,6 +92,7 @@ function preloadDataGridComponent() {
   void loadDataGridComponent();
 }
 
+const QueryEditor = defineAsyncComponent({ loader: () => import("@/components/editor/QueryEditor.vue"), loadingComponent: QueryLoadingState, delay: 0 });
 const DataGrid = defineAsyncComponent(loadDataGridComponent);
 const RedisKeyBrowser = defineAsyncComponent(() => import("@/components/redis/RedisKeyBrowser.vue"));
 const RedisDashboard = defineAsyncComponent(() => import("@/components/redis/RedisDashboard.vue"));
@@ -140,7 +140,7 @@ import type { ContentAreaSurfaceEmits, ContentAreaSurfaceProps } from "@/compone
 import { TABLE_FONT_SIZE_MAX, TABLE_FONT_SIZE_MIN, useSettingsStore, type DataGridRowNumberMode, type DataGridSearchMode, type ResultRunDisplayMode } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
-import { canCancelQueryExecution, isActiveResultLoading, queryExecutionLabelKey } from "@/lib/sql/queryExecutionState";
+import { canCancelQueryExecution, isActiveResultLoading, queryExecutionLabelKey, shouldShowCancelAction } from "@/lib/sql/queryExecutionState";
 import { sqlErrorDisplayPosition, sqlErrorEditorOffset, logSqlErrorPosition } from "@/lib/sql/errorPosition";
 import {
   databaseDisplayNameForTab,
@@ -1191,8 +1191,8 @@ function openPluginResultView(pluginId: string, contributionId: string, label: s
   if (!result) return;
   // The tab carries the result-view contribution id, not a workbench id: the
   // plugin UI is told which declared surface the user picked, and it receives a
-  // bounded snapshot — plugins re-query through their backend when they need the
-  // full or streamed result set.
+  // bounded snapshot — plugins that need more rows re-run the statement through
+  // `host.queryData` (host.data:read, with the user's consent).
   const cappedRows = result.rows.slice(0, 500);
   queryStore.openPluginWorkbench(pluginId, contributionId, {
     title: label,
@@ -2325,6 +2325,10 @@ defineExpose({
                 "
                 :all-export-results="allResultExportSheets"
                 :export-file-base-name="activeQueryResultExportBaseName"
+                :show-cancel="shouldShowCancelAction(activeTab)"
+                :cancelling="activeTab.isCancelling"
+                :cancel-disabled="!canCancelQueryExecution(activeTab)"
+                @cancel="emit('cancel', activeTab.id)"
                 @update:order-by-input="(v: string) => (activeTab.orderByInput = v)"
                 @local-column-filters-change="(filters: Record<string, string[]>) => queryStore.updateDataGridLocalColumnFilters(activeTab.id, filters)"
                 @reload="(sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent) => emit('reload', activeTab.id, sql, searchText, whereInput, orderBy, limit, offset, intent)"
@@ -2751,6 +2755,10 @@ defineExpose({
           :on-execute-sql="async (sql: string) => emit('executeSql', activeTab.id, sql)"
           :full-export-result="(onProgress?: (info: { rowsExported: number; totalRows: number | null }) => void) => queryStore.fetchTabResultForExport(activeTab.id, onProgress)"
           :export-file-base-name="activeTab.title"
+          :show-cancel="shouldShowCancelAction(activeTab)"
+          :cancelling="activeTab.isCancelling"
+          :cancel-disabled="!canCancelQueryExecution(activeTab)"
+          @cancel="emit('cancel', activeTab.id)"
           @update:where-input="(v: string) => (activeTab.whereInput = v)"
           @update:order-by-input="(v: string) => (activeTab.orderByInput = v)"
           @local-column-filters-change="(filters: Record<string, string[]>) => queryStore.updateDataGridLocalColumnFilters(activeTab.id, filters)"
