@@ -368,6 +368,99 @@ describe("UpdateDialog ignore version", () => {
   });
 });
 
+describe("UpdateDialog enter key", () => {
+  function pressEnterOn(element: Element | null | undefined) {
+    element?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    return flushDialog();
+  }
+
+  it("runs the primary action when Enter lands on a bare dialog surface", async () => {
+    const { downloadInBackground } = await mountDialog(0);
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(downloadInBackground).toHaveBeenCalledOnce();
+  });
+
+  it("routes the form's submit event to the same primary action", async () => {
+    const { downloadInBackground } = await mountDialog(0);
+
+    document.body.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flushDialog();
+
+    expect(downloadInBackground).toHaveBeenCalledOnce();
+  });
+
+  it("installs a downloaded update on Enter", async () => {
+    const { downloadInBackground, installDownloaded } = await mountDialog(0, { updateDownloaded: true, downloadProgress: 100 });
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(installDownloaded).toHaveBeenCalledOnce();
+    expect(downloadInBackground).not.toHaveBeenCalled();
+  });
+
+  it("restarts a ready update on Enter", async () => {
+    const restart = vi.fn();
+    await mountDialog(0, { updateReady: true }, undefined, { onRestart: restart });
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(restart).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Enter inert while the update is downloading", async () => {
+    const { downloadInBackground, cancelDownload } = await mountDialog(0, { isDownloadingUpdate: true, downloadProgress: 42 });
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(downloadInBackground).not.toHaveBeenCalled();
+    expect(cancelDownload).not.toHaveBeenCalled();
+  });
+
+  it("keeps Enter inert while running tasks still gate the restart", async () => {
+    const { installDownloaded } = await mountDialog(1, { updateDownloaded: true, downloadProgress: 100 });
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(installDownloaded).not.toHaveBeenCalled();
+  });
+
+  it("keeps Enter inert in the web runtime without desktop install controls", async () => {
+    runtimeState.tauri = false;
+    const { downloadInBackground } = await mountDialog(0);
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(downloadInBackground).not.toHaveBeenCalled();
+  });
+
+  it("leaves Enter on interactive controls to their native behavior", async () => {
+    const { downloadInBackground } = await mountDialog(0);
+
+    await pressEnterOn(buttonWithText("Ignore this version"));
+
+    expect(downloadInBackground).not.toHaveBeenCalled();
+  });
+
+  it("updates the selected component category on Enter", async () => {
+    const installComponentUpdates = vi.fn();
+    await mountDialog(0, {}, undefined, {
+      driverUpdates: [{ db_type: "mysql", label: "MySQL", version: "9.0.0", installed_version: "8.0.0", update_available: true }],
+      "onInstall-component-updates": installComponentUpdates,
+    });
+
+    const driversTab = document.body.querySelector<HTMLButtonElement>('[data-update-tab="drivers"]');
+    driversTab?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    driversTab?.click();
+    await flushDialog();
+
+    await pressEnterOn(document.body.querySelector("[data-update-scroll-region]"));
+
+    expect(installComponentUpdates).toHaveBeenCalledWith("drivers");
+  });
+});
+
 describe("UpdateDialog release notes safety", () => {
   it("renders remote HTML as text and never creates unsafe links or image requests", async () => {
     await mountDialog(0, { releaseNotes: '<img src="https://example.com/tracker" onerror="alert(1)"><script>alert(1)</script> [bad](javascript:alert) ![remote](https://example.com/image) [safe](https://example.com/release)' });

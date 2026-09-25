@@ -128,6 +128,51 @@ describe("buildSnippetItems", () => {
     expect(items.findIndex((item) => item.label === "SELECT" && item.type === "keyword")).toBeGreaterThan(0);
   });
 
+  it("ranks an exactly typed table name ahead of a snippet with the same trigger", () => {
+    const sql = "SELECT * FROM orders";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-orders", label: "orders template", prefix: "orders", body: "SELECT *\nFROM orders;" }],
+      tables: [{ name: "orders", type: "table" }],
+      columnsByTable: new Map(),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "orders", type: "table", exactMatch: true }));
+    const snippet = items.find((item) => item.type === "snippet" && item.label === "orders template");
+    expect(snippet).toBeDefined();
+    expect(snippet?.exactMatch).toBeFalsy();
+    expect(items.indexOf(snippet!)).toBeGreaterThan(0);
+  });
+
+  it("ranks an exactly typed column name ahead of a snippet with the same trigger", () => {
+    const sql = "SELECT * FROM users WHERE uid";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-uid", label: "uid lookup", prefix: "uid", body: "uid = 1" }],
+      tables: [{ name: "users", type: "table" }],
+      columnsByTable: new Map([["users", [{ name: "uid", table: "users" }]]]),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "uid", type: "column", exactMatch: true }));
+    const snippet = items.find((item) => item.type === "snippet" && item.label === "uid lookup");
+    expect(snippet).toBeDefined();
+    expect(snippet?.exactMatch).toBeFalsy();
+    expect(items.indexOf(snippet!)).toBeGreaterThan(0);
+  });
+
+  it("still ranks an exact snippet trigger first when no identifier collides with it", () => {
+    const sql = "SELECT * FROM ord";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-ord", label: "orders export", prefix: "ord", body: "SELECT *\nFROM orders;" }],
+      tables: [{ name: "orders", type: "table" }],
+      columnsByTable: new Map(),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "orders export", type: "snippet", exactMatch: true }));
+    expect(items.findIndex((item) => item.label === "orders" && item.type === "table")).toBeGreaterThan(0);
+  });
+
   it("keeps an exact custom snippet first when matching columns are preferred", () => {
     const sql = "SELECT * FROM users WHERE cc";
     const items = buildSqlCompletionItems(sql, sql.length, {

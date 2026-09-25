@@ -1796,15 +1796,37 @@ class SqlCompletionProvider {
     }
 
     if (context.prefix) {
+      const prefixLower = context.prefix.toLowerCase();
+      // A fully typed table/column name is a stronger intent signal than a snippet
+      // trigger that collides with it: the exact-trigger bonus assumes triggers are
+      // unambiguous, but imported template packs often carry a trigger equal to a
+      // real table name. When such an exact identifier match exists, demote the
+      // colliding snippets to plain ranking so the identifier owns the top spot.
+      // Functions and keywords keep yielding to exact triggers (pinned by tests).
+      let exactIdentifierMatch = false;
+      for (const item of this.items) {
+        if (item.type !== "table" && item.type !== "column") continue;
+        if (item.label.toLowerCase() === prefixLower || item.filterText?.toLowerCase() === prefixLower) {
+          exactIdentifierMatch = true;
+          break;
+        }
+      }
       for (const item of this.items) {
         // Alias snippets reuse the prefix as a label while applying alias SQL, so they are not exact name matches.
         const isAliasSnippet = item.type === "snippet" && item.apply === formatAliasCompletionApply(item.label);
-        const isExactLabelMatch = !isAliasSnippet && item.label.toLowerCase() === context.prefix.toLowerCase();
-        const isExactFilterTextMatch = item.filterText?.toLowerCase() === context.prefix.toLowerCase();
-        if (isExactLabelMatch || isExactFilterTextMatch) {
-          item.exactMatch = true;
-          item.boost += EXACT_LABEL_MATCH_BOOST;
+        const isExactLabelMatch = !isAliasSnippet && item.label.toLowerCase() === prefixLower;
+        const isExactFilterTextMatch = item.filterText?.toLowerCase() === prefixLower;
+        if (!isExactLabelMatch && !isExactFilterTextMatch) continue;
+        if (item.type === "snippet" && exactIdentifierMatch) {
+          // The snippet builder's exactMatch marker identifies custom exact-trigger
+          // snippets; strip that bonus (the base trigger boost stays, so the snippet
+          // still leads the non-exact pool instead of sinking to the bottom).
+          if (item.exactMatch) item.boost -= EXACT_CUSTOM_SNIPPET_TRIGGER_BOOST;
+          item.exactMatch = false;
+          continue;
         }
+        item.exactMatch = true;
+        item.boost += EXACT_LABEL_MATCH_BOOST;
       }
     }
 
