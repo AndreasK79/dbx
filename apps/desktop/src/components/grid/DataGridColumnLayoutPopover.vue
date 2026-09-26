@@ -85,6 +85,29 @@ const renderedOptionsStyle = computed<CSSProperties | undefined>(() => {
     transform: `translateY(${virtualWindow.value.offsetTop}px)`,
   };
 });
+const canHideAllColumns = computed(() => (props.grid?.visibleColumnCount ?? 0) > 1);
+const canShowOnlyFilteredColumns = computed(() => columnSearch.value.trim() !== "" && columnLayoutOptions.value.length > 0);
+
+/** Hides every displayable column in one batch ("uncheck all"). The shared
+ *  visibility rules keep at least one column visible, so the first column
+ *  stays checked — the footer hint already states that rule. */
+function hideAllColumns() {
+  const grid = props.grid;
+  if (!grid) return;
+  grid.hideColumns(grid.orderedColumnLayoutOptions.map((option) => option.index));
+}
+
+/** Makes the visible set exactly the columns matching the current search:
+ *  matching columns are checked (including previously hidden ones) and every
+ *  other column is hidden in the same batch. */
+function showOnlyFilteredColumns() {
+  const grid = props.grid;
+  if (!grid) return;
+  const filteredIndexes = new Set(columnLayoutOptions.value.map((option) => option.index));
+  if (filteredIndexes.size === 0) return;
+  grid.showAllColumns();
+  grid.hideColumns(grid.orderedColumnLayoutOptions.filter((option) => !filteredIndexes.has(option.index)).map((option) => option.index));
+}
 
 function columnLayoutRowStyle(option: DataGridColumnLayoutOption): CSSProperties {
   const style: CSSProperties = { height: `${DATA_GRID_COLUMN_LAYOUT_ROW_HEIGHT}px` };
@@ -379,7 +402,13 @@ onBeforeUnmount(resetColumnDragState);
           {{ t("grid.columnVisibilityHint") }}
           {{ columnReorderEnabled ? t("grid.columnReorderHint") : t("grid.columnReorderSearchHint") }}
         </span>
-        <div class="flex items-center justify-end gap-1">
+        <div class="flex flex-wrap items-center justify-end gap-1">
+          <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-column-hide-all :disabled="!canHideAllColumns" @click="hideAllColumns()">
+            {{ t("grid.hideAllColumns") }}
+          </Button>
+          <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-column-show-filtered :disabled="!canShowOnlyFilteredColumns" @click="showOnlyFilteredColumns()">
+            {{ t("grid.showOnlyFilteredColumns") }}
+          </Button>
           <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="(grid?.displayableColumnCount ?? 0) <= 1" @click="grid?.invertColumnVisibility()">
             {{ t("grid.invertColumnVisibility") }}
           </Button>

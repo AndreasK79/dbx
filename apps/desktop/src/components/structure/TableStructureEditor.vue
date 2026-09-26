@@ -70,6 +70,8 @@ import { hasTableStructureRefreshWork, unloadedTableStructureRefreshScope, visib
 import { canAddTableStructureColumn, getTableStructureCapabilities, hasLocalTableColumnOrderChange, isPhysicalTableColumnOrderChange, sanitizeStructureIndexesForCapabilities, supportsLocalTableColumnReorder } from "@/lib/table/tableStructureCapabilities";
 import { getConcurrentIndexAvailability, concurrentIndexNamesInStatements, normalizeUnsupportedConcurrentIndexes, type ConcurrentIndexAvailability } from "@/lib/table/concurrentIndexAvailability";
 import { orderedColumnIndexes, uniqueDataGridColumnOrderKeys } from "@/lib/dataGrid/dataGridColumnOrder";
+import { resolveDataGridTypeVisualKind } from "@/lib/dataGrid/dataGridColumnType";
+import { dataGridTypeVisualClass } from "@/lib/dataGrid/dataGridCellTextVisual";
 import { loadTableDataGridColumnOrder, notifyTableDataGridColumnOrderChanged, removeTableDataGridColumnOrder, saveTableDataGridColumnOrder, tableDataGridColumnOrderScopeKey } from "@/lib/dataGrid/dataGridColumnLayoutStorage";
 import { codeMirrorSqlDialectForConnection, connectionObjectTreeQuerySchema, tableStructureDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { postgresListRolesSql, usersFromPostgresRolesResult } from "@/lib/database/databaseUserAdmin";
@@ -1213,6 +1215,8 @@ const indexColWidths = ref(loadStructureIndexColumnWidths(structureDensity.value
 const resizing = ref<{ col: number; startX: number; startW: number } | null>(null);
 const columnSearchInputRef = ref<InstanceType<typeof Input>>();
 const columnSearchText = ref("");
+/** True while a column search query is typed: rows are filtered, not marked. */
+const columnFilterActive = computed(() => !!columnSearchText.value.trim());
 const selectedColumnId = ref<string | null>(null);
 // Multi-selection set (ctrl/shift-click) plus the shift-range anchor. The
 // legacy `selectedColumnId` stays as the "active" column: it decides where
@@ -1499,12 +1503,21 @@ function columnNeedsVariableGeometryHeight(column: EditableStructureColumn): boo
 const columnVirtualItemSize = computed(() => (columns.value.some(columnNeedsVariableGeometryHeight) ? null : structureColumnRowHeight.value));
 const columnVirtualRows = computed(() => {
   const geometryHintHeight = Math.ceil(structureDensityMetric.value.fontSize * structureDensityMetric.value.lineHeight) + 2;
-  return columns.value.map((column, index) => ({
+  const rows = columns.value.map((column, index) => ({
     id: column.id,
     column,
     index,
     size: structureColumnRowHeight.value + (columnNeedsVariableGeometryHeight(column) ? geometryHintHeight : 0),
   }));
+  // The column search filters the grid instead of only marking matches. Rows
+  // with pending edits (new, changed, or marked for drop) stay visible so the
+  // filter can never hide unsaved work. Each row keeps its full-array index —
+  // ordinals, drag targets, and DOM row lookups all key on the real position.
+  // Gate on the query, not the match set: a query that matches nothing must
+  // filter everything out (the empty state), unlike no query at all.
+  if (!columnFilterActive.value) return rows;
+  const matching = filteredColumnRowIds.value;
+  return rows.filter((row) => matching.has(row.column.id) || columnChanged(row.column, row.index));
 });
 const indexColLabels = computed(() => [
   t("structureEditor.indexName"),
@@ -2957,7 +2970,11 @@ async function scrollColumnRowIntoView(index: number, block: ScrollLogicalPositi
   let row = renderedColumnRow(index);
   if (!row) {
     const virtualScroller = columnsScrollerRef.value;
-    if (virtualScroller && !(virtualScroller instanceof HTMLElement)) virtualScroller.scrollToItem?.(index, { align: block });
+    if (virtualScroller && !(virtualScroller instanceof HTMLElement)) {
+      // index is the full-array position; the scroller only knows the filtered items array.
+      const filteredIndex = columnVirtualRows.value.findIndex((item) => item.index === index);
+      if (filteredIndex >= 0) virtualScroller.scrollToItem?.(filteredIndex, { align: block });
+    }
     await nextTick();
     row = renderedColumnRow(index);
   }
@@ -3654,11 +3671,9 @@ function onColumnDragEnd() {
 
 function columnRowClass(column: EditableStructureColumn, index: number) {
   const dragState = columnDragState.value;
-  const isSearchMatch = filteredColumnRowIds.value.has(column.id);
   const isSelected = selectedColumnIds.value.has(column.id) && !column.markedForDrop;
   return {
     "bg-destructive/5 opacity-60": column.markedForDrop,
-    "structure-column-search-match": isSearchMatch,
     // Reuse the existing search-current highlight for the active/selected row.
     "structure-column-search-current": highlightedColumnId.value === column.id || isSelected,
     "opacity-55": dragState?.columnId === column.id,
@@ -3678,22 +3693,17 @@ function columnMatchesSearch(column: EditableStructureColumn): boolean {
   );
 }
 
-function columnFieldMatchesSearch(value: string | null | undefined): boolean {
-  const query = columnSearchText.value.trim().toLowerCase();
-  return (
-    !!query &&
-    String(value ?? "")
-      .toLowerCase()
-      .includes(query)
-  );
-}
-
-function columnSearchFieldClass(column: EditableStructureColumn, value: string | null | undefined) {
-  const matches = columnFieldMatchesSearch(value);
-  return {
-    "!border-primary/60 !bg-primary/10": matches,
-    "!border-primary !ring-2 !ring-primary/30": matches && highlightedColumnId.value === column.id,
-  };
+/**
+ * The type column picks up the app's per-type palette (the same
+ * data-grid-type-* classes and CSS variables the grid colors values with), so
+ * the columns tab reads like the colored DDL: integer/string/temporal/… each
+ * get their hue in both appearances and any custom type-color scheme.
+ * Unknown types stay on the default foreground instead of the grid's muted
+ * treatment — here the type is the primary content, not a secondary cue.
+ */
+function columnTypeVisualClass(column: EditableStructureColumn): string {
+  const kind = resolveDataGridTypeVisualKind(column.dataType, databaseType.value);
+  return kind === "unknown" ? "" : dataGridTypeVisualClass(kind);
 }
 
 function focusColumnSearch() {
@@ -3723,7 +3733,20 @@ function scrollToColumnSearchMatch(direction: 1 | -1 = 1) {
   }, 1800);
 }
 
+/** Clears the column filter and its "current match" highlight (Escape / the ✕ button). */
+function clearColumnSearch() {
+  columnSearchText.value = "";
+  highlightedColumnId.value = null;
+}
+
 function onColumnSearchKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    // Escape clears the filter; with no query it falls through so the input keeps its native behavior.
+    if (!columnSearchText.value) return;
+    event.preventDefault();
+    clearColumnSearch();
+    return;
+  }
   if (event.key !== "Enter") return;
   event.preventDefault();
   scrollToColumnSearchMatch(event.shiftKey ? -1 : 1);
@@ -5070,11 +5093,21 @@ watch(
                 <button
                   v-if="columnSearchText"
                   type="button"
-                  class="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1 text-[length:var(--structure-font-size)] text-muted-foreground hover:bg-muted hover:text-foreground"
+                  class="absolute right-7 top-1/2 -translate-y-1/2 rounded px-1 text-[length:var(--structure-font-size)] text-muted-foreground hover:bg-muted hover:text-foreground"
                   :title="t('structureEditor.nextColumnMatch')"
                   @click="scrollToColumnSearchMatch(1)"
                 >
                   {{ columnSearchMatchCount }}
+                </button>
+                <button
+                  v-if="columnSearchText"
+                  type="button"
+                  class="absolute right-1.5 top-1/2 flex h-[var(--structure-control-height)] w-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  :aria-label="t('structureEditor.clearColumnSearch')"
+                  :title="t('structureEditor.clearColumnSearch')"
+                  @click="clearColumnSearch"
+                >
+                  <X :class="structureIconClass" />
                 </button>
               </div>
               <Tooltip v-if="activeTab === 'columns'" :delay-duration="FIELD_SHORTCUT_TOOLTIP_DELAY_MS" data-add-column-shortcut-tooltip>
@@ -5136,7 +5169,11 @@ watch(
 
           <TabsContent v-if="tableMetadataCapabilities.columns" value="columns" class="col-start-1 row-start-2 m-0 min-h-0 flex-1 overflow-hidden p-0">
             <CustomContextMenu :items="activeColumnContextMenuItems" @close="clearColumnContextMenuTarget" v-slot="columnContextMenuSlot">
+              <div v-if="columnFilterActive && columnVirtualRows.length === 0" class="flex h-full items-center justify-center p-6 text-center text-[length:var(--structure-font-size)] text-muted-foreground">
+                {{ t("structureEditor.columnSearchNoMatches", { query: columnSearchText.trim() }) }}
+              </div>
               <RecycleScroller
+                v-else
                 ref="columnsScrollerRef"
                 class="structure-column-virtual-scroller structure-table-scroller h-full overflow-auto"
                 :style="{ '--structure-column-table-width': columnTableWidth + 'px' }"
@@ -5271,7 +5308,7 @@ watch(
                           </div>
                         </td>
                         <td :class="structureCellClass">
-                          <Input v-model="column.name" :class="[structureControlClass, columnSearchFieldClass(column, column.name)]" :disabled="isColumnNameDisabled(column)" data-column-name-input />
+                          <Input v-model="column.name" :class="structureControlClass" :disabled="isColumnNameDisabled(column)" data-column-name-input />
                         </td>
                         <td :class="structureCellClass">
                           <SearchableSelect
@@ -5285,10 +5322,10 @@ watch(
                             :allow-custom="true"
                             :option-tooltip="dataTypeTooltip"
                             :display-name="gaussdbMDataTypeDisplayName"
-                            :trigger-class="[structureMonoControlClass, 'w-full']"
+                            :trigger-class="[structureMonoControlClass, 'w-full', columnTypeVisualClass(column)]"
                             @update:model-value="(v: string) => updateColumnDataType(column, v)"
                           />
-                          <Input v-else :model-value="gaussdbMDataTypeDisplayName(dataTypeBaseInputValue(databaseType, column.dataType))" :class="[structureMonoControlClass, 'w-full']" disabled />
+                          <Input v-else :model-value="gaussdbMDataTypeDisplayName(dataTypeBaseInputValue(databaseType, column.dataType))" :class="[structureMonoControlClass, 'w-full', columnTypeVisualClass(column)]" disabled />
                         </td>
                         <td v-if="columnEditorControls.length" :class="structureCellClass">
                           <Popover v-if="isMysqlEnumDataType(databaseType, column.dataType)">
@@ -5326,7 +5363,7 @@ watch(
                                 :placeholder="t('structureEditor.geometryTypePlaceholder')"
                                 :search-placeholder="t('structureEditor.geometryTypePlaceholder')"
                                 :empty-text="t('structureEditor.noMatchingType')"
-                                :trigger-class="[structureMonoControlClass, 'min-w-0 flex-1']"
+                                :trigger-class="[structureMonoControlClass, 'min-w-0 flex-1', columnTypeVisualClass(column)]"
                                 :disabled="isColumnTypeDisabled(column)"
                                 @update:model-value="(v: string) => updatePostgresGeometryColumn(column, v, postgresGeometrySridValue(column.dataType))"
                               />
@@ -5400,7 +5437,7 @@ watch(
                         </td>
                         <td v-if="columnEditorControls.comment" :class="structureCellClass">
                           <div class="flex min-w-0 items-center gap-1">
-                            <Input v-model="column.comment" :class="[structureControlClass, 'flex-1', columnSearchFieldClass(column, column.comment)]" :disabled="isColumnCommentDisabled(column)" />
+                            <Input v-model="column.comment" :class="[structureControlClass, 'flex-1']" :disabled="isColumnCommentDisabled(column)" />
                             <Popover>
                               <PopoverTrigger as-child>
                                 <Button variant="ghost" size="icon" :class="[structureIconButtonClass, 'shrink-0']" :disabled="isColumnCommentDisabled(column)" :aria-label="t('structureEditor.editComment')" :title="t('structureEditor.editComment')">
@@ -6620,6 +6657,8 @@ watch(
 }
 
 /* --primary is rgb/oklch; use color-mix like DataGrid, not channel-based hsl wrappers. */
+/* Search-match stripe for the indexes tab; the columns tab filters its rows
+ * instead of marking them, so only index rows carry this class now. */
 .structure-column-search-match > td:first-child {
   box-shadow: inset 3px 0 0 color-mix(in oklab, var(--primary) 55%, transparent);
 }

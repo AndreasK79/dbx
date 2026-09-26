@@ -59,3 +59,20 @@ strip = true
 lto = true
 codegen-units = 1
 opt-level = "s"
+
+# Local iteration profile for hotfix builds into the installed app: same code,
+# but no LTO, parallel codegen, and incremental compilation. Release's fat LTO
+# + codegen-units=1 re-optimizes the whole dependency graph single-threaded on
+# every bin rebuild — and the embedded frontend forces one on every build —
+# which costs ~25 minutes even warm (thin LTO measured ~14 min; no LTO plus
+# incremental brings small-edit rebuilds down to a few minutes). Cross-crate
+# inlining is lost, a few percent on Rust-side work at most. Custom profiles
+# build into target/hotfix/, so the shipping release cache stays warm. Build
+# with `pnpm build` then `cargo build --profile hotfix --features
+# custom-protocol` in src-tauri — without that feature the binary runs in dev
+# mode and shows "localhost refused to connect".
+[profile.hotfix]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 16

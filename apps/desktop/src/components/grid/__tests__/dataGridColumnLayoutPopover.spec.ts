@@ -57,6 +57,8 @@ function createGrid(itemCount: number) {
   const toggleColumnVisibility = vi.fn();
   const moveDisplayableColumn = vi.fn();
   const autoFitAllColumns = vi.fn();
+  const hideColumns = vi.fn();
+  const showAllColumns = vi.fn();
   const grid: DataGridColumnLayoutHandle = {
     visibleColumnCount: itemCount,
     displayableColumnCount: itemCount,
@@ -67,15 +69,15 @@ function createGrid(itemCount: number) {
       return normalizedSearch ? options.filter((option) => option.column.toLowerCase().includes(normalizedSearch)) : options;
     },
     toggleColumnVisibility,
-    hideColumns: vi.fn(),
-    showAllColumns: vi.fn(),
+    hideColumns,
+    showAllColumns,
     invertColumnVisibility: vi.fn(),
     hasCustomColumnOrder: false,
     moveDisplayableColumn,
     resetColumnOrder: vi.fn(),
     autoFitAllColumns,
   };
-  return { grid, moveDisplayableColumn, toggleColumnVisibility, autoFitAllColumns };
+  return { grid, moveDisplayableColumn, toggleColumnVisibility, autoFitAllColumns, hideColumns, showAllColumns };
 }
 
 // https://github.com/t8y2/dbx/issues/9813
@@ -108,8 +110,7 @@ describe("column layout popover auto fit", () => {
   });
 });
 
-async function mountPopover(itemCount = 4) {
-  const gridState = createGrid(itemCount);
+async function mountPopover(itemCount = 4, gridState = createGrid(itemCount)) {
   const host = document.createElement("div");
   document.body.append(host);
   const app = createApp(DataGridColumnLayoutPopover, { grid: gridState.grid });
@@ -367,5 +368,65 @@ describe("data grid column layout popover", () => {
     dispatchPointer(window, "pointerup", { pointerId: 7, clientY: 286 });
     expect(moveDisplayableColumn).toHaveBeenCalledOnce();
     expect(moveDisplayableColumn.mock.calls[0]?.[1]).toBeGreaterThan(10);
+  });
+});
+
+describe("column layout popover bulk visibility actions", () => {
+  async function typeColumnSearch(host: HTMLElement, text: string) {
+    const search = host.querySelector<HTMLInputElement>("input")!;
+    expect(search).not.toBeNull();
+    search.value = text;
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+  }
+
+  it("hides every column in one batch from Hide all", async () => {
+    const { host, hideColumns, showAllColumns } = await mountPopover(4);
+
+    const hideAll = host.querySelector<HTMLButtonElement>("[data-column-hide-all]")!;
+    expect(hideAll).not.toBeNull();
+    expect(hideAll.disabled).toBe(false);
+    hideAll.click();
+
+    expect(hideColumns).toHaveBeenCalledOnce();
+    expect(hideColumns).toHaveBeenCalledWith([0, 1, 2, 3]);
+    expect(showAllColumns).not.toHaveBeenCalled();
+  });
+
+  it("disables Hide all when only one column is visible", async () => {
+    const gridState = createGrid(4);
+    gridState.grid.visibleColumnCount = 1;
+    gridState.grid.hiddenColumnCount = 3;
+    const { host } = await mountPopover(4, gridState);
+
+    expect(host.querySelector<HTMLButtonElement>("[data-column-hide-all]")!.disabled).toBe(true);
+  });
+
+  it("shows only the filtered columns: show all first, then hide the complement in one batch", async () => {
+    const { host, hideColumns, showAllColumns } = await mountPopover(4);
+
+    await typeColumnSearch(host, "column_1");
+    const showFiltered = host.querySelector<HTMLButtonElement>("[data-column-show-filtered]")!;
+    expect(showFiltered).not.toBeNull();
+    expect(showFiltered.disabled).toBe(false);
+    showFiltered.click();
+
+    expect(showAllColumns).toHaveBeenCalledOnce();
+    expect(hideColumns).toHaveBeenCalledOnce();
+    expect(hideColumns).toHaveBeenCalledWith([0, 2, 3]);
+    expect(showAllColumns.mock.invocationCallOrder[0]).toBeLessThan(hideColumns.mock.invocationCallOrder[0]);
+  });
+
+  it("keeps Show filtered only disabled until the search matches a column", async () => {
+    const { host, hideColumns, showAllColumns } = await mountPopover(3);
+
+    const showFiltered = host.querySelector<HTMLButtonElement>("[data-column-show-filtered]")!;
+    expect(showFiltered.disabled).toBe(true);
+    showFiltered.click();
+    expect(hideColumns).not.toHaveBeenCalled();
+    expect(showAllColumns).not.toHaveBeenCalled();
+
+    await typeColumnSearch(host, "no-such-column");
+    expect(showFiltered.disabled).toBe(true);
   });
 });
