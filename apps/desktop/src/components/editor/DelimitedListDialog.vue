@@ -151,7 +151,7 @@ async function copyPreview() {
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="max-h-[86vh] border border-border !bg-background text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[620px]">
+    <DialogContent class="max-h-[86vh] border border-border !bg-background-solid text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[620px]">
       <!-- Form wrapper so Enter in any field submits (implicit submission → Confirm). -->
       <form class="grid gap-4" @submit.prevent="confirm">
         <DialogHeader>

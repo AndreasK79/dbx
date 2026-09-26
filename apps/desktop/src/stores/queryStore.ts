@@ -6810,7 +6810,11 @@ export const useQueryStore = defineStore("query", () => {
         queryExecutionLog("info", "ensure-connected:skip", { traceId, elapsed: elapsed(), reason: "mongo-use-only" });
       } else {
         queryExecutionLog("info", "ensure-connected:start", { traceId, elapsed: elapsed() });
-        await connStore.ensureConnected(executionConnectionId);
+        if (conn?.db_type === "oracle" || conn?.db_type === "postgres") {
+          await connStore.ensureConnected(executionConnectionId, { verifyHealth: false });
+        } else {
+          await connStore.ensureConnected(executionConnectionId);
+        }
         queryExecutionLog("info", "ensure-connected:done", { traceId, elapsed: elapsed() });
       }
       conn = connStore.getConfig(executionConnectionId);

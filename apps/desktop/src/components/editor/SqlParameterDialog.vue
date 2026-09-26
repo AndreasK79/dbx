@@ -167,7 +167,7 @@ async function copyResolvedSql() {
        outside pointerdown unless the event is prevented, hence
        @interact-outside.prevent; Escape/Cancel/Execute still close it. -->
   <Dialog :modal="false" v-model:open="open">
-    <DialogContent class="max-h-[86vh] border border-border !bg-background text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]" @open-auto-focus="focusFirstParameterInputOnOpen" @interact-outside.prevent>
+    <DialogContent class="max-h-[86vh] border border-border !bg-background-solid text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]" @open-auto-focus="focusFirstParameterInputOnOpen" @interact-outside.prevent>
       <!-- Form wrapper so Enter in any field submits (implicit submission → Execute). -->
       <form ref="formRef" class="grid grid-cols-[minmax(0,1fr)] gap-4" @submit.prevent="execute">
         <DialogHeader>
