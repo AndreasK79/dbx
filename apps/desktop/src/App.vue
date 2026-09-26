@@ -133,6 +133,7 @@ import {
   isToggleZenModeShortcut,
   isZoomInShortcut,
   isZoomOutShortcut,
+  copyResultColumnIndexFromShortcut,
   switchToTabIndexFromShortcut,
   tabSwitcherDirectionFromShortcut,
 } from "@/lib/editor/keyboardShortcuts";
@@ -3813,6 +3814,15 @@ async function handleKeydown(e: KeyboardEvent) {
   // commit button as a shortcut. commitTransaction reports unhandled when no
   // transaction is open, leaving the keys free for anything more specific.
   if (isCommitTransactionShortcut(e, shortcuts) && contentAreaRef.value?.commitTransaction()) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  // Alt+1..5 (default) copies the active tab's first result row, column N.
+  // copyResultColumn reports unhandled when the result has no such column, so
+  // the keys stay free for anything more specific bound to them.
+  const copyResultColumn = copyResultColumnIndexFromShortcut(e, shortcuts);
+  if (copyResultColumn !== null && contentAreaRef.value?.copyResultColumn(copyResultColumn)) {
     e.preventDefault();
     e.stopPropagation();
     return;

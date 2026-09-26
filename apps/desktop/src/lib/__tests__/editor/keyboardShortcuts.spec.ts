@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  copyResultColumnIndexFromShortcut,
   eventToModifierOnlyShortcut,
   eventToShortcut,
   isConvertNamingStyleShortcut,
@@ -256,6 +257,35 @@ describe("keyboard shortcut matching", () => {
     expect(isCommitTransactionShortcut({ key: "C", shiftKey: true }, shortcuts)).toBe(false);
     expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true }, { commitTransaction: "" })).toBe(false);
     expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true, isComposing: true }, shortcuts)).toBe(false);
+  });
+});
+
+describe("copyResultColumnIndexFromShortcut", () => {
+  it("maps Alt+1..Alt+5 to result columns 1..5", () => {
+    for (const digit of [1, 2, 3, 4, 5]) {
+      expect(copyResultColumnIndexFromShortcut({ key: String(digit), altKey: true })).toBe(digit);
+    }
+  });
+
+  it("ignores digits beyond five, plain digits, and extra modifiers", () => {
+    expect(copyResultColumnIndexFromShortcut({ key: "6", altKey: true })).toBeNull();
+    expect(copyResultColumnIndexFromShortcut({ key: "0", altKey: true })).toBeNull();
+    expect(copyResultColumnIndexFromShortcut({ key: "1" })).toBeNull();
+    // AltGr presses report Ctrl+Alt together and must not trigger the copy.
+    expect(copyResultColumnIndexFromShortcut({ key: "1", altKey: true, ctrlKey: true })).toBeNull();
+    expect(copyResultColumnIndexFromShortcut({ key: "1", altKey: true, shiftKey: true })).toBeNull();
+  });
+
+  it("follows customized bindings in either direction", () => {
+    const shortcuts = { copyResultColumn1: "Alt+9" } as const;
+
+    expect(copyResultColumnIndexFromShortcut({ key: "9", altKey: true }, shortcuts)).toBe(1);
+    expect(copyResultColumnIndexFromShortcut({ key: "1", altKey: true }, shortcuts)).toBeNull();
+  });
+
+  it("ignores cleared bindings and IME composition", () => {
+    expect(copyResultColumnIndexFromShortcut({ key: "2", altKey: true }, { copyResultColumn2: "" })).toBeNull();
+    expect(copyResultColumnIndexFromShortcut({ key: "2", altKey: true, isComposing: true })).toBeNull();
   });
 });
 

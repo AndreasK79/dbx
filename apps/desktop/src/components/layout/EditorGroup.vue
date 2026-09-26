@@ -14,6 +14,9 @@ import { isPreviewTab } from "@/lib/tabs/tabPresentation";
 import { resolveExecutableSql } from "@/lib/sql/sqlExecutionTarget";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { usesProvenReadOnlyStickyTransactionState } from "@/lib/database/databaseFeatureSupport";
+import { copyToClipboard } from "@/lib/common/clipboard";
+import { firstResultCellValue } from "@/lib/query/queryResultFirstValue";
+import { useToast } from "@/composables/useToast";
 import { GROUP_TAB_BAR_PORTAL } from "./groupTabBarPortal";
 import type { ContentAreaSurfaceEmits, ContentAreaSurfaceProps, QueryEditorSurfaceHandle, StatementRange } from "./querySurfaces";
 import type { QueryTab } from "@/types/database";
@@ -84,6 +87,18 @@ defineExpose({
     void queryStore.commitTransaction(tab.id);
     return true;
   },
+  // Alt+N (default) copies the first row's value from column N of the active
+  // tab's current result. Only reports handled when that result has a first
+  // row with the column, so the keys stay unconsumed for everything else.
+  copyResultColumn: (column: number) => {
+    const cell = firstResultCellValue(activeTab.value?.result, column);
+    if (!cell) return false;
+    const preview = cell.value.length > 60 ? `${cell.value.slice(0, 60)}…` : cell.value;
+    void copyToClipboard(cell.value)
+      .then(() => toast(t("grid.resultColumnCopied", { column: cell.column, value: preview === "" ? "—" : preview })))
+      .catch((error: unknown) => toast(error instanceof Error ? error.message : String(error), 5000));
+    return true;
+  },
   refreshData: () => activeSurfaceRef.value?.refreshData() ?? false,
   toggleResultsPane: () => activeSurfaceRef.value?.toggleResultsPane() ?? false,
   refreshQueryEditorCompletionCache: () => activeSurfaceRef.value?.refreshQueryEditorCompletionCache() ?? false,
@@ -106,6 +121,7 @@ defineExpose({
 });
 
 const { t } = useI18n();
+const { toast } = useToast();
 const connectionStore = useConnectionStore();
 const queryStore = useQueryStore();
 const settingsStore = useSettingsStore();
