@@ -5901,22 +5901,47 @@ impl Storage {
         .await
     }
 
+    /// Insert or update exactly the given connections and leave every other saved
+    /// connection untouched.
+    ///
+    /// Multi-client deployments (the Web/Docker build serves several people from
+    /// one storage) must not replace the whole table: a client that saves a list
+    /// it loaded earlier would otherwise silently delete connections another
+    /// client created in the meantime. Removing a connection therefore has to go
+    /// through [`Storage::delete_connections`] with explicit ids.
     pub async fn save_connections(&self, configs: &[ConnectionConfig]) -> Result<(), String> {
         let configs = configs.to_vec();
         let needs_key = configs.iter().any(connection_config_has_inline_secrets);
         let codec = self.secret_codec_for_write(needs_key).await?;
         self.with_conn(move |conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
-            let replacement_ids = configs.iter().map(|config| config.id.clone()).collect::<HashSet<_>>();
-            let mut retained_ids = preserve_unreadable_connections_for_replacement(&tx, &replacement_ids)?;
-
             for config in &configs {
+                // `persist_connection_in_tx` uses a plain INSERT, so an update of
+                // an already saved connection has to drop the old row first.
+                tx.execute("DELETE FROM connections WHERE id = ?1", [&config.id]).map_err(|e| e.to_string())?;
                 persist_connection_in_tx(&tx, &codec, config)?;
             }
+            tx.commit().map_err(|e| e.to_string())
+        })
+        .await
+    }
 
-            retained_ids.extend(configs.iter().map(|config| config.id.clone()));
-            delete_unreferenced_connection_secrets_in_tx(&tx, &retained_ids)?;
-
+    /// Delete the given saved connections together with their stored secrets.
+    ///
+    /// This is the only removal path for saved connections; ids that no longer
+    /// exist are ignored so a stale client cannot fail the save.
+    pub async fn delete_connections(&self, ids: &[String]) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let ids = ids.to_vec();
+        self.with_conn(move |conn| {
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+            for id in &ids {
+                tx.execute("DELETE FROM connections WHERE id = ?1", [id]).map_err(|e| e.to_string())?;
+                tx.execute("DELETE FROM connection_secrets WHERE connection_id = ?1", [id])
+                    .map_err(|e| e.to_string())?;
+            }
             tx.commit().map_err(|e| e.to_string())
         })
         .await
@@ -6185,6 +6210,32 @@ impl Storage {
             )
             .map(|updated| updated > 0)
             .map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Counts the stored `connections` rows without decrypting secrets or
+    /// running the data-security upgrade. Diagnostics use it to report the
+    /// table state truthfully even when the store cannot be fully opened (for
+    /// example a headless CLI that cannot read the OS keychain key), so a
+    /// failed open is never misreported as a missing table. `None` means the
+    /// opened schema has no `connections` table at all.
+    pub async fn stored_connection_count(&self) -> Result<Option<u64>, String> {
+        self.with_conn(|conn| {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'connections')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if !exists {
+                return Ok(None);
+            }
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM connections", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            Ok(Some(count.max(0) as u64))
         })
         .await
     }
@@ -10503,7 +10554,14 @@ mod tests {
         assert_eq!(raw_connection_json(&storage, "future").await, future_json);
         assert_eq!(storage.get_secret("future", "password").await.unwrap().as_deref(), Some("future-secret"));
 
+        // Saving a list no longer replaces the whole table: an empty save is a no-op, so
+        // rows the caller never saw (like the unreadable "future" row) survive it.
         storage.save_connections(&[]).await.unwrap();
+        assert_eq!(storage.load_connections().await.unwrap().len(), 1);
+        assert_eq!(raw_connection_json(&storage, "future").await, future_json);
+
+        // Deleting a connection is explicit now, and still only touches the given ids.
+        storage.delete_connections(&["known".to_string()]).await.unwrap();
         assert!(storage.load_connections().await.unwrap().is_empty());
         assert_eq!(raw_connection_json(&storage, "future").await, future_json);
         assert_eq!(storage.get_secret("future", "password").await.unwrap().as_deref(), Some("future-secret"));
@@ -11017,7 +11075,9 @@ mod tests {
 
         // Non-MCP callers remain governed by the ordinary DBX UI permissions.
         storage.save_connections(std::slice::from_ref(&kept)).await.unwrap();
-        assert_eq!(storage.load_connections().await.unwrap()[0].id, kept.id);
+        let after_plain_save = storage.load_connections().await.unwrap();
+        assert_eq!(after_plain_save.len(), 3);
+        assert!(after_plain_save.iter().any(|config| config.id == kept.id));
 
         let _ = std::fs::remove_file(path);
     }
@@ -13065,5 +13125,33 @@ mod tests {
         assert!(super::migration_backup_paths(&invalid).is_err());
         let valid = serde_json::json!({"backupPaths": ["/tmp/dbx-secret-migration-a"]});
         assert_eq!(super::migration_backup_paths(&valid).unwrap(), vec!["/tmp/dbx-secret-migration-a"]);
+    }
+
+    #[tokio::test]
+    async fn stored_connection_count_reads_the_table_without_loading_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::persistence::test_storage::open_unmigrated(&dir.path().join("dbx.db")).await.unwrap();
+        assert_eq!(storage.stored_connection_count().await.unwrap(), Some(0));
+
+        storage
+            .with_conn(|conn| {
+                conn.execute("INSERT INTO connections (id, config_json) VALUES ('a', '{}'), ('b', '{}')", [])
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(storage.stored_connection_count().await.unwrap(), Some(2));
+
+        // `None` is what lets `dbx doctor` tell a missing table apart from a
+        // table it could not load.
+        storage
+            .with_conn(|conn| {
+                conn.execute("DROP TABLE connections", []).map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(storage.stored_connection_count().await.unwrap(), None);
     }
 }
