@@ -883,6 +883,14 @@ export async function saveHistoryRetentionLimit(limit: number): Promise<void> {
   return invoke("save_history_retention_limit", { limit });
 }
 
+export async function loadMcpHistoryRetentionLimit(): Promise<number> {
+  return invoke("load_mcp_history_retention_limit");
+}
+
+export async function saveMcpHistoryRetentionLimit(limit: number): Promise<void> {
+  return invoke("save_mcp_history_retention_limit", { limit });
+}
+
 export async function loadMaxRetries(): Promise<number> {
   return invoke("load_max_retries");
 }
@@ -2668,6 +2676,14 @@ export async function writePluginLocalFileChunk(pluginId: string, handleId: stri
 
 export async function closePluginLocalFile(pluginId: string, handleId: string): Promise<void> {
   return invoke("plugin_file_close", { pluginId, handleId });
+}
+
+export async function openPluginMedia(pluginId: string, method: string, params: Record<string, unknown>): Promise<string> {
+  return invoke("plugin_media_open", { pluginId, method, params });
+}
+
+export async function closePluginMedia(pluginId: string, token: string): Promise<void> {
+  return invoke("plugin_media_close", { pluginId, token });
 }
 
 export async function getPluginUiStorage(pluginId: string, key: string): Promise<unknown> {
@@ -5091,6 +5107,11 @@ export interface HistoryEntry {
   affected_rows?: number | null;
   rollback_sql?: string | null;
   details_json?: string | null;
+  source?: "sql" | "mcp" | "other";
+  mcp_tool_name?: string | null;
+  mcp_request_json?: string | null;
+  mcp_response_json?: string | null;
+  mcp_session_id?: string | null;
 }
 
 export interface HistoryConnectionFilter {
@@ -5117,6 +5138,8 @@ export interface HistorySearchRequest {
   ended_at?: string;
   cursor?: HistoryCursor;
   limit: number;
+  source?: "sql" | "mcp" | "other";
+  mcp_tool_name?: string;
 }
 
 export interface HistorySearchResult {
@@ -5155,6 +5178,14 @@ export async function loadRedisHistory(limit = 100, offset = 0): Promise<History
 
 export async function clearHistory(): Promise<void> {
   return invoke("clear_history");
+}
+
+export async function clearHistoryBySource(source: string): Promise<void> {
+  return invoke("clear_history_by_source", { source });
+}
+
+export async function cleanupMcpHistoryRetention(): Promise<number> {
+  return invoke("cleanup_mcp_history_retention");
 }
 
 export async function clearRedisHistory(): Promise<void> {
@@ -5425,6 +5456,7 @@ export interface TableImportRequest {
   dateTimeFormat?: string;
   preparedSource?: TableImportPreparedSource | null;
   retainSource?: boolean;
+  skipDuplicateRows?: boolean;
 }
 
 export interface TableImportSummary {

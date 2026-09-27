@@ -2282,6 +2282,19 @@ export async function saveHistoryRetentionLimit(limit: number): Promise<void> {
   if (!res.ok) throw await backendResponseError(res);
 }
 
+export async function loadMcpHistoryRetentionLimit(): Promise<number> {
+  return get("/api/app-settings/mcp-history-retention-limit");
+}
+
+export async function saveMcpHistoryRetentionLimit(limit: number): Promise<void> {
+  const res = await fetch(apiUrl("/api/app-settings/mcp-history-retention-limit"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ limit }),
+  });
+  if (!res.ok) throw await backendResponseError(res);
+}
+
 export async function loadMaxRetries(): Promise<number> {
   return get("/api/app-settings/max-retries");
 }
@@ -5202,6 +5215,14 @@ export async function clearHistory(): Promise<void> {
   return del("/api/history");
 }
 
+export async function clearHistoryBySource(source: string): Promise<void> {
+  return del(`/api/history?source=${encodeURIComponent(source)}`);
+}
+
+export async function cleanupMcpHistoryRetention(): Promise<number> {
+  return post("/api/app-settings/mcp-history-retention-cleanup", {});
+}
+
 export async function clearRedisHistory(): Promise<void> {
   const entries = await loadRedisHistory(1000, 0);
   await Promise.all(entries.map((e) => deleteHistoryEntry(e.id)));
@@ -5354,6 +5375,14 @@ export async function writePluginLocalFileChunk(_pluginId: string, _handleId: st
 
 export async function closePluginLocalFile(_pluginId: string, _handleId: string): Promise<void> {
   throw new Error("Plugin local file access is not available in the web backend");
+}
+
+export async function openPluginMedia(_pluginId: string, _method: string, _params: Record<string, unknown>): Promise<string> {
+  throw new Error("Plugin media URLs are not available in the web backend");
+}
+
+export async function closePluginMedia(_pluginId: string, _token: string): Promise<void> {
+  throw new Error("Plugin media URLs are not available in the web backend");
 }
 
 // Plugin UI storage goes through the Rust plugin-data tree on native hosts;
