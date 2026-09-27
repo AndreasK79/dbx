@@ -767,12 +767,14 @@ export const mqCreateNamespace = forward("mqCreateNamespace");
 export const mqDeleteNamespace = forward("mqDeleteNamespace");
 export const mqGetNamespacePolicies = forward("mqGetNamespacePolicies");
 export const mqListTopics = forward("mqListTopics");
+export const mqListTopicsPage = forward("mqListTopicsPage");
 export const mqCreateTopic = forward("mqCreateTopic");
 export const mqDeleteTopic = forward("mqDeleteTopic");
 export const mqUpdatePartitions = forward("mqUpdatePartitions");
 export const mqGetTopicStats = forward("mqGetTopicStats");
 export const mqGetTopicInternalStats = forward("mqGetTopicInternalStats");
 export const mqListExchanges = forward("mqListExchanges");
+export const mqListExchangesPage = forward("mqListExchangesPage");
 export const mqCreateExchange = forward("mqCreateExchange");
 export const mqDeleteExchange = forward("mqDeleteExchange");
 export const mqListBindings = forward("mqListBindings");
@@ -1095,6 +1097,7 @@ export type {
   TransferOwnershipPolicy,
   TransferOwnershipPreview,
   TableImportMode,
+  TableImportConflictPolicy,
   TableImportStatus,
   TableImportSourceFormat,
   TableImportJsonShape,

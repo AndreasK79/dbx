@@ -21,8 +21,8 @@ use crate::csv_export::{
 use crate::data_grid_sql::extra_is_auto_generated;
 pub use crate::database_export::ExportStatus;
 use crate::database_export::{
-    build_export_insert_statements_excluding, is_export_cancelled, is_internal_export_column,
-    BuildExportInsertStatementsOptions, SqlInsertMode,
+    build_export_insert_statements_excluding_with_dialect, is_export_cancelled, is_internal_export_column,
+    BuildExportInsertStatementsOptions, SqlInsertDialect, SqlInsertMode,
 };
 use crate::db::agent_driver::AgentTableReadStartParams;
 use crate::models::connection::DatabaseType;
@@ -33,7 +33,7 @@ use crate::transfer::{
     count_sql_with_where_and_identifier_quote, execute_read_on_pool, execute_read_on_pool_with_max_rows,
     keyset_pagination_sql_with_identifier_quote, pagination_sql_with_filter_order_and_identifier_quote,
 };
-use crate::types::QueryResult;
+use crate::types::{is_opaque_aggregate_state_type, QueryResult};
 use crate::xlsx_export::{finish_streaming_xlsx_workbook, start_streaming_xlsx_workbook_with_options};
 
 const DEFAULT_BATCH_SIZE: usize = 10_000;
@@ -83,6 +83,8 @@ pub struct TableExportRequest {
     pub format: String,
     #[serde(default)]
     pub insert_mode: SqlInsertMode,
+    #[serde(default)]
+    pub insert_dialect: SqlInsertDialect,
     #[serde(default)]
     pub csv_quote_mode: CsvQuoteMode,
     /// CSV 列分隔符（单字符；空串/缺省回退逗号），来自导出对话框。
@@ -266,6 +268,18 @@ fn resolve_requested_export_columns(
 
 fn requested_mysql_sql_export_needs_column_metadata(database_type: DatabaseType, format: &str) -> bool {
     database_type == DatabaseType::Mysql && format.eq_ignore_ascii_case("sql")
+}
+
+fn ensure_sql_insert_export_types_supported(format: &str, column_types: &[Option<String>]) -> Result<(), String> {
+    if format.eq_ignore_ascii_case("sql")
+        && column_types.iter().flatten().any(|column_type| is_opaque_aggregate_state_type(column_type))
+    {
+        return Err(
+            "SQL INSERT export does not support Doris aggregate-state columns; use CSV, JSON, TXT, or XLSX to export their canonical hex representation"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Column EXTRA values supplied by the data grid, filtered and aligned exactly
@@ -1412,7 +1426,7 @@ async fn try_export_native_table_stream(
                     if pending_rows.is_empty() {
                         return Ok(());
                     }
-                    let statements = build_export_insert_statements_excluding(
+                    let statements = build_export_insert_statements_excluding_with_dialect(
                         BuildExportInsertStatementsOptions {
                             database_type: Some(*db_type),
                             identifier_quote: request.identifier_quote.clone(),
@@ -1428,6 +1442,7 @@ async fn try_export_native_table_stream(
                             batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
                         },
                         &sql_export_excluded_columns(request, primary_keys, col_names, column_extras),
+                        request.insert_dialect,
                     )?;
                     if !statements.is_empty() {
                         if wrote_statements {
@@ -1637,6 +1652,7 @@ async fn export_table_data_core_inner(
     if col_names.is_empty() {
         return Err("No columns found for table".to_string());
     }
+    ensure_sql_insert_export_types_supported(&request.format, &column_types)?;
     let query_col_names = table_export_query_columns(request, &sql_context, &col_names)?;
 
     // Use keyset pagination when all PKs are in the selected (filtered) columns.
@@ -2264,7 +2280,7 @@ async fn export_table_data_core_inner(
                     break;
                 }
 
-                let statements = build_export_insert_statements_excluding(
+                let statements = build_export_insert_statements_excluding_with_dialect(
                     BuildExportInsertStatementsOptions {
                         database_type: Some(db_type),
                         identifier_quote: request.identifier_quote.clone(),
@@ -2280,6 +2296,7 @@ async fn export_table_data_core_inner(
                         batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
                     },
                     &sql_export_excluded_columns(request, &primary_keys, &col_names, &column_extras),
+                    request.insert_dialect,
                 )?;
                 if !statements.is_empty() {
                     if wrote_statements {
@@ -2354,8 +2371,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn table_export_request_defaults_to_batch_insert_mode() {
-        let request: TableExportRequest = serde_json::from_value(json!({
+    fn table_export_request_defaults_to_source_dialect_and_batch_insert_mode() {
+        let mut payload = json!({
             "exportId": "export-1",
             "connectionId": "conn-1",
             "database": "db",
@@ -2363,10 +2380,28 @@ mod tests {
             "tableName": "users",
             "filePath": "users.sql",
             "format": "sql"
-        }))
-        .expect("deserialize table export request");
+        });
+        let request: TableExportRequest =
+            serde_json::from_value(payload.clone()).expect("deserialize table export request");
 
         assert_eq!(request.insert_mode, SqlInsertMode::Batch);
+        assert_eq!(request.insert_dialect, SqlInsertDialect::Source);
+
+        payload["insertDialect"] = json!("standard");
+        let request: TableExportRequest =
+            serde_json::from_value(payload).expect("deserialize Standard SQL table export request");
+        assert_eq!(request.insert_dialect, SqlInsertDialect::Standard);
+        assert_eq!(serde_json::to_value(request).unwrap()["insertDialect"], json!("standard"));
+    }
+
+    #[test]
+    fn sql_insert_export_rejects_opaque_aggregate_states_only() {
+        let types = vec![Some("int".to_string()), Some("agg_state<group_concat(text)>".to_string())];
+        assert!(ensure_sql_insert_export_types_supported("sql", &types)
+            .unwrap_err()
+            .contains("does not support Doris aggregate-state"));
+        assert!(ensure_sql_insert_export_types_supported("csv", &types).is_ok());
+        assert!(ensure_sql_insert_export_types_supported("sql", &[Some("varbinary(32)".to_string())]).is_ok());
     }
 
     #[cfg(unix)]
@@ -2462,6 +2497,7 @@ mod tests {
             file_path: output.to_string_lossy().into_owned(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: Some(vec!["id".to_string(), "name".to_string()]),
             column_types: Some(vec![Some("INTEGER".to_string()), Some("VARCHAR".to_string())]),
             column_extras: None,
@@ -2630,6 +2666,7 @@ mod tests {
             file_path: output.to_string_lossy().into_owned(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             csv_quote_mode: CsvQuoteMode::All,
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
@@ -2801,6 +2838,7 @@ mod tests {
             file_path: "device2.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -2865,6 +2903,7 @@ mod tests {
             file_path: "device2.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -2907,6 +2946,7 @@ mod tests {
             file_path: "device2.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -2944,6 +2984,7 @@ mod tests {
             file_path: "device2.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -2989,6 +3030,7 @@ mod tests {
             file_path: "samples.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -3046,6 +3088,7 @@ mod tests {
             file_path: "events.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -3097,6 +3140,7 @@ mod tests {
             file_path: "orders.txt".to_string(),
             format: "txt".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -3176,6 +3220,7 @@ mod tests {
             file_path: "order.csv".to_string(),
             format: "csv".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -3237,6 +3282,7 @@ mod tests {
             file_path: "spatial_data.sql".to_string(),
             format: "sql".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
@@ -3300,6 +3346,7 @@ mod tests {
             file_path: "users.sql".to_string(),
             format: "sql".to_string(),
             insert_mode: Default::default(),
+            insert_dialect: Default::default(),
             columns: None,
             column_types: None,
             column_extras: None,
