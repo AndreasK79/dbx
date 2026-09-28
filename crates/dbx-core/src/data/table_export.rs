@@ -22,7 +22,7 @@ use crate::data_grid_sql::extra_is_auto_generated;
 pub use crate::database_export::ExportStatus;
 use crate::database_export::{
     build_export_insert_statements_excluding_with_dialect, is_export_cancelled, is_internal_export_column,
-    BuildExportInsertStatementsOptions, SqlInsertDialect, SqlInsertMode,
+    BuildExportInsertStatementsOptions, SqlExportProjection, SqlInsertDialect, SqlInsertMode,
 };
 use crate::db::agent_driver::AgentTableReadStartParams;
 use crate::models::connection::DatabaseType;
@@ -98,6 +98,8 @@ pub struct TableExportRequest {
     pub csv_include_header: bool,
     #[serde(default)]
     pub columns: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_columns: Option<Vec<crate::types::SqlExportColumnSelection>>,
     #[serde(default)]
     pub column_types: Option<Vec<Option<String>>>,
     /// Column EXTRA metadata for `columns`, supplied by the data grid. SQL
@@ -1419,6 +1421,7 @@ async fn try_export_native_table_stream(
         }
         "sql" => {
             let mut file = create_table_export_sql_writer(request)?;
+            let projection = SqlExportProjection::resolve(col_names, request.selected_columns.as_deref())?;
             let mut pending_rows: Vec<Vec<Value>> = Vec::new();
             let mut wrote_statements = false;
             let mut flush_pending =
@@ -1427,7 +1430,7 @@ async fn try_export_native_table_stream(
                         return Ok(());
                     }
                     let statements = build_export_insert_statements_excluding_with_dialect(
-                        BuildExportInsertStatementsOptions {
+                        projection.project_insert_options(BuildExportInsertStatementsOptions {
                             database_type: Some(*db_type),
                             identifier_quote: request.identifier_quote.clone(),
                             schema: request.schema.clone(),
@@ -1440,7 +1443,7 @@ async fn try_export_native_table_stream(
                             spatial_values: Vec::new(),
                             rows: std::mem::take(pending_rows),
                             batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
-                        },
+                        }),
                         &sql_export_excluded_columns(request, primary_keys, col_names, column_extras),
                         request.insert_dialect,
                     )?;
@@ -1649,10 +1652,18 @@ async fn export_table_data_core_inner(
         (col_names, column_types, column_extras, primary_keys)
     };
 
+    let sql_projection = if request.format.eq_ignore_ascii_case("sql") {
+        Some(SqlExportProjection::resolve(&col_names, request.selected_columns.as_deref())?)
+    } else {
+        None
+    };
+
     if col_names.is_empty() {
         return Err("No columns found for table".to_string());
     }
-    ensure_sql_insert_export_types_supported(&request.format, &column_types)?;
+    if let Some(projection) = &sql_projection {
+        ensure_sql_insert_export_types_supported(&request.format, &projection.project(&column_types))?;
+    }
     let query_col_names = table_export_query_columns(request, &sql_context, &col_names)?;
 
     // Use keyset pagination when all PKs are in the selected (filtered) columns.
@@ -2237,6 +2248,7 @@ async fn export_table_data_core_inner(
         }
         "sql" => {
             let mut wrote_statements = false;
+            let projection = sql_projection.as_ref().ok_or_else(|| "Missing SQL export projection".to_string())?;
 
             loop {
                 if is_export_cancelled(&request.export_id).await {
@@ -2281,7 +2293,7 @@ async fn export_table_data_core_inner(
                 }
 
                 let statements = build_export_insert_statements_excluding_with_dialect(
-                    BuildExportInsertStatementsOptions {
+                    projection.project_insert_options(BuildExportInsertStatementsOptions {
                         database_type: Some(db_type),
                         identifier_quote: request.identifier_quote.clone(),
                         schema: request.schema.clone(),
@@ -2294,7 +2306,7 @@ async fn export_table_data_core_inner(
                         spatial_values: result.spatial_values.clone(),
                         rows: result.rows.clone(),
                         batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
-                    },
+                    }),
                     &sql_export_excluded_columns(request, &primary_keys, &col_names, &column_extras),
                     request.insert_dialect,
                 )?;
@@ -2499,6 +2511,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: Some(vec!["id".to_string(), "name".to_string()]),
+            selected_columns: None,
             column_types: Some(vec![Some("INTEGER".to_string()), Some("VARCHAR".to_string())]),
             column_extras: None,
             primary_keys: Some(vec!["id".to_string()]),
@@ -2673,6 +2686,7 @@ mod tests {
             csv_include_header: default_csv_include_header(),
             exclude_primary_keys: false,
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -2840,6 +2854,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -2905,6 +2920,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -2948,6 +2964,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -2986,6 +3003,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3032,6 +3050,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3090,6 +3109,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3142,6 +3162,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3222,6 +3243,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3284,6 +3306,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3348,6 +3371,7 @@ mod tests {
             insert_mode: Default::default(),
             insert_dialect: Default::default(),
             columns: None,
+            selected_columns: None,
             column_types: None,
             column_extras: None,
             primary_keys: None,
@@ -3524,7 +3548,7 @@ mod tests {
                     .enable_all()
                     .build()
                     .expect("build table export plain SQL test runtime")
-                    .block_on(run_external_driver_sql_export_without_split_writes_plain_sql());
+                    .block_on(run_external_driver_sql_export_without_split_writes_plain_sql(false));
             })
             .expect("spawn table export plain SQL test thread");
         if let Err(panic) = handle.join() {
@@ -3533,7 +3557,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn run_external_driver_sql_export_without_split_writes_plain_sql() {
+    async fn run_external_driver_sql_export_without_split_writes_plain_sql(select_name: bool) {
         let fixture = external_driver_export_fixture(
             r#"  case "$line" in
     *'"method":"executeQueryPage"'*)
@@ -3550,6 +3574,13 @@ mod tests {
         let mut request = fixture.request.clone();
         request.format = "sql".to_string();
         request.file_path = output.to_string_lossy().into_owned();
+        if select_name {
+            request.selected_columns = Some(vec![crate::types::SqlExportColumnSelection {
+                source_index: 1,
+                name: "name".into(),
+                name_occurrence: 0,
+            }]);
+        }
 
         let terminal = Arc::new(std::sync::Mutex::new(None::<ExportStatus>));
         let captured = terminal.clone();
@@ -3564,6 +3595,10 @@ mod tests {
         assert_eq!(sql.matches("INSERT INTO").count(), 1, "both rows should be exported: {sql}");
         assert!(sql.contains("Ada"));
         assert!(sql.contains("Grace"));
+        if select_name {
+            assert!(sql.contains("(name) VALUES"), "{sql}");
+            assert!(!sql.contains("(id,"), "{sql}");
+        }
         assert!(sql.ends_with(";\n"));
         // Without `split_max_mb` the fallback arm must keep producing a plain
         // SQL file, not a zip archive.
@@ -3587,7 +3622,7 @@ mod tests {
                     .enable_all()
                     .build()
                     .expect("build table export split SQL test runtime")
-                    .block_on(run_external_driver_sql_export_honors_split_max_mb_into_zip_parts());
+                    .block_on(run_external_driver_sql_export_honors_split_max_mb_into_zip_parts(false));
             })
             .expect("spawn table export split SQL test thread");
         if let Err(panic) = handle.join() {
@@ -3596,7 +3631,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn run_external_driver_sql_export_honors_split_max_mb_into_zip_parts() {
+    async fn run_external_driver_sql_export_honors_split_max_mb_into_zip_parts(select_name: bool) {
         // Two cursor pages: 200 wide rows (~1.2MB of INSERT statements) then a
         // short 100-row page. The first page alone must exceed the 1MB part
         // threshold, forcing the second page into a new zip part, and every
@@ -3631,6 +3666,13 @@ esac"#,
         request.format = "sql".to_string();
         request.file_path = zip_path.to_string_lossy().into_owned();
         request.split_max_mb = Some(crate::export_split_zip::MIN_SPLIT_PART_MAX_MB);
+        if select_name {
+            request.selected_columns = Some(vec![crate::types::SqlExportColumnSelection {
+                source_index: 1,
+                name: "name".into(),
+                name_occurrence: 0,
+            }]);
+        }
 
         let terminal = Arc::new(std::sync::Mutex::new(None::<ExportStatus>));
         let captured = terminal.clone();
@@ -3691,7 +3733,13 @@ esac"#,
         // All 300 rows must be present across the parts: every row value is
         // `(n, 'xxxx…')`, so one `, '` occurrence per row.
         let combined: String = sql_parts.iter().map(|(_, contents)| contents.as_str()).collect();
-        assert_eq!(combined.matches(", '").count(), 300);
+        if select_name {
+            assert!(combined.contains("(name) VALUES"));
+            assert!(!combined.contains("(id,"));
+            assert_eq!(combined.matches("('x").count(), 300);
+        } else {
+            assert_eq!(combined.matches(", '").count(), 300);
+        }
 
         let manifest = manifest.expect("split export must contain a manifest");
         assert_eq!(manifest["totalParts"].as_u64().unwrap() as usize, sql_parts.len());
@@ -3699,6 +3747,24 @@ esac"#,
         assert!(matches!(*terminal.lock().unwrap(), Some(ExportStatus::Done)));
 
         cleanup_external_driver_export_fixture(fixture);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_driver_sql_export_selected_columns_preserve_cursor_pages_and_zip_parts() {
+        let handle = std::thread::Builder::new()
+            .name("table-export-selected-columns".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                    run_external_driver_sql_export_without_split_writes_plain_sql(true).await;
+                    run_external_driver_sql_export_honors_split_max_mb_into_zip_parts(true).await;
+                });
+            })
+            .unwrap();
+        if let Err(panic) = handle.join() {
+            std::panic::resume_unwind(panic);
+        }
     }
 
     #[cfg(unix)]
