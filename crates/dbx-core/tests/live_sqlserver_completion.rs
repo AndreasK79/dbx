@@ -1218,6 +1218,7 @@ async fn live_sqlserver_query_result_export_streams_cte_query_to_csv() {
         csv_delimiter: Default::default(),
         csv_quote_char: Default::default(),
         csv_include_header: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
         selected_columns: None,

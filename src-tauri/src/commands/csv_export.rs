@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::commands::connection::AppState;
 use dbx_core::csv_export::{
-    export_table_data_csv_core, format_query_result_csv_with_format, resolve_csv_delimiter, resolve_csv_quote_char,
-    CsvQuoteMode, CsvTextFormat, TableCsvExportOptions,
+    csv_null_literal, default_csv_null_literal, export_table_data_csv_core, format_query_result_csv_with_format,
+    resolve_csv_delimiter, resolve_csv_quote_char, CsvQuoteMode, CsvTextFormat, TableCsvExportOptions,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -23,6 +23,10 @@ pub struct QueryResultCsvExportRequest {
     pub csv_quote_char: String,
     #[serde(default = "default_csv_include_header")]
     pub csv_include_header: bool,
+    /// CSV 里 NULL 写成什么。默认 `\N`；空字符串表示关闭该字面量，
+    /// 退回「NULL 写成空字段」的旧行为（此时 NULL 与空字符串在文件里无法区分）。
+    #[serde(default = "default_csv_null_literal")]
+    pub null_literal: String,
 }
 
 fn default_csv_include_header() -> bool {
@@ -40,6 +44,7 @@ pub async fn export_query_result_csv(request: QueryResultCsvExportRequest) -> Re
                 delimiter: resolve_csv_delimiter(&request.csv_delimiter),
                 quote_char: resolve_csv_quote_char(&request.csv_quote_char),
                 include_header: request.csv_include_header,
+                null_literal: csv_null_literal(&request.null_literal).map(str::to_string),
             },
         );
         std::fs::write(&request.file_path, format!("\u{FEFF}{csv}")).map_err(|err| err.to_string())

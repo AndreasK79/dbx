@@ -187,6 +187,7 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
       const sql = await buildTableSelectSql({
         databaseType: effectiveDbType,
         driverProfile: config.driver_profile,
+        serverVersion: connectionStore.getConfig(target.connectionId)?.database_info?.productVersion,
         identifierQuote,
         schema: tableSchema,
         catalog: target.catalog,
@@ -244,6 +245,7 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
     const sql = await buildTableSelectSql({
       databaseType: effectiveDbType,
       driverProfile: config.driver_profile,
+      serverVersion: connectionStore.getConfig(target.connectionId)?.database_info?.productVersion,
       identifierQuote,
       schema: tableSchema,
       catalog: target.catalog,
@@ -295,6 +297,7 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
       const emptySql = await buildTableSelectSql({
         databaseType: effectiveDbType,
         driverProfile: config.driver_profile,
+        serverVersion: connectionStore.getConfig(target.connectionId)?.database_info?.productVersion,
         identifierQuote,
         schema: tableSchema,
         catalog: target.catalog,
@@ -342,6 +345,7 @@ async function openTableTarget(target: NavigationTarget, options: { tableInfoTab
         const newSql = await buildTableSelectSql({
           databaseType: effectiveDbType,
           driverProfile: config.driver_profile,
+          serverVersion: connectionStore.getConfig(target.connectionId)?.database_info?.productVersion,
           identifierQuote,
           schema: tableSchema,
           catalog: target.catalog,

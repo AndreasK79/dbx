@@ -23,6 +23,7 @@ import { summarizeExportRows } from "@/lib/export/exportDiagnostics";
 import { appendDebugLog, appendNativeProcessMemoryLog, getBrowserMemorySnapshot, isDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { uuid } from "@/lib/common/utils";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { csvNullLiteralForMode } from "@/lib/export/csvNullMode";
 import { expandNestedJsonStringsForCopy } from "@/lib/common/jsonCopyValue";
 import { buildMongoCopyDocumentFromOriginal, buildMongoCopyInsertDocument, buildMongoCopyUpdateDocument, formatMongoShellLiteral, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
 import { formatMongoShellText } from "@/lib/mongo/mongoFormatter";
@@ -917,7 +918,10 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           }
           outputPath = path as string;
         }
-        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, csvOptions);
+        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, {
+          ...csvOptions,
+          nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode),
+        });
         if (needsFullExport && exportProgressState) {
           exportProgressState.value = {
             ...exportProgressState.value,
@@ -960,7 +964,10 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
         }
         const result = await resultToExport(undefined, undefined, false);
         const rows = forceCsvTextForTemporalColumns(result.rows, result.columnTypes);
-        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, csvOptions);
+        await api.exportQueryResultCsv(outputPath, result.columns, rows, csvOptions.quoteMode, {
+          ...csvOptions,
+          nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode),
+        });
         toast(t("grid.exported"));
       } catch (e: any) {
         toast(t("grid.exportFailed", { message: translateBackendError(t, e) }), 5000);
@@ -1400,6 +1407,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           ...(format === "sql" && sqlExportOptions ? { insertMode: sqlExportOptions.insertMode, splitMaxMb: sqlExportOptions.splitMaxMb, selectedColumns: sqlExportOptions.selectedColumns } : {}),
           csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : editorSettings.csvQuoteMode,
           ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
+          nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
           columns: format === "sql" ? effectiveColumns(sourceColumns.value, columns.value).map((column, index) => column ?? columns.value[index]!) : columns.value,
           columnTypes: columnTypes.value,
           ...(format === "sql" ? { columnExtras: sqlExportColumnExtras(effectiveColumns(sourceColumns.value, columns.value).map((column, index) => column ?? columns.value[index]!)) } : {}),
@@ -1483,6 +1491,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           ...(format === "sql" ? { selectedColumns: sqlExportOptions?.selectedColumns } : {}),
           csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : useSettingsStore().editorSettings.csvQuoteMode,
           ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
+          nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode),
           ...sqlExportPrimaryKeyOptions(),
           dateTimeFormat: useSettingsStore().editorSettings.globalDateTimeExportFormat || undefined,
           numericColumnRightAlign: useSettingsStore().editorSettings.numericColumnRightAlign ?? true,

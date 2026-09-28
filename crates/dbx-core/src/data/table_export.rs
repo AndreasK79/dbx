@@ -15,8 +15,9 @@ use crate::csv_export::format_csv;
 #[cfg(test)]
 use crate::csv_export::format_tsv_rows;
 use crate::csv_export::{
-    format_csv_with_format, format_tsv, push_table_csv_row, push_table_csv_row_with_format, push_tsv_row,
-    resolve_csv_delimiter, resolve_csv_quote_char, CsvQuoteMode, CsvTextFormat,
+    csv_null_literal, default_csv_null_literal, format_csv_with_format, format_tsv, push_table_csv_row,
+    push_table_csv_row_with_format, push_tsv_row, resolve_csv_delimiter, resolve_csv_quote_char, CsvQuoteMode,
+    CsvTextFormat,
 };
 use crate::data_grid_sql::extra_is_auto_generated;
 pub use crate::database_export::ExportStatus;
@@ -96,6 +97,10 @@ pub struct TableExportRequest {
     /// 是否写出表头行；缺省 true（旧语义）。
     #[serde(default = "default_csv_include_header")]
     pub csv_include_header: bool,
+    /// CSV 里 NULL 写成什么。默认 `\N`；空字符串表示关闭该字面量，
+    /// 退回「NULL 写成空字段」的旧行为（此时 NULL 与空字符串在文件里无法区分）。
+    #[serde(default = "default_csv_null_literal")]
+    pub null_literal: String,
     #[serde(default)]
     pub columns: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +193,7 @@ fn csv_text_format(request: &TableExportRequest) -> CsvTextFormat {
         delimiter: resolve_csv_delimiter(&request.csv_delimiter),
         quote_char: resolve_csv_quote_char(&request.csv_quote_char),
         include_header: request.csv_include_header,
+        null_literal: csv_null_literal(&request.null_literal).map(str::to_string),
     }
 }
 
@@ -196,14 +202,14 @@ fn write_table_text_row<W: Write>(
     csv: bool,
     row: &[Value],
     buffer: &mut String,
-    csv_format: CsvTextFormat,
+    csv_format: &CsvTextFormat,
 ) -> Result<(), String> {
     buffer.clear();
     buffer.push('\n');
     if csv {
         push_table_csv_row_with_format(buffer, row, csv_format);
     } else {
-        push_tsv_row(buffer, row);
+        push_tsv_row(buffer, row, csv_format.null_literal.as_deref());
     }
     file.write_all(buffer.as_bytes()).map_err(|error| format!("Failed to write export rows: {error}"))
 }
@@ -213,7 +219,7 @@ fn write_table_text_rows<W: Write>(
     csv: bool,
     rows: &[Vec<Value>],
     buffer: &mut String,
-    csv_format: CsvTextFormat,
+    csv_format: &CsvTextFormat,
 ) -> Result<(), String> {
     buffer.clear();
     for row in rows {
@@ -221,7 +227,7 @@ fn write_table_text_rows<W: Write>(
         if csv {
             push_table_csv_row_with_format(buffer, row, csv_format);
         } else {
-            push_tsv_row(buffer, row);
+            push_tsv_row(buffer, row, csv_format.null_literal.as_deref());
         }
     }
     file.write_all(buffer.as_bytes()).map_err(|error| format!("Failed to write export rows: {error}"))
@@ -1095,12 +1101,27 @@ enum TableExportSqlWriter {
     SplitZip(Box<crate::export_split_zip::SplitZipExportWriter>),
 }
 
+impl TableExportSqlWriter {
+    fn write_sql_unit(&mut self, unit: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Plain(writer) => writer.write_all(unit),
+            Self::SplitZip(writer) => writer.write_sql_unit(unit),
+        }
+    }
+}
+
 impl Write for TableExportSqlWriter {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         match self {
             Self::Plain(writer) => writer.write(buffer),
             Self::SplitZip(writer) => writer.write(buffer),
         }
+    }
+
+    fn write_fmt(&mut self, fmt: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        let mut unit = String::new();
+        std::fmt::write(&mut unit, fmt).map_err(|_| std::io::Error::other("Failed to format SQL export unit"))?;
+        self.write_sql_unit(unit.as_bytes())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
@@ -1118,6 +1139,21 @@ impl TableExportSqlWriter {
             Self::SplitZip(writer) => writer.finish(source_file_name),
         }
     }
+}
+
+fn write_sql_export_statements(
+    file: &mut impl Write,
+    statements: Vec<String>,
+    wrote_statements: &mut bool,
+) -> Result<(), String> {
+    for statement in statements {
+        if *wrote_statements {
+            file.write_all(b"\n").map_err(|e| format!("Failed to write SQL: {e}"))?;
+        }
+        file.write_all(statement.as_bytes()).map_err(|e| format!("Failed to write SQL: {e}"))?;
+        *wrote_statements = true;
+    }
+    Ok(())
 }
 
 fn create_table_export_sql_writer(request: &TableExportRequest) -> Result<TableExportSqlWriter, String> {
@@ -1161,7 +1197,8 @@ async fn try_export_native_table_stream(
                 std::fs::File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?,
             );
             file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
-            let header = format_csv_with_format(col_names, &[], csv_text_format(request));
+            let csv_format = csv_text_format(request);
+            let header = format_csv_with_format(col_names, &[], csv_format.clone());
             let header = header.strip_suffix('\n').unwrap_or(&header);
             file.write_all(header.as_bytes()).map_err(|e| format!("Failed to write CSV: {e}"))?;
             let mut row_buffer = String::new();
@@ -1180,13 +1217,7 @@ async fn try_export_native_table_stream(
                         column_types,
                         request.date_time_format.as_deref(),
                     );
-                    write_table_text_row(
-                        &mut file,
-                        true,
-                        formatted.as_ref(),
-                        &mut row_buffer,
-                        csv_text_format(request),
-                    )?;
+                    write_table_text_row(&mut file, true, formatted.as_ref(), &mut row_buffer, &csv_format)?;
                     rows_exported += 1;
                     if rows_exported.is_multiple_of(progress_interval) {
                         on_progress(TableExportProgress {
@@ -1211,7 +1242,8 @@ async fn try_export_native_table_stream(
             let mut file = BufWriter::new(
                 std::fs::File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?,
             );
-            let header = csv_text_format(request).include_header.then(|| {
+            let csv_format = csv_text_format(request);
+            let header = csv_format.include_header.then(|| {
                 let header = format_tsv(col_names, &[]);
                 header.strip_suffix('\n').unwrap_or(&header).to_string()
             });
@@ -1234,13 +1266,7 @@ async fn try_export_native_table_stream(
                         column_types,
                         request.date_time_format.as_deref(),
                     );
-                    write_table_text_row(
-                        &mut file,
-                        false,
-                        formatted.as_ref(),
-                        &mut row_buffer,
-                        csv_text_format(request),
-                    )?;
+                    write_table_text_row(&mut file, false, formatted.as_ref(), &mut row_buffer, &csv_format)?;
                     rows_exported += 1;
                     if rows_exported.is_multiple_of(progress_interval) {
                         on_progress(TableExportProgress {
@@ -1447,14 +1473,7 @@ async fn try_export_native_table_stream(
                         &sql_export_excluded_columns(request, primary_keys, col_names, column_extras),
                         request.insert_dialect,
                     )?;
-                    if !statements.is_empty() {
-                        if wrote_statements {
-                            file.write_all(b"\n").map_err(|e| format!("Failed to write SQL: {e}"))?;
-                        }
-                        file.write_all(statements.join("\n").as_bytes())
-                            .map_err(|e| format!("Failed to write SQL: {e}"))?;
-                        wrote_statements = true;
-                    }
+                    write_sql_export_statements(file, statements, &mut wrote_statements)?;
                     Ok(())
                 };
             let result = stream_native_table_rows(
@@ -1834,7 +1853,7 @@ async fn export_table_data_core_inner(
                         true,
                         formatted_rows.as_ref(),
                         &mut text_buffer,
-                        csv_text_format(request),
+                        &csv_text_format(request),
                     )?;
                 }
 
@@ -1926,7 +1945,7 @@ async fn export_table_data_core_inner(
                         false,
                         formatted_rows.as_ref(),
                         &mut text_buffer,
-                        csv_text_format(request),
+                        &csv_text_format(request),
                     )?;
                     is_first_batch = false;
                 } else {
@@ -1935,7 +1954,7 @@ async fn export_table_data_core_inner(
                         false,
                         formatted_rows.as_ref(),
                         &mut text_buffer,
-                        csv_text_format(request),
+                        &csv_text_format(request),
                     )?;
                 }
 
@@ -2310,14 +2329,7 @@ async fn export_table_data_core_inner(
                     &sql_export_excluded_columns(request, &primary_keys, &col_names, &column_extras),
                     request.insert_dialect,
                 )?;
-                if !statements.is_empty() {
-                    if wrote_statements {
-                        file.write_all(b"\n").map_err(|e| format!("Failed to write SQL: {e}"))?;
-                    }
-                    file.write_all(statements.join("\n").as_bytes())
-                        .map_err(|e| format!("Failed to write SQL: {e}"))?;
-                    wrote_statements = true;
-                }
+                write_sql_export_statements(&mut file, statements, &mut wrote_statements)?;
 
                 rows_exported += row_count as u64;
                 if use_keyset {
@@ -2381,6 +2393,39 @@ mod tests {
     use std::io::Read;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn split_zip_sql_export_writes_batch_statements_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip_path = dir.path().join("export.zip");
+        let statement = format!("INSERT INTO t VALUES ('{}');", "x".repeat(700 * 1024));
+        let mut writer = crate::export_split_zip::SplitZipExportWriter::create(
+            &zip_path,
+            crate::export_split_zip::MIN_SPLIT_PART_MAX_MB,
+            "table",
+            "sql",
+        )
+        .unwrap();
+        let mut wrote_statements = false;
+
+        write_sql_export_statements(&mut writer, vec![statement.clone(), statement.clone()], &mut wrote_statements)
+            .unwrap();
+        writer.finish("table.sql").unwrap();
+
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+        let mut sql_parts = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            if entry.name().ends_with(".sql") {
+                let mut contents = String::new();
+                entry.read_to_string(&mut contents).unwrap();
+                sql_parts.push(contents);
+            }
+        }
+
+        assert_eq!(sql_parts, vec![format!("{statement}\n"), statement]);
+        assert!(sql_parts.iter().all(|part| part.len() <= 1024 * 1024));
+    }
 
     #[test]
     fn table_export_request_defaults_to_source_dialect_and_batch_insert_mode() {
@@ -2526,6 +2571,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -2684,6 +2730,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             exclude_primary_keys: false,
             columns: None,
             selected_columns: None,
@@ -2783,7 +2830,7 @@ mod tests {
         let mut output = Vec::new();
         let mut buffer = String::new();
 
-        write_table_text_row(&mut output, true, &row, &mut buffer, CsvTextFormat::default()).expect("write csv row");
+        write_table_text_row(&mut output, true, &row, &mut buffer, &CsvTextFormat::default()).expect("write csv row");
         assert_eq!(String::from_utf8(output).expect("utf8 csv"), "\n\"\",\"\",\"line\n\"\"two\"\"\"");
     }
 
@@ -2869,6 +2916,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -2935,6 +2983,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -2979,6 +3028,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3018,6 +3068,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3065,6 +3116,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3124,6 +3176,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3177,6 +3230,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3258,6 +3312,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3321,6 +3376,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
@@ -3386,6 +3442,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
