@@ -1294,7 +1294,9 @@ describe("settingsStore persisted settings initialization", () => {
     const { useSettingsStore } = await import("@/stores/settingsStore");
     const firstStore = useSettingsStore();
     await firstStore.initEditorSettings();
+    expect(firstStore.editorSettings.colorizeConnectionTabs).toBe(true);
     await firstStore.updateEditorSettingsAndPersist({
+      colorizeConnectionTabs: false,
       tabPlacement: "left",
       tabGroupMode: "connection",
       tabSortMode: "title-asc",
@@ -1308,6 +1310,7 @@ describe("settingsStore persisted settings initialization", () => {
     await restartedStore.initEditorSettings();
 
     expect(restartedStore.editorSettings).toMatchObject({
+      colorizeConnectionTabs: false,
       tabPlacement: "left",
       tabGroupMode: "connection",
       tabSortMode: "title-asc",

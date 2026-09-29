@@ -891,6 +891,7 @@ export interface EditorSettings {
   compactTabTitle: boolean;
   tabLayout: TabLayoutMode;
   tabPlacement: TabPlacement;
+  colorizeConnectionTabs: boolean;
   tabGroupMode: TabGroupMode;
   tabGroupCustomizations: Record<string, TabGroupCustomization>;
   tabSortMode: TabSortMode;
@@ -1180,6 +1181,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   compactTabTitle: false,
   tabLayout: "scroll",
   tabPlacement: "top",
+  colorizeConnectionTabs: true,
   tabGroupMode: "none",
   tabGroupCustomizations: {},
   tabSortMode: "manual",
@@ -1751,6 +1753,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     compactTabTitle: settings.compactTabTitle ?? DEFAULT_EDITOR_SETTINGS.compactTabTitle,
     tabLayout: normalizeTabLayout(settings.tabLayout),
     tabPlacement: normalizeTabPlacement(settings.tabPlacement),
+    colorizeConnectionTabs: typeof settings.colorizeConnectionTabs === "boolean" ? settings.colorizeConnectionTabs : DEFAULT_EDITOR_SETTINGS.colorizeConnectionTabs,
     tabGroupMode: normalizeTabGroupMode(settings.tabGroupMode),
     tabGroupCustomizations: normalizeTabGroupCustomizations(settings.tabGroupCustomizations),
     tabSortMode: normalizeTabSortMode(settings.tabSortMode),
@@ -2588,6 +2591,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.compactTabTitle !== undefined) editorSettings.value.compactTabTitle = partial.compactTabTitle;
     if (partial.tabLayout !== undefined) editorSettings.value.tabLayout = normalizeTabLayout(partial.tabLayout);
     if (partial.tabPlacement !== undefined) editorSettings.value.tabPlacement = normalizeTabPlacement(partial.tabPlacement);
+    if (partial.colorizeConnectionTabs !== undefined) editorSettings.value.colorizeConnectionTabs = partial.colorizeConnectionTabs === true;
     if (partial.tabGroupMode !== undefined) editorSettings.value.tabGroupMode = normalizeTabGroupMode(partial.tabGroupMode);
     if (partial.tabGroupCustomizations !== undefined) editorSettings.value.tabGroupCustomizations = normalizeTabGroupCustomizations(partial.tabGroupCustomizations);
     if (partial.tabSortMode !== undefined) editorSettings.value.tabSortMode = normalizeTabSortMode(partial.tabSortMode);

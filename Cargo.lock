@@ -2103,7 +2103,7 @@ dependencies = [
 
 [[package]]
 name = "dbx"
-version = "0.6.26"
+version = "0.6.27"
 dependencies = [
  "anyhow",
  "axum",
@@ -2114,6 +2114,7 @@ dependencies = [
  "dbx-core",
  "dbx-mcp",
  "dbx-tauri-consul",
+ "dbx-tauri-schema",
  "deadpool-postgres",
  "font-kit",
  "futures",
@@ -2185,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "dbx-cli"
-version = "0.4.100"
+version = "0.4.101"
 dependencies = [
  "async-trait",
  "dbx-core",
@@ -2521,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "dbx-mcp"
-version = "0.4.100"
+version = "0.4.101"
 dependencies = [
  "async-trait",
  "axum",
@@ -2681,6 +2682,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbx-tauri-schema"
+version = "0.1.0"
+dependencies = [
+ "dbx-core",
+ "tauri",
+]
+
+[[package]]
 name = "dbx-types"
 version = "0.1.0"
 dependencies = [
@@ -2694,7 +2703,7 @@ dependencies = [
 
 [[package]]
 name = "dbx-web"
-version = "0.6.26"
+version = "0.6.27"
 dependencies = [
  "aes-gcm 0.10.3",
  "argon2",

@@ -206,7 +206,16 @@ import { validateConfigName, generateId, type AiConfigItem, type ConfigNameValid
 import { currentExecutableStatementRange, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
 import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
 import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES, tableColumnTemplateRowsToSettings } from "@/lib/table/tableColumnTemplates";
-import { DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES, normalizeSqlVariableSyntaxOverrides, SQL_VARIABLE_SYNTAX_DATABASE_TYPES, SQL_VARIABLE_SYNTAX_KEYS, SQL_VARIABLE_SYNTAX_TOKENS, type SqlVariableSyntaxOverrides, type SqlVariableSyntaxToggles } from "@/lib/sql/sqlVariableSyntax";
+import {
+  DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES,
+  normalizeSqlVariableSyntaxOverrides,
+  resolveSqlVariableSyntaxToggles,
+  SQL_VARIABLE_SYNTAX_DATABASE_TYPES,
+  SQL_VARIABLE_SYNTAX_KEYS,
+  SQL_VARIABLE_SYNTAX_TOKENS,
+  type SqlVariableSyntaxOverrides,
+  type SqlVariableSyntaxToggles,
+} from "@/lib/sql/sqlVariableSyntax";
 import {
   buildMcpCherryStudioConfig,
   buildMcpCodexConfig,
@@ -684,6 +693,7 @@ const editSavedSqlOpenTargetMode = ref<SavedSqlOpenTargetMode>(settingsStore.edi
 const editAppLayout = ref(settingsStore.editorSettings.appLayout);
 const editTabLayout = ref(settingsStore.editorSettings.tabLayout);
 const editTabPlacement = ref<TabPlacement>(settingsStore.editorSettings.tabPlacement);
+const editColorizeConnectionTabs = ref(settingsStore.editorSettings.colorizeConnectionTabs);
 const editTabGroupMode = ref<TabGroupMode>(settingsStore.editorSettings.tabGroupMode);
 const editTabSortMode = ref<TabSortMode>(settingsStore.editorSettings.tabSortMode);
 const editShowTrayIcon = ref(settingsStore.desktopSettings.show_tray_icon);
@@ -772,11 +782,12 @@ function updateExternalSqlEditorMaxMbInput(event: Event) {
 }
 
 function sqlVariableSyntaxToggle(key: keyof SqlVariableSyntaxToggles): boolean {
-  return editSqlVariableSyntaxOverrides.value[editSqlVariableSyntaxDatabaseType.value]?.[key] ?? true;
+  return resolveSqlVariableSyntaxToggles(editSqlVariableSyntaxOverrides.value, editSqlVariableSyntaxDatabaseType.value)[key];
 }
 
 function setSqlVariableSyntaxToggle(key: keyof SqlVariableSyntaxToggles, value: boolean) {
   const dbType = editSqlVariableSyntaxDatabaseType.value;
+  if (dbType === "neo4j" && key === "named") return;
   const merged: SqlVariableSyntaxToggles = {
     ...DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES,
     ...editSqlVariableSyntaxOverrides.value[dbType],
@@ -1083,6 +1094,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     appLayout: editAppLayout.value,
     tabLayout: editTabLayout.value,
     tabPlacement: editTabPlacement.value,
+    colorizeConnectionTabs: editColorizeConnectionTabs.value,
     tabGroupMode: editTabGroupMode.value,
     tabSortMode: editTabSortMode.value,
     showColumnCommentsInHeader: editShowColumnCommentsInHeader.value,
@@ -1883,6 +1895,7 @@ function syncEditorSettingsDraftFromStore() {
   editAppLayout.value = settingsStore.editorSettings.appLayout;
   editTabLayout.value = settingsStore.editorSettings.tabLayout;
   editTabPlacement.value = settingsStore.editorSettings.tabPlacement;
+  editColorizeConnectionTabs.value = settingsStore.editorSettings.colorizeConnectionTabs;
   editTabGroupMode.value = settingsStore.editorSettings.tabGroupMode;
   editTabSortMode.value = settingsStore.editorSettings.tabSortMode;
   editShowColumnCommentsInHeader.value = settingsStore.editorSettings.showColumnCommentsInHeader;
@@ -2021,6 +2034,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   appLayout: editAppLayout,
   tabLayout: editTabLayout,
   tabPlacement: editTabPlacement,
+  colorizeConnectionTabs: editColorizeConnectionTabs,
   tabGroupMode: editTabGroupMode,
   tabSortMode: editTabSortMode,
   showColumnCommentsInHeader: editShowColumnCommentsInHeader,
@@ -2531,6 +2545,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editAppLayout.value = DEFAULT_EDITOR_SETTINGS.appLayout;
     editTabLayout.value = DEFAULT_EDITOR_SETTINGS.tabLayout;
     editTabPlacement.value = DEFAULT_EDITOR_SETTINGS.tabPlacement;
+    editColorizeConnectionTabs.value = DEFAULT_EDITOR_SETTINGS.colorizeConnectionTabs;
     editTabGroupMode.value = DEFAULT_EDITOR_SETTINGS.tabGroupMode;
     editTabSortMode.value = DEFAULT_EDITOR_SETTINGS.tabSortMode;
     editShowTrayIcon.value = DEFAULT_DESKTOP_SETTINGS.show_tray_icon;
@@ -6972,7 +6987,7 @@ onUnmounted(() => {
                     <div class="text-sm font-medium text-muted-foreground">
                       {{ t("settings.sqlVariableSyntax") }}
                     </div>
-                    <p class="text-xs text-muted-foreground">
+                    <p v-if="editSqlVariableSyntaxDatabaseType !== 'neo4j'" class="text-xs text-muted-foreground">
                       {{ t("settings.sqlVariableSyntaxDescription") }}
                     </p>
                   </div>
@@ -7006,7 +7021,13 @@ onUnmounted(() => {
                         {{ t(`settings.sqlVariableSyntax_${key}Description`) }}
                       </p>
                     </div>
-                    <Switch :id="`sql-var-syntax-${key}`" :model-value="sqlVariableSyntaxToggle(key)" :disabled="!editSqlVariableSubstitutionEnabled" class="mt-0.5 shrink-0" @update:model-value="(value) => setSqlVariableSyntaxToggle(key, value as boolean)" />
+                    <Switch
+                      :id="`sql-var-syntax-${key}`"
+                      :model-value="sqlVariableSyntaxToggle(key)"
+                      :disabled="!editSqlVariableSubstitutionEnabled || (editSqlVariableSyntaxDatabaseType === 'neo4j' && key === 'named')"
+                      class="mt-0.5 shrink-0"
+                      @update:model-value="(value) => setSqlVariableSyntaxToggle(key, value as boolean)"
+                    />
                   </div>
                 </div>
               </div>
@@ -7412,6 +7433,14 @@ onUnmounted(() => {
                     </div>
                   </Button>
                 </div>
+              </div>
+
+              <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div class="space-y-1">
+                  <Label for="colorize-connection-tabs">{{ t("settings.colorizeConnectionTabs") }}</Label>
+                  <p class="text-xs text-muted-foreground">{{ t("settings.colorizeConnectionTabsDescription") }}</p>
+                </div>
+                <Switch id="colorize-connection-tabs" v-model="editColorizeConnectionTabs" />
               </div>
 
               <div class="settings-appearance-group">
