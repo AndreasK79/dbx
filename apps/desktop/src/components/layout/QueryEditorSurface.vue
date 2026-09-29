@@ -25,6 +25,7 @@ const contentAreaRef = ref<InstanceType<typeof ContentArea> | null>(null);
 defineExpose<QueryEditorSurfaceHandle>({
   focusSearch: (target: Element | null = null) => contentAreaRef.value?.focusSearch(target) ?? false,
   focusQueryEditor: () => contentAreaRef.value?.focusQueryEditor() ?? false,
+  focusWhere: () => contentAreaRef.value?.focusWhere() ?? false,
   openGoToColumn: () => contentAreaRef.value?.openGoToColumn() ?? false,
   refreshData: () => contentAreaRef.value?.refreshData() ?? false,
   toggleResultsPane: () => contentAreaRef.value?.toggleResultsPane() ?? false,

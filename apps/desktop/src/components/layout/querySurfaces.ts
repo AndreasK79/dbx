@@ -15,6 +15,7 @@ export interface QueryEditorSurfaceHandle {
   /** Move focus into the tab's query editor (e.g. after a shortcut-driven
    *  database selection); false when the surface has no editor. */
   focusQueryEditor(): boolean;
+  focusWhere(): boolean;
   openGoToColumn(): boolean;
   refreshData(target?: Element | null): boolean;
   toggleResultsPane(): boolean;

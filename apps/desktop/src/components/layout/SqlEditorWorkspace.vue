@@ -73,6 +73,7 @@ defineExpose({
     const group = groupForElement(element) ?? activeEditorGroup();
     return group?.focusSearch(element) ?? false;
   },
+  focusWhere: () => activeEditorGroup()?.focusWhere() ?? false,
   openGoToColumn: () => activeEditorGroup()?.openGoToColumn() ?? false,
   openDatabaseSelect: () => activeEditorGroup()?.openDatabaseSelect() ?? false,
   commitTransaction: () => activeEditorGroup()?.commitTransaction() ?? false,

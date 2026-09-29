@@ -76,6 +76,7 @@ const editorToolbarRef = ref<InstanceType<typeof EditorToolbar> | null>(null);
 
 defineExpose({
   focusSearch: (target: Element | null = null) => activeSurfaceRef.value?.focusSearch(target) ?? false,
+  focusWhere: () => activeSurfaceRef.value?.focusWhere() ?? false,
   openGoToColumn: () => activeSurfaceRef.value?.openGoToColumn() ?? false,
   openDatabaseSelect: () => editorToolbarRef.value?.openDatabaseSelect() ?? false,
   // Same action as the toolbar's commit button (Shift+Mod+C default). Only
