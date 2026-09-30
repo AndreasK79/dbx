@@ -322,6 +322,7 @@ import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { useDataGridExport, type MongoCopyUpdateTarget } from "@/composables/useDataGridExport";
 import { eventTargetAllowsNativeClipboard, isPlainClipboardShortcut, readTextFromClipboard } from "@/lib/common/clipboard";
 import { claimDataGridPaste, claimDataGridSelectAll, clearDataGridClipboardCopy, parseDataGridClipboard, planDataGridPaste } from "@/lib/dataGrid/dataGridClipboard";
+import { parseInsertStatementPaste } from "@/lib/dataGrid/dataGridInsertPaste";
 import { beginDataGridNativeSelectionBlock, finishDataGridNativeSelectionBlock } from "@/lib/dataGrid/dataGridNativeSelection";
 import { DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS, DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_COPY_PREFERENCES, extractorUnavailableForDatabase, type DataGridCopyExtractorId, type DataGridCopyPreference } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { columnNamesForCopy } from "@/lib/dataGrid/dataGridColumnNameCopy";
@@ -2119,6 +2120,17 @@ const goToColumnOpen = ref(false);
 const goToColumnSearch = ref("");
 const goToColumnSearchInput = ref<HTMLInputElement>();
 const goToColumnListRef = ref<HTMLElement>();
+// The trigger lives inside a Tooltip so the icon keeps its hover hint, and that
+// tooltip claims the popper anchor for its own popper root. Pointing the popover at
+// the button element directly keeps the column list positioned on screen.
+const goToColumnTriggerRef = ref<HTMLElement | { $el?: HTMLElement }>();
+
+function goToColumnTriggerElement(): HTMLElement | undefined {
+  const trigger = goToColumnTriggerRef.value;
+  if (!trigger) return undefined;
+  return trigger instanceof HTMLElement ? trigger : trigger.$el;
+}
+
 const goToColumnSelectedIndex = ref(0);
 const columnOrderKeys = computed(() => uniqueDataGridColumnOrderKeys(props.result.columns, props.sourceColumns));
 const resolvedColumnLayoutScopeKey = computed(
@@ -8494,6 +8506,7 @@ function batchAppendPasteError(reason: string): string {
     "target-not-empty": "grid.batchAppendPasteTargetNotEmpty",
     "empty-paste": "grid.batchAppendPasteEmpty",
     "readonly-column": "grid.batchAppendPasteReadonlyColumn",
+    "no-matching-columns": "grid.batchAppendPasteNoMatchingColumns",
   };
   return t(messages[reason] ?? "grid.batchAppendPasteInvalidTarget");
 }
@@ -8510,8 +8523,8 @@ function blankSelectionBatchAppendPasteTarget(pastedRows: readonly (readonly (st
   return { rowId: item.id, columnIndexes: visibleColumnIndexes.value.slice(range.startCol) };
 }
 
-function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (readonly (string | null)[])[], columnIndexes: readonly number[]): boolean {
-  const result = appendPastedRowsToNewRow(targetRowId, rows, columnIndexes);
+function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (readonly (string | null)[])[], columnIndexes: readonly number[], columnNames?: readonly string[] | null): boolean {
+  const result = appendPastedRowsToNewRow(targetRowId, rows, columnIndexes, columnNames);
   if (!result.ok) {
     if (result.reason === "invalid-target" || result.reason === "target-not-empty") {
       batchAppendPasteRowId.value = null;
@@ -8525,6 +8538,20 @@ function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (read
 }
 
 function pasteTextIntoGrid(text: string): boolean {
+  // SQL INSERT statements are only meaningful as new rows, so they are honored
+  // on the blank-new-row targets below; any other target pastes the parsed
+  // values through the regular cell path instead of treating the whole
+  // statement as literal text.
+  const insertPaste = parseInsertStatementPaste(text);
+  if (insertPaste) {
+    const insertTargetRowId = batchAppendPasteTargetRowId();
+    if (insertTargetRowId !== null) {
+      return appendParsedRowsToBlankTarget(insertTargetRowId, insertPaste.rows, visibleColumnIndexes.value, insertPaste.columnNames);
+    }
+    const insertCellTarget = blankSelectionBatchAppendPasteTarget(insertPaste.rows);
+    if (insertCellTarget) return appendParsedRowsToBlankTarget(insertCellTarget.rowId, insertPaste.rows, insertCellTarget.columnIndexes, insertPaste.columnNames);
+    return pasteRowsIntoSelection(insertPaste.rows);
+  }
   const rows = parseDataGridClipboard(text);
   const targetRowId = batchAppendPasteTargetRowId();
   if (targetRowId !== null) {
@@ -9505,7 +9532,7 @@ async function onGridKeydown(event: KeyboardEvent) {
   if (!targetAllowsNativeClipboard && props.context === "table-data" && canOpenTableStructureEditor.value && isEditTableStructureShortcut(event, settingsStore.editorSettings.shortcuts)) {
     event.preventDefault();
     event.stopPropagation();
-    openTableStructureEditor();
+    openTableStructureEditor("columns");
     return;
   }
   if (!targetAllowsNativeClipboard && isGoToColumnShortcut(event, settingsStore.editorSettings.shortcuts) && openGoToColumn()) {
@@ -11640,9 +11667,9 @@ function copyDdl() {
   copyText(ddlContent.value);
 }
 
-function openTableStructureEditor() {
+function openTableStructureEditor(initialTab: TableInfoTab) {
   if (!props.connectionId || !props.database || !props.tableMeta?.tableName || !canOpenTableStructureEditor.value) return;
-  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, activeTableInfoTab.value, undefined, props.tableMeta.catalog, (props.tableMeta.tableType || "").toUpperCase() === "VIEW" ? "view" : "table");
+  queryStore.openTableStructure(props.connectionId, props.database, props.tableMeta.schema, props.tableMeta.tableName, initialTab, undefined, props.tableMeta.catalog, (props.tableMeta.tableType || "").toUpperCase() === "VIEW" ? "view" : "table");
 }
 
 function toggleDdlWrap() {
@@ -12681,7 +12708,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 <Tooltip>
                   <TooltipTrigger as-child>
                     <PopoverTrigger as-child>
-                      <Button data-toolbar-action="navigation" variant="ghost" size="sm" :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compact ? 'data-grid-topbar-action-button--compact' : '', goToColumnOpen ? 'text-primary bg-primary/10' : '']">
+                      <Button ref="goToColumnTriggerRef" data-toolbar-action="navigation" variant="ghost" size="sm" :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compact ? 'data-grid-topbar-action-button--compact' : '', goToColumnOpen ? 'text-primary bg-primary/10' : '']">
                         <Columns3 class="data-grid-topbar-action-icon w-3 h-3" />
                         <span
                           class="data-grid-topbar-action-label"
@@ -12695,7 +12722,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   </TooltipTrigger>
                   <TooltipContent side="bottom">{{ t("grid.goToColumn") }}</TooltipContent>
                 </Tooltip>
-                <PopoverContent align="end" class="w-56 p-2" @keydown="onGoToColumnKeydown">
+                <PopoverContent :reference="goToColumnTriggerElement()" align="end" class="w-56 p-2" @keydown="onGoToColumnKeydown">
                   <div class="relative mb-1">
                     <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                     <input ref="goToColumnSearchInput" v-model="goToColumnSearch" :placeholder="t('grid.searchColumn')" class="h-8 w-full rounded-md border bg-transparent pl-7 pr-6 text-xs outline-none focus-visible:border-ring/50 focus-visible:ring-1 focus-visible:ring-ring/25" />
@@ -14147,7 +14174,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   <span class="table-info-action-label">{{ t("contextMenu.dropAllIndexes") }}</span>
                 </Button>
               </div>
-              <Button v-if="canOpenTableStructureEditor" variant="ghost" size="sm" class="table-info-action-button h-6 px-2 text-xs" :title="t('contextMenu.editStructure')" :aria-label="t('contextMenu.editStructure')" @click="openTableStructureEditor">
+              <Button v-if="canOpenTableStructureEditor" variant="ghost" size="sm" class="table-info-action-button h-6 px-2 text-xs" :title="t('contextMenu.editStructure')" :aria-label="t('contextMenu.editStructure')" @click="openTableStructureEditor(activeTableInfoTab)">
                 <PencilRuler class="w-3 h-3" />
                 <span class="table-info-action-label">{{ t("contextMenu.editStructure") }}</span>
               </Button>
