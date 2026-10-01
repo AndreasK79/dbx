@@ -16,6 +16,7 @@ import { sqlMetadataRefreshTarget } from "@/lib/sql/sqlMetadataRefresh";
 import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
 import { defaultViewForResult } from "@/lib/query/queryResultDefaultView";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
+import { tabDisplayTitle } from "@/lib/tabs/tabPresentation";
 import { classifyRedisCommandSafety } from "@/lib/redis/redisCommandSafety";
 import { isRedisCommentLine } from "@/lib/redis/redisCommandTokenizer";
 import { isDangerousSolrRequest } from "@/lib/solr/solrRequestRisk";
@@ -433,6 +434,7 @@ export function useSqlExecution(deps: {
     const connName = executionConnection?.name || "";
     const start = Date.now();
     const isRedis = executionDatabaseType === "redis";
+    const cancelRequestCountAtStart = tab.cancelRequestCount ?? 0;
     const producedResult = await queryStore.executeCurrentSql(sql, {
       tabId: executionTabId,
       ...(isRedis ? { skipRedisSafetyCheck: deps.blockDangerousRedisCommands?.value === false } : {}),
@@ -445,6 +447,8 @@ export function useSqlExecution(deps: {
       return;
     }
     const executionTabStillActive = deps.activeTab.value?.id === executionTabId;
+    const failure = firstQueryExecutionError(tab);
+    const runCancelled = (tab.cancelRequestCount ?? 0) > cancelRequestCountAtStart;
     const sqlServerMessageResultIndex = executionDatabaseType === "sqlserver" ? tab.results?.findIndex((result) => result.server_message === true) : undefined;
     if (sqlServerMessageResultIndex !== undefined && sqlServerMessageResultIndex >= 0) {
       focusSqlServerDataResult(tab.id, executionDatabaseType, tab);
@@ -459,9 +463,26 @@ export function useSqlExecution(deps: {
       if (executionTabStillActive) {
         deps.activeOutputView.value = statementCount === 1 ? defaultViewForResult(tab.result) : "summary";
       }
+    } else if (failure && !runCancelled && tab.userPinnedOutputViewDuringExecution !== true) {
+      // 错误收尾必须落在看得见错误的位置：单语句进结果网格（store 已优先把错误
+      // 结果选为活动结果，网格渲染居中错误横幅），多语句进执行摘要（红色错误行）。
+      // 用户中途自己切过视图、或运行是被取消的，都不再抢方向盘。
+      if (executionTabStillActive) {
+        deps.activeOutputView.value = statementCount === 1 ? "result" : "summary";
+      }
+    }
+    if (failure && !runCancelled && !executionTabStillActive) {
+      // The run failed on a tab the user has navigated away from — pull them back
+      // with a toast instead of silently updating a background tab.
+      const errorText = failure.error ? translateBackendError(t, failure.error, failure.rows?.[0]?.[0]) : String(failure.rows?.[0]?.[0] ?? "");
+      toast(t("tabs.backgroundRunError", { tab: tabDisplayTitle(tab, t), message: (errorText.split("\n")[0] ?? "").trim() || t("common.failed") }), 8000, {
+        label: t("tabs.backgroundRunErrorOpen"),
+        onClick: () => {
+          void queryStore.activateTab(executionTabId);
+        },
+      });
     }
     const elapsed = Date.now() - start;
-    const failure = firstQueryExecutionError(tab);
     const success = !failure;
     historyStore.add({
       connection_id: tab.connectionId,
@@ -776,8 +797,17 @@ export function useSqlExecution(deps: {
       // 会让多个 worker 几乎同时改这个共享 ref，导致主视图在 result/summary 间反复
       // 跳动（闪烁/竞态）。worker 结果已由 captureMultiDbExecutionWorkerResult 记录
       // 到 source tab 的 result run 并通过 projectResultRun 投影显示，无需再切主视图。
+      // 失败分支与单库一致：用户中途切过视图、或运行被取消时不抢方向盘。
       if (!workerId && deps.activeTab.value?.id === tab.id) {
-        deps.activeOutputView.value = success && latest.result?.server_message === true ? "messages" : success && (latest.result?.columns.length || latest.results?.some((result) => result.columns.length)) ? "result" : "summary";
+        if (success && latest.result?.server_message === true) {
+          deps.activeOutputView.value = "messages";
+        } else if (success && (latest.result?.columns.length || latest.results?.some((result) => result.columns.length))) {
+          deps.activeOutputView.value = "result";
+        } else if (success) {
+          deps.activeOutputView.value = "summary";
+        } else if (!cancelRequested() && !tabCancelRequested(cancelRequestCount) && latest.userPinnedOutputViewDuringExecution !== true) {
+          deps.activeOutputView.value = "summary";
+        }
       }
       // A target that ran inside a manual transaction keeps its own worker and
       // session alive, and reports the transaction the merged view settles.

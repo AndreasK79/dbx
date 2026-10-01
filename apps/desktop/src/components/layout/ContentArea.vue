@@ -614,6 +614,9 @@ watch(
   },
 );
 const summaryItems = computed(() => executionSummaryItems(props.activeTab));
+// Cancelled runs leave a "Query canceled" error result behind; the badge must
+// not shout about a stop the user asked for.
+const summaryErrorCount = computed(() => (props.activeTab.lastRunCancelled ? 0 : summaryItems.value.filter((item) => item.status === "error").length));
 const hasExecutionSummary = computed(() => summaryItems.value.length > 0 || props.activeTab.isExecuting);
 const batchExecutionProgress = computed(() => props.activeTab.batchSqlExecution);
 const batchRecovery = computed(() => batchSqlRecoveryState(props.activeTab));
@@ -637,10 +640,17 @@ const canShowExplainOutput = computed(() => !!props.activeTab.explainPlan || !!p
 // silently loses its notices once a later statement owns the active result.
 const resultMessages = computed<QueryMessage[]>(() => {
   const results = props.activeTab.results?.length ? props.activeTab.results : props.activeTab.result ? [props.activeTab.result] : [];
-  return results.flatMap(queryResultMessages);
+  const streamed = props.activeTab.streamingNotices?.items.map((item) => item.message) ?? [];
+  return [...results.flatMap(queryResultMessages), ...streamed];
 });
 const resultMessageCount = computed(() => resultMessages.value.length);
 const canShowMessagesOutput = computed(() => resultMessageCount.value > 0);
+// Latest streamed notice for the loading spinner's one-line ticker.
+const streamingLatestNotice = computed(() => {
+  const items = props.activeTab.streamingNotices?.items;
+  if (!items?.length) return undefined;
+  return { line: items[items.length - 1]!.message.message, count: items.length };
+});
 const showStandaloneResultToolbar = computed(() => activeElasticsearchJsonResponse.value || props.activeOutputView !== "result" || (redisResultViewMode.value === "console" && canShowRedisConsoleOutput.value) || !props.activeTab.result || !hasTabularResult.value);
 const standaloneResultToolbarCompact = computed(() => isDataGridToolbarCompact(standaloneResultToolbarWidth.value, standaloneResultToolbarViewportWidth.value));
 let standaloneResultToolbarResizeObserver: ResizeObserver | undefined;
@@ -2169,6 +2179,7 @@ defineExpose({
                 :can-show-redis-console="canShowRedisConsoleOutput"
                 :result-mode="redisResultViewMode"
                 :message-count="resultMessageCount"
+                :error-count="summaryErrorCount"
                 :compact="standaloneResultToolbarCompact"
                 @select-view="emit('update:activeOutputView', activeTab.id, $event)"
                 @select-result-mode="setRedisResultViewMode"
@@ -2418,6 +2429,7 @@ defineExpose({
                     :can-show-redis-console="canShowRedisConsoleOutput"
                     :result-mode="redisResultViewMode"
                     :message-count="resultMessageCount"
+                    :error-count="summaryErrorCount"
                     :compact="compact"
                     @select-view="emit('update:activeOutputView', activeTab.id, $event)"
                     @select-result-mode="setRedisResultViewMode"
@@ -2485,6 +2497,8 @@ defineExpose({
                 show-cancel
                 :cancel-disabled="!canCancelQueryExecution(activeTab)"
                 :cancelling="activeTab.isCancelling"
+                :notice-line="streamingLatestNotice?.line"
+                :notice-count="streamingLatestNotice?.count"
                 @cancel="emit('cancel', activeTab.id)"
               />
               <div v-else-if="activeTab.resultEvicted && activeTab.resultCacheState === 'missing'" class="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -2868,6 +2882,8 @@ defineExpose({
           show-cancel
           :cancel-disabled="!canCancelQueryExecution(activeTab)"
           :cancelling="activeTab.isCancelling"
+          :notice-line="streamingLatestNotice?.line"
+          :notice-count="streamingLatestNotice?.count"
           @cancel="emit('cancel', activeTab.id)"
         />
         <div v-else class="h-full flex flex-col items-center justify-center gap-3 text-muted-foreground text-sm">

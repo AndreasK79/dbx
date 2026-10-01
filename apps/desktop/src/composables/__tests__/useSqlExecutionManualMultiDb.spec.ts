@@ -10,6 +10,7 @@ import type { ConnectionConfig, QueryTab } from "@/types/database";
 vi.mock("vue-i18n", () => ({ createI18n: () => ({ global: { locale: { value: "en" }, setLocaleMessage: vi.fn() } }), useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   saveEditorSettings: vi.fn(),
   saveHistory: vi.fn(),
   unlockConnectionWrites: vi.fn(),

@@ -37,6 +37,7 @@ function deferred<T>() {
 }
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   analyzeEditableQueryEditability,
   buildDataGridCountSql,
   buildSortedQuerySql,
@@ -1035,7 +1036,7 @@ describe("queryStore hidden primary key editing", () => {
     await execution;
 
     expect(beginManualTransaction).toHaveBeenCalledWith("oracle-1", "ORCL", undefined, undefined);
-    expect(executeInManualTransaction).toHaveBeenCalledWith("txn-1", "SELECT t.* FROM APP.WIDE_TABLE t", "ORCL", undefined, expect.any(Number), true, undefined, undefined, "SELECT t.* FROM APP.WIDE_TABLE t");
+    expect(executeInManualTransaction).toHaveBeenCalledWith("txn-1", "SELECT t.* FROM APP.WIDE_TABLE t", "ORCL", undefined, expect.any(Number), true, undefined, undefined, "SELECT t.* FROM APP.WIDE_TABLE t", expect.any(String));
     expect(store.tabs.find((tab) => tab.id === tabId)?.result?.large_value_cells).toEqual([{ row_index: 0, column_index: 1, original_bytes: 81920 }]);
   });
 
@@ -1081,7 +1082,7 @@ describe("queryStore hidden primary key editing", () => {
     await store.executeTabSql(tabId, sql);
     const tab = store.tabs.find((item) => item.id === tabId)!;
     expect(tab.autoCommit).toBe(false);
-    expect(executeInManualTransaction).toHaveBeenNthCalledWith(1, "txn-1", sql, "ORCL", undefined, expect.any(Number), false, 100, undefined, sql);
+    expect(executeInManualTransaction).toHaveBeenNthCalledWith(1, "txn-1", sql, "ORCL", undefined, expect.any(Number), false, 100, undefined, sql, expect.any(String));
     expect(tab.result?.rows).toHaveLength(100);
 
     await store.executeTabSql(tabId, sql, {
@@ -1093,7 +1094,7 @@ describe("queryStore hidden primary key editing", () => {
       replaceActiveResultInGroup: true,
     });
 
-    expect(executeInManualTransaction).toHaveBeenNthCalledWith(2, "txn-1", sql, "ORCL", undefined, expect.any(Number), false, 100, "oracle-go-1", undefined);
+    expect(executeInManualTransaction).toHaveBeenNthCalledWith(2, "txn-1", sql, "ORCL", undefined, expect.any(Number), false, 100, "oracle-go-1", undefined, expect.any(String));
     expect(tab.result?.rows).toHaveLength(200);
     expect(tab.result?.rows[100]).toEqual([101]);
   });
@@ -1211,7 +1212,7 @@ describe("queryStore hidden primary key editing", () => {
     // with the user-facing classification SQL (9th argument), but still opts
     // out of table-data preview. Every slot stays asserted — the spec's mocks
     // are fixed, so database/schema/row-limit/cursor args must not drift.
-    expect(executeInManualTransaction).toHaveBeenCalledWith("txn-1", "SELECT name, `id` AS `__DBX_PK_0` FROM users", "app", undefined, 100000, false, undefined, undefined, "SELECT name FROM users");
+    expect(executeInManualTransaction).toHaveBeenCalledWith("txn-1", "SELECT name, `id` AS `__DBX_PK_0` FROM users", "app", undefined, 100000, false, undefined, undefined, "SELECT name FROM users", expect.any(String));
   });
 
   it("keeps a keyless Oracle query editable when its WHERE clause reads another table", async () => {

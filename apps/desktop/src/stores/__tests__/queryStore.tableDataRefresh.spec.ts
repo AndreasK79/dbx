@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   buildTableSelectSql: mocks.buildTableSelectSql,
   closeClientConnectionSession: mocks.closeClientConnectionSession,
   closeQuerySession: mocks.closeQuerySession,

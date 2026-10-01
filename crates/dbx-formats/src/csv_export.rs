@@ -249,7 +249,7 @@ fn push_tsv_escaped(out: &mut String, value: &str) {
     if value.contains('\t') || value.contains('\n') || value.contains('\r') || value.contains('"') {
         out.push('"');
         push_formula_guard(out, value);
-        push_csv_escaped_content(out, value);
+        push_csv_escaped_content(out, value, '"');
         out.push('"');
     } else {
         push_formula_guard(out, value);

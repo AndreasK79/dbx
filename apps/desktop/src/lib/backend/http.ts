@@ -1580,6 +1580,12 @@ export async function executeMultiWithProgress(
   return results;
 }
 
+/** Web mirror of the desktop's live notice subscription: the HTTP transport
+ * has no event channel, so notices keep arriving post-completion only. */
+export async function withStatementNotices<T>(_executionId: string, _onNotices: (event: StatementNoticesEvent) => void, run: () => Promise<T>): Promise<T> {
+  return run();
+}
+
 export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string): Promise<boolean> {
   return post("/api/query/close-session", {
     connectionId,
@@ -1643,7 +1649,7 @@ export async function beginManualTransaction(_connectionId: string, _database: s
   throw new Error("Manual transaction management is only available in the desktop app.");
 }
 
-export async function executeInManualTransaction(_txnSessionId: string, _sql: string, _database: string, _schema?: string, _maxRows?: number, _tableDataPreview?: boolean, _pageSize?: number, _resultSessionId?: string, _classificationSql?: string): Promise<QueryResult[]> {
+export async function executeInManualTransaction(_txnSessionId: string, _sql: string, _database: string, _schema?: string, _maxRows?: number, _tableDataPreview?: boolean, _pageSize?: number, _resultSessionId?: string, _classificationSql?: string, _executionId?: string): Promise<QueryResult[]> {
   throw new Error("Manual transaction management is only available in the desktop app.");
 }
 
@@ -5430,7 +5436,7 @@ export * from "@/lib/backend/mqtt-http";
 // Plugin local file streaming (native dialogs / OS drops are Tauri-only)
 // ---------------------------------------------------------------------------
 
-import type { PluginDroppedFilesResult, PluginLocalFileChunk, PluginLocalFileHandle, PluginLocalFileWriteResult } from "./tauri";
+import type { PluginDroppedFilesResult, PluginLocalFileChunk, PluginLocalFileHandle, PluginLocalFileWriteResult, StatementNoticesEvent } from "./tauri";
 
 export async function openDroppedPluginLocalFiles(_pluginId: string, _paths: string[]): Promise<PluginDroppedFilesResult> {
   throw new Error("Plugin local file access is not available in the web backend");

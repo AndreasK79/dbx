@@ -18,6 +18,7 @@ vi.mock("vue-i18n", () => ({
 }));
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   saveEditorSettings: vi.fn(),
   saveHistory: vi.fn(),
   unlockConnectionWrites: vi.fn(),
@@ -423,6 +424,161 @@ describe("useSqlExecution", () => {
     await pending;
 
     expect(activeOutputView.value).toBe("messages");
+  });
+
+  it("shows the error result view when a single statement fails", async () => {
+    const sql = "SELECT broken";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("summary");
+    const queryStore = useQueryStore();
+    vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      if (activeTab.value) activeTab.value.result = { columns: ["Error"], rows: [["boom"]], affected_rows: 0, execution_time_ms: 1, execution_error: true };
+    });
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+
+    await execution.tryExecute();
+
+    expect(activeOutputView.value).toBe("result");
+  });
+
+  it("opens the execution summary when a multi-statement run ends with an error", async () => {
+    const sql = "SELECT 1;\nSELECT broken;";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      if (activeTab.value) {
+        activeTab.value.results = [
+          { columns: ["value"], rows: [[1]], affected_rows: 0, execution_time_ms: 1 },
+          { columns: ["Error"], rows: [["boom"]], affected_rows: 0, execution_time_ms: 1, execution_error: true },
+        ];
+        activeTab.value.result = activeTab.value.results[1];
+      }
+    });
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+
+    await execution.tryExecute();
+
+    expect(activeOutputView.value).toBe("summary");
+  });
+
+  it("keeps the user's pinned view when a multi-statement run fails", async () => {
+    const sql = "SELECT 1;\nSELECT broken;";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      // The user redirected the output view mid-run.
+      activeTab.value!.userPinnedOutputViewDuringExecution = true;
+      activeTab.value!.results = [{ columns: ["Error"], rows: [["boom"]], affected_rows: 0, execution_time_ms: 1, execution_error: true }];
+      activeTab.value!.result = activeTab.value!.results[0];
+    });
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+
+    await execution.tryExecute();
+
+    // The pre-dispatch view (multiStatementDefaultView) stays untouched.
+    expect(activeOutputView.value).toBe("result");
+  });
+
+  it("keeps the view and stays quiet when the run was cancelled, even on failure", async () => {
+    const { dismissToast, message: toastMessage, visible: toastVisible } = await import("@/composables/useToast").then((m) => m.useToast());
+    dismissToast();
+    const sql = "SELECT 1;\nSELECT pg_sleep(60);";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      activeTab.value!.cancelRequestCount = (activeTab.value!.cancelRequestCount ?? 0) + 1;
+      activeTab.value!.results = [{ columns: ["Error"], rows: [["Query canceled"]], affected_rows: 0, execution_time_ms: 1, execution_error: true }];
+      activeTab.value!.result = activeTab.value!.results[0];
+    });
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+
+    await execution.tryExecute();
+
+    expect(activeOutputView.value).toBe("result");
+    expect(toastVisible.value).toBe(false);
+    expect(toastMessage.value).toBe("");
+  });
+
+  it("toasts a background tab's failure with an open-tab action", async () => {
+    const { useToast } = await import("@/composables/useToast");
+    useToast().dismissToast();
+    // This spec runs outside jsdom; the toast's auto-hide timer needs a window.
+    vi.stubGlobal("window", { setTimeout: () => 0 });
+    try {
+      const sql = "SELECT broken";
+      const executionTab = { ...queryTab("app"), sql };
+      const activeTab = ref<QueryTab | undefined>(executionTab);
+      const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+      const activeOutputView = ref<"result" | "summary" | "explain" | "chart" | "messages">("result");
+      const queryStore = useQueryStore();
+      let finishExecution!: () => void;
+      const executionFinished = new Promise<void>((resolve) => {
+        finishExecution = resolve;
+      });
+      const executeCurrentSql = vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+        await executionFinished;
+        executionTab.results = [{ columns: ["Error"], rows: [["ERROR: boom"]], affected_rows: 0, execution_time_ms: 1, execution_error: true }];
+        executionTab.result = executionTab.results[0];
+      });
+      vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+      const execution = useSqlExecution({
+        activeTab: computed(() => activeTab.value),
+        activeConnection: computed(() => activeConnection.value),
+        executableSql: computed(() => sql),
+        activeOutputView,
+      });
+
+      const pending = execution.tryExecute();
+      await vi.waitFor(() => expect(executeCurrentSql).toHaveBeenCalledOnce());
+      activeTab.value = { ...queryTab("app"), id: "tab-2" };
+      finishExecution();
+      await pending;
+
+      const toast = useToast();
+      expect(toast.visible.value).toBe(true);
+      expect(toast.message.value).toContain("tabs.backgroundRunError");
+      expect(toast.action.value?.label).toBe("tabs.backgroundRunErrorOpen");
+      expect(typeof toast.action.value?.onClick).toBe("function");
+      toast.dismissToast();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows SQL Server PRINT messages instead of leaving them behind the execution summary", async () => {

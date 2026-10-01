@@ -23,6 +23,107 @@ struct ExecuteMultiProgress {
     error: Option<BackendError>,
 }
 
+/// One coalesced batch of live postgres notices attributed to a statement of
+/// run `execution_id`.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatementNoticesEvent {
+    execution_id: String,
+    statement_index: usize,
+    notices: Vec<db::QueryMessage>,
+}
+
+const STATEMENT_NOTICE_EMIT_INTERVAL: Duration = Duration::from_millis(100);
+
+#[derive(Default)]
+struct StatementNoticeBatch {
+    pending: Vec<(usize, db::QueryMessage)>,
+    last_emit: Option<Instant>,
+}
+
+impl StatementNoticeBatch {
+    fn due(&self) -> bool {
+        match self.last_emit {
+            None => true,
+            Some(at) => at.elapsed() >= STATEMENT_NOTICE_EMIT_INTERVAL,
+        }
+    }
+}
+
+/// Coalesces per-statement postgres notices into `query-statement-notices`
+/// events: the first notice of a run is emitted immediately so the UI reacts
+/// instantly, bursts within the interval ride the next flush, and consecutive
+/// notices of the same statement share one event. Same model as
+/// `AiStreamChunkBatcher` (no background task; the command flushes the tail
+/// before returning), with an injectable emit closure for tests.
+#[derive(Clone)]
+struct StatementNoticeBatcher {
+    execution_id: String,
+    emit: Arc<dyn Fn(StatementNoticesEvent) + Send + Sync>,
+    inner: Arc<std::sync::Mutex<StatementNoticeBatch>>,
+}
+
+impl StatementNoticeBatcher {
+    fn new(execution_id: String, emit: impl Fn(StatementNoticesEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            execution_id,
+            emit: Arc::new(emit),
+            inner: Arc::new(std::sync::Mutex::new(StatementNoticeBatch::default())),
+        }
+    }
+
+    fn handle(&self, statement_index: usize, message: db::QueryMessage) {
+        let mut batch = self.lock_batch();
+        batch.pending.push((statement_index, message));
+        if batch.due() {
+            self.flush_locked(&mut batch);
+        }
+    }
+
+    /// Emits whatever notices the interval gate is still holding.
+    fn flush(&self) {
+        let mut batch = self.lock_batch();
+        self.flush_locked(&mut batch);
+    }
+
+    fn lock_batch(&self) -> std::sync::MutexGuard<'_, StatementNoticeBatch> {
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn flush_locked(&self, batch: &mut StatementNoticeBatch) {
+        let pending = std::mem::take(&mut batch.pending);
+        if !pending.is_empty() {
+            // Group consecutive same-statement notices into one event so a
+            // chatty `RAISE NOTICE` loop stays a handful of IPC messages.
+            let mut index = 0;
+            while index < pending.len() {
+                let statement_index = pending[index].0;
+                let mut end = index + 1;
+                while end < pending.len() && pending[end].0 == statement_index {
+                    end += 1;
+                }
+                let notices = pending[index..end].iter().map(|(_, message)| message.clone()).collect();
+                (self.emit)(StatementNoticesEvent {
+                    execution_id: self.execution_id.clone(),
+                    statement_index,
+                    notices,
+                });
+                index = end;
+            }
+        }
+        batch.last_emit = Some(Instant::now());
+    }
+}
+
+fn statement_notice_batcher(app: &AppHandle, execution_id: &str) -> StatementNoticeBatcher {
+    StatementNoticeBatcher::new(execution_id.to_string(), {
+        let app = app.clone();
+        move |event| {
+            let _ = app.emit("query-statement-notices", event);
+        }
+    })
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(untagged)]
 pub enum ManualTransactionCommandError {
@@ -222,6 +323,12 @@ pub async fn execute_multi(
             );
         }) as dbx_core::query::ExecuteMultiProgressCallback
     });
+    let notice_batcher = execution_id.as_ref().map(|execution_id| statement_notice_batcher(&app, execution_id));
+    let notice_sink = notice_batcher.clone().map(|batcher| {
+        dbx_core::types::StatementNoticeSink::new(move |statement_index, message| {
+            batcher.handle(statement_index, message.clone());
+        })
+    });
     let trace_id = execution_id.as_deref().unwrap_or("no-execution-id").to_string();
     let started_at = Instant::now();
     dbx_core::sql_diagnostics::debug_sql("query:execute_multi:start", &sql);
@@ -259,11 +366,18 @@ pub async fn execute_multi(
                 continue_on_error: continue_on_error.unwrap_or(false),
                 execution_mode: execution_mode.unwrap_or_default(),
                 preserve_explicit_transaction: preserve_explicit_transaction.unwrap_or(false),
+                notice_sink,
+                notice_tap: None,
             },
             progress,
         )
     })
     .await;
+    // Tail delivery: everything the interval gate is still holding must reach
+    // the UI before this command's invoke result lands on the same channel.
+    if let Some(notice_batcher) = &notice_batcher {
+        notice_batcher.flush();
+    }
     match &result {
         Ok(results) => log::info!(
             "[query][execute_multi:done] trace_id={} elapsed_ms={} result_count={} row_counts={:?} backend_execution_times_ms={:?}",
@@ -469,6 +583,7 @@ pub async fn begin_manual_transaction(
 
 #[tauri::command]
 pub async fn execute_in_manual_transaction(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     txn_session_id: String,
     sql: String,
@@ -479,8 +594,16 @@ pub async fn execute_in_manual_transaction(
     page_size: Option<usize>,
     result_session_id: Option<String>,
     classification_sql: Option<String>,
+    execution_id: Option<String>,
 ) -> Result<Vec<dbx_core::query::ExecuteMultiResult>, ManualTransactionCommandError> {
-    dbx_core::query::execute_in_manual_transaction_with_options(
+    let execution_id = execution_id.filter(|id| !id.trim().is_empty());
+    let notice_batcher = execution_id.as_ref().map(|execution_id| statement_notice_batcher(&app, execution_id));
+    let notice_sink = notice_batcher.clone().map(|batcher| {
+        dbx_core::types::StatementNoticeSink::new(move |statement_index, message| {
+            batcher.handle(statement_index, message.clone());
+        })
+    });
+    let result = dbx_core::query::execute_in_manual_transaction_with_options(
         &state,
         &txn_session_id,
         &sql,
@@ -492,10 +615,15 @@ pub async fn execute_in_manual_transaction(
             page_size,
             result_session_id,
             classification_sql,
+            notice_sink,
         },
     )
-    .await
-    .map_err(|error| {
+    .await;
+    // Tail delivery, same contract as execute_multi.
+    if let Some(notice_batcher) = &notice_batcher {
+        notice_batcher.flush();
+    }
+    result.map_err(|error| {
         if dbx_core::query::is_manual_transaction_session_expired_error(&error) {
             ManualTransactionCommandError::Structured(Box::new(BackendError::from_manual_transaction_session_expired(
                 dbx_core::query::MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS,
@@ -1038,6 +1166,86 @@ pub fn build_create_user_sql(username: String, password: String, tablespace: Str
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    fn test_notice(message: &str) -> db::QueryMessage {
+        db::QueryMessage {
+            severity: "NOTICE".to_string(),
+            message: message.to_string(),
+            code: None,
+            detail: None,
+            hint: None,
+        }
+    }
+
+    fn captured_events() -> (Arc<std::sync::Mutex<Vec<StatementNoticesEvent>>>, StatementNoticeBatcher) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        let batcher = StatementNoticeBatcher::new("exec-1".to_string(), move |event| {
+            sink.lock().unwrap().push(event);
+        });
+        (events, batcher)
+    }
+
+    #[test]
+    fn statement_notice_batcher_emits_first_notice_immediately() {
+        let (events, batcher) = captured_events();
+        batcher.handle(0, test_notice("step 1"));
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1, "first notice must not wait for the interval");
+        assert_eq!(events[0].execution_id, "exec-1");
+        assert_eq!(events[0].statement_index, 0);
+        assert_eq!(events[0].notices.len(), 1);
+        assert_eq!(events[0].notices[0].message, "step 1");
+    }
+
+    #[test]
+    fn statement_notice_batcher_coalesces_burst_and_groups_by_statement() {
+        let (events, batcher) = captured_events();
+        // Pretend an emit just happened so every handle below accumulates
+        // deterministically instead of racing the 100 ms interval.
+        *batcher.inner.lock().unwrap() = StatementNoticeBatch { pending: Vec::new(), last_emit: Some(Instant::now()) };
+
+        batcher.handle(1, test_notice("b1"));
+        batcher.handle(1, test_notice("b2"));
+        batcher.handle(2, test_notice("c1"));
+        batcher.handle(1, test_notice("b3"));
+        assert_eq!(events.lock().unwrap().len(), 0, "nothing emits inside the interval");
+
+        batcher.flush();
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 3, "consecutive same-index runs share one event");
+            assert_eq!(
+                (events[0].statement_index, events[0].notices.iter().map(|n| n.message.as_str()).collect::<Vec<_>>()),
+                (1, vec!["b1", "b2"])
+            );
+            assert_eq!(
+                (events[1].statement_index, events[1].notices.iter().map(|n| n.message.as_str()).collect::<Vec<_>>()),
+                (2, vec!["c1"])
+            );
+            assert_eq!(
+                (events[2].statement_index, events[2].notices.iter().map(|n| n.message.as_str()).collect::<Vec<_>>()),
+                (1, vec!["b3"])
+            );
+        }
+
+        batcher.flush();
+        assert_eq!(events.lock().unwrap().len(), 3, "final flush on an empty gate emits nothing");
+    }
+
+    #[test]
+    fn statement_notices_event_serializes_camel_case() {
+        let event = StatementNoticesEvent {
+            execution_id: "e".to_string(),
+            statement_index: 2,
+            notices: vec![test_notice("x")],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["executionId"], "e");
+        assert_eq!(json["statementIndex"], 2);
+        assert_eq!(json["notices"][0]["severity"], "NOTICE");
+    }
 
     async fn test_app_state() -> Arc<AppState> {
         let dir = std::env::temp_dir().join(format!("dbx-query-test-{}", uuid::Uuid::new_v4()));

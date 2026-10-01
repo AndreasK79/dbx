@@ -97,6 +97,7 @@ import type {
   ForeignServerInfo,
   EventTriggerInfo,
   QueryResult,
+  QueryMessage,
   SqlReferenceAnalysis,
   DatabaseType,
   InstalledPlugin,
@@ -1955,6 +1956,29 @@ export async function executeMultiWithProgress(
   }
 }
 
+export interface StatementNoticesEvent {
+  executionId: string;
+  statementIndex: number;
+  notices: QueryMessage[];
+}
+
+/**
+ * Subscribes to live server notices (`query-statement-notices`) for the run
+ * `executionId` while `run` executes, dropping events from other runs. The
+ * backend flushes its coalescing batcher before the invoke resolves, so the
+ * unlisten in `finally` never cuts off a tail delivery.
+ */
+export async function withStatementNotices<T>(executionId: string, onNotices: (event: StatementNoticesEvent) => void, run: () => Promise<T>): Promise<T> {
+  const unlisten = await listen<StatementNoticesEvent>("query-statement-notices", (event) => {
+    if (event.payload.executionId === executionId) onNotices(event.payload);
+  });
+  try {
+    return await run();
+  } finally {
+    unlisten();
+  }
+}
+
 export async function refreshConnections(): Promise<void> {
   return invoke("refresh_connections");
 }
@@ -2030,7 +2054,7 @@ export async function beginManualTransaction(connectionId: string, database: str
   return invoke("begin_manual_transaction", { connectionId, database, schema, catalog });
 }
 
-export async function executeInManualTransaction(txnSessionId: string, sql: string, database: string, schema?: string, maxRows?: number, tableDataPreview?: boolean, pageSize?: number, resultSessionId?: string, classificationSql?: string): Promise<QueryResult[]> {
+export async function executeInManualTransaction(txnSessionId: string, sql: string, database: string, schema?: string, maxRows?: number, tableDataPreview?: boolean, pageSize?: number, resultSessionId?: string, classificationSql?: string, executionId?: string): Promise<QueryResult[]> {
   return invoke("execute_in_manual_transaction", {
     txnSessionId,
     sql,
@@ -2041,6 +2065,7 @@ export async function executeInManualTransaction(txnSessionId: string, sql: stri
     pageSize,
     resultSessionId,
     classificationSql,
+    executionId,
   });
 }
 

@@ -1430,7 +1430,31 @@ export interface BatchSqlExecution {
   executionTarget?: MultiDbExecutionTarget;
   finishedAt?: number;
   recoveryDismissed?: boolean;
+  /** Set once a mid-run statement error auto-switched the output view to Summary (mirrors StreamingStatementNotices.autoSwitchedToMessages). */
+  errorAutoSwitchedToSummary?: boolean;
   items: BatchStatementExecutionItem[];
+}
+
+/** One live-streamed server notice attributed to a statement of the running execution. */
+export interface StreamingStatementNotice {
+  statementIndex: number;
+  message: QueryMessage;
+}
+
+/**
+ * Transient live-notice stream for the tab's current execution (postgres
+ * `RAISE NOTICE` etc., delivered by `query-statement-notices` events while the
+ * statement is still running). Never persisted; settled in the run's finally
+ * block — success statements' notices then live in `result.messages`, error
+ * statements keep their streamed copies visible.
+ */
+export interface StreamingStatementNotices {
+  executionId: string;
+  items: StreamingStatementNotice[];
+  /** Set once the first streamed notice auto-switched the output view to Messages. */
+  autoSwitchedToMessages?: boolean;
+  /** Set when the user changed the output view mid-run after streaming started. */
+  userPinnedOutputView?: boolean;
 }
 
 export interface SpatialColumn {
@@ -2027,6 +2051,18 @@ export interface QueryTab {
   queryExecutionStartedAt?: number;
   /** Ephemeral per-statement progress for the latest multi-statement execution. */
   batchSqlExecution?: BatchSqlExecution;
+  /** Ephemeral live server notices for the current execution; see StreamingStatementNotices. */
+  streamingNotices?: StreamingStatementNotices;
+  /**
+   * Set when the user changed the output view while a run was executing.
+   * Unlike `streamingNotices.userPinnedOutputView` this survives the run settle
+   * (which may delete `streamingNotices`) and is cleared at the next run start.
+   */
+  userPinnedOutputViewDuringExecution?: boolean;
+  /** True when the last run ended because the user requested cancellation; suppresses error surfacing (switch, badge, dot, toast). */
+  lastRunCancelled?: boolean;
+  /** Set when a run finished with an error while its tab was NOT the active one; cleared on activation or the next run start. Drives the tab-bar error dot. */
+  lastRunErrorUnacknowledged?: boolean;
   editorViewport?: {
     scrollTop: number;
     scrollLeft: number;

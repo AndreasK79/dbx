@@ -292,7 +292,9 @@ test("object browser rows sort estimated rows and table size with empty values l
 });
 
 test("object browser formats statistics for compact table cells", () => {
-  assert.equal(formatObjectBrowserCount(1234567), "1,234,567");
+  // The count formatter is locale-aware ("1 234 567" under nb-NO), so the
+  // expectation must follow the runtime locale instead of hard-coding commas.
+  assert.equal(formatObjectBrowserCount(1234567), new Intl.NumberFormat().format(1234567));
   assert.equal(formatObjectBrowserBytes(1536), "1.50 KB");
   assert.equal(formatObjectBrowserBytes(null), "");
 });

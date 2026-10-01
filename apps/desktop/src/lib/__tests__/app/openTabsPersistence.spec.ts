@@ -138,6 +138,22 @@ describe("openTabsPersistence originalSql round-trip", () => {
     expect(restored.isExecuting).toBe(false);
   });
 
+  it("does not persist the transient streaming notice stream", () => {
+    const tab = queryTab({
+      isExecuting: true,
+      streamingNotices: {
+        executionId: "exec-1",
+        items: [{ statementIndex: 0, message: { severity: "NOTICE", message: "step 1" } }],
+        autoSwitchedToMessages: true,
+      },
+    });
+    const [saved] = serializeOpenTabs([tab]);
+    const [restored] = roundTrip([tab]);
+
+    expect(saved).not.toHaveProperty("streamingNotices");
+    expect(restored.streamingNotices).toBeUndefined();
+  });
+
   it("does not resume a MONITOR stream when restoring tabs", () => {
     const tab = queryTab({ sql: "MONITOR", redisMonitorActive: true, isExecuting: true });
     const [saved] = serializeOpenTabs([tab]);

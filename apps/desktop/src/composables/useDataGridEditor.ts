@@ -397,6 +397,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   const transactionActive = ref(false);
   const isSaving = ref(false);
   const saveError = ref("");
+  const saveWarning = ref("");
   const conditionalUpdateExecution = shallowRef<ConditionalUpdateExecution>();
   const isConditionalUpdateActive = computed(() => conditionalUpdateExecution.value !== undefined);
 
@@ -461,8 +462,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   }
 
   function touchPendingChanges() {
-    // Save errors describe the previous pending snapshot; edits, undo/redo, and rollback make them stale.
-    saveError.value = "";
+    // Save errors/warnings describe the completed save that produced them. They
+    // stay until the next save starts (or the user dismisses the card) — typing
+    // after a failure must not hide what the database reported.
     pendingChangesVersion.value++;
   }
 
@@ -1802,6 +1804,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     }
 
     saveError.value = "";
+    saveWarning.value = "";
     const connection = connectionStore.getConfig(connectionId.value);
     if (!(await ensureReadOnlyWriteAccess({ connection, sql: statement, source: i18n.global.t("readOnlyUnlock.sourceDataEditor") }))) return null;
     const productionAssessment = assessProductionSql(statement, connection, database.value);
@@ -1936,6 +1939,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       return;
     }
     saveError.value = "";
+    saveWarning.value = "";
     isSaving.value = true;
     snapshot.newRowRefs.forEach((row) => savingNewRows.add(row));
     const shouldReloadAfterSave = snapshot.newRows.length > 0 || snapshot.deletedRows.size > 0;
@@ -2141,6 +2145,12 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
         return;
       }
     }
+    // A successful SQL save that affected 0 rows wrote nothing (BEFORE trigger
+    // RETURN NULL, ON CONFLICT DO NOTHING). The reload below would otherwise make
+    // the row silently vanish. The onExecuteSql fallback arm reports no counts.
+    if (apiResult && (apiResult.affected_rows ?? 0) === 0) {
+      saveWarning.value = i18n.global.t("grid.saveZeroRowsWarning");
+    }
     try {
       await recordDataGridHistory(stmts, rollbackStmts, Date.now() - start, snapshot, apiResult);
     } catch (e) {
@@ -2333,6 +2343,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     transactionActive,
     isSaving,
     saveError,
+    saveWarning,
     isConditionalUpdateActive,
     conditionalUpdateExecution,
     useTransaction,

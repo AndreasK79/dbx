@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { Database, Search } from "@lucide/vue";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { getObjectKindIconInfo } from "@/lib/sidebar/treeNodeIcon";
 import { useDatabaseObjectSearch, type DatabaseObjectSearchItem } from "@/composables/useDatabaseObjectSearch";
 
 const props = defineProps<{
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
-const { searchQuery, filteredItems, selectedIndex, selectedItem, loading, errorMessage, scope, loadActiveDatabase, selectNext, selectPrevious } = useDatabaseObjectSearch();
+const { searchQuery, filteredItems, selectedIndex, selectedItem, loading, errorMessage, scope, availableKinds, activeTypeFilter, toggleTypeFilter, loadActiveDatabase, selectNext, selectPrevious } = useDatabaseObjectSearch();
 const inputRef = ref<HTMLInputElement | null>(null);
 const listRef = ref<HTMLElement | null>(null);
 
@@ -155,6 +156,22 @@ watch(selectedIndex, async () => {
           </span>
         </div>
 
+        <!-- Type Filter Chips -->
+        <div v-if="scope && availableKinds.length > 1" class="flex flex-wrap items-center gap-1.5 px-4 py-2 border-b" data-object-search-filters>
+          <button
+            v-for="kind in availableKinds"
+            :key="kind"
+            type="button"
+            :data-object-search-filter="kind"
+            :aria-pressed="activeTypeFilter.includes(kind)"
+            :class="['flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs transition-colors', activeTypeFilter.includes(kind) ? ['border-border bg-muted/60 font-medium', getObjectKindIconInfo(kind).colorClass] : 'border-transparent text-muted-foreground/50 hover:text-muted-foreground']"
+            @click="toggleTypeFilter(kind)"
+          >
+            <component :is="getObjectKindIconInfo(kind).icon" class="h-3.5 w-3.5 shrink-0" :class="activeTypeFilter.includes(kind) ? getObjectKindIconInfo(kind).colorClass : undefined" />
+            {{ getTypeLabel(kind) }}
+          </button>
+        </div>
+
         <!-- Results List -->
         <div ref="listRef" class="max-h-[400px] overflow-y-auto" data-object-search-list>
           <div v-if="!scope" class="px-4 py-8 text-center text-muted-foreground" data-object-search-empty>
@@ -182,6 +199,7 @@ watch(selectedIndex, async () => {
             >
               <div class="flex items-center justify-between gap-3">
                 <div class="flex items-center gap-2 flex-1 min-w-0">
+                  <component :is="getObjectKindIconInfo(item.type).icon" :class="['h-4 w-4 shrink-0', getObjectKindIconInfo(item.type).colorClass]" :data-object-search-kind-icon="item.type" />
                   <div class="flex-1 min-w-0">
                     <div class="text-sm font-medium truncate">
                       <template v-for="(part, i) in getHighlightedLabel(item)" :key="i">
@@ -197,7 +215,7 @@ watch(selectedIndex, async () => {
                   </div>
                 </div>
                 <div class="flex items-center gap-1.5 whitespace-nowrap shrink-0">
-                  <div class="text-xs px-2 py-1 rounded bg-muted text-muted-foreground">
+                  <div :class="['text-xs px-2 py-1 rounded bg-muted', getObjectKindIconInfo(item.type).colorClass]" :data-object-search-type-badge="item.type">
                     {{ getTypeLabel(item.type) }}
                   </div>
                   <button type="button" class="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" data-object-search-source @click.stop="handleSelect(item, 'source')">

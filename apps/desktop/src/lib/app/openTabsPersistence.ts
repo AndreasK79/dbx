@@ -290,6 +290,14 @@ function restoreOpenTabsArray(parsed: unknown, rawActiveTabId: string | null, op
         // sourceLoad 是纯运行期态（serializeOpenTabs 不落盘）。这里显式清空，
         // 让「恢复后的 tab 不会停在加载中」成为不变量，而不是依赖白名单的副作用。
         sourceLoad: undefined,
+        // Live notice streams belong to the process that ran the query; a
+        // restored tab never resumes one.
+        streamingNotices: undefined,
+        // Same for the run-scoped error-surfacing state: a restored tab has no
+        // pinned view, no acknowledged cancel, and no background error to flag.
+        userPinnedOutputViewDuringExecution: false,
+        lastRunCancelled: false,
+        lastRunErrorUnacknowledged: false,
         executingResultRunId: undefined,
         editorViewport: restoredEditorViewport(tab),
         editorSelection: restoredEditorSelection(tab, typeof tab.sql === "string" ? tab.sql.length : 0),

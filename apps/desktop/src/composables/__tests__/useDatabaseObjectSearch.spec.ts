@@ -293,4 +293,68 @@ describe("useDatabaseObjectSearch", () => {
     search.setQuery("table_" + (OBJECT_SEARCH_MAX_RESULTS + 40));
     expect(search.filteredItems.value.map((item) => item.label)).toEqual([`table_${OBJECT_SEARCH_MAX_RESULTS + 40}`]);
   });
+
+  it("exposes the database's supported kinds and starts with all of them active", async () => {
+    getConfig.mockReturnValue({ id: "c1", db_type: "mysql", database: "db1" });
+    mockStores("c1", [], null);
+    vi.mocked(api.listObjects).mockResolvedValue([]);
+
+    const search = useDatabaseObjectSearch();
+    await search.loadActiveDatabase();
+
+    expect(search.availableKinds.value).toEqual(["table", "view", "procedure", "function", "trigger"]);
+    expect(search.activeTypeFilter.value).toEqual(["table", "view", "procedure", "function", "trigger"]);
+  });
+
+  it("toggleTypeFilter narrows results, composes with the text query, and restores on toggle-back", async () => {
+    getConfig.mockReturnValue({ id: "c1", db_type: "mysql", database: "db1" });
+    mockStores("c1", [], null);
+    vi.mocked(api.listObjects).mockResolvedValue([
+      { name: "users", object_type: "TABLE" },
+      { name: "active_users", object_type: "VIEW" },
+      { name: "calc_total", object_type: "PROCEDURE" },
+      { name: "format_name", object_type: "FUNCTION" },
+    ]);
+
+    const search = useDatabaseObjectSearch();
+    await search.loadActiveDatabase();
+
+    search.toggleTypeFilter("table");
+    expect(search.filteredItems.value.map((item) => item.type)).toEqual(["view", "procedure", "function"]);
+
+    // The type filter composes with text matching.
+    search.setQuery("users");
+    expect(search.filteredItems.value.map((item) => item.label)).toEqual(["active_users"]);
+    expect(search.selectedIndex.value).toBe(0);
+
+    // Toggling the kind back on restores its rows and resets keyboard navigation.
+    search.setQuery("");
+    search.selectNext();
+    expect(search.selectedIndex.value).toBe(1);
+    search.toggleTypeFilter("table");
+    expect(search.filteredItems.value.map((item) => [item.type, item.label])).toEqual([
+      ["table", "users"],
+      ["view", "active_users"],
+      ["procedure", "calc_total"],
+      ["function", "format_name"],
+    ]);
+    expect(search.selectedIndex.value).toBe(0);
+
+    // A fresh load resets the filter to all kinds.
+    await search.loadActiveDatabase();
+    expect(search.activeTypeFilter.value).toEqual(["table", "view", "procedure", "function", "trigger"]);
+  });
+
+  it("shows an empty result set when every kind is toggled off", async () => {
+    getConfig.mockReturnValue({ id: "c1", db_type: "mysql", database: "db1" });
+    mockStores("c1", [], null);
+    vi.mocked(api.listObjects).mockResolvedValue([{ name: "users", object_type: "TABLE" }]);
+
+    const search = useDatabaseObjectSearch();
+    await search.loadActiveDatabase();
+
+    for (const kind of [...search.availableKinds.value]) search.toggleTypeFilter(kind);
+    expect(search.activeTypeFilter.value).toEqual([]);
+    expect(search.filteredItems.value).toEqual([]);
+  });
 });

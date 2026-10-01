@@ -1201,6 +1201,15 @@ pub struct QueryExecutionOptions {
     /// `false` keeps the historical cleanup that stops a leftover transaction
     /// from pinning the tab's read view (#9479).
     pub preserve_explicit_transaction: bool,
+    /// Set by the transport layer (Tauri command): receives every PostgreSQL
+    /// notice the moment it is polled off the wire, tagged with the statement
+    /// index of the run. Consumed by the multi-statement loop, which bakes the
+    /// index into a per-statement `notice_tap`.
+    pub notice_sink: Option<crate::types::StatementNoticeSink>,
+    /// Internal: per-statement live notice tap derived from `notice_sink` with
+    /// the current statement index baked in. Set only inside dbx-core, read by
+    /// the PostgreSQL dispatch.
+    pub notice_tap: Option<crate::types::StatementNoticeTap>,
 }
 
 fn validate_query_execution_mode(
@@ -1427,6 +1436,16 @@ fn options_for_sequential_statements(
             Some(statement_options.max_rows.map_or(page_size, |max_rows| max_rows.min(page_size)));
     }
     statement_options
+}
+
+/// Bakes the current statement index into a per-run notice sink, producing the
+/// per-statement live tap the PostgreSQL dispatch forwards to the driver.
+fn bake_statement_notice_tap(
+    sink: &crate::types::StatementNoticeSink,
+    statement_index: usize,
+) -> crate::types::StatementNoticeTap {
+    let sink = sink.clone();
+    crate::types::StatementNoticeTap::new(move |message| sink.call(statement_index, message))
 }
 
 pub(crate) fn should_discard_pool_after_query_timeout(db_type: Option<DatabaseType>) -> bool {
@@ -1878,6 +1897,7 @@ async fn do_execute_typed(
             let max_rows = options.max_rows;
             let prefer_text_protocol = postgres_prefers_text_protocol(pool_db_type);
             let execution_mode = options.execution_mode;
+            let notice_tap = options.notice_tap.clone();
             let cancel_context = state.get_postgres_cancel_context(pool_key).await;
             let result = execute_postgres_pool_statement(
                 &p,
@@ -1890,6 +1910,7 @@ async fn do_execute_typed(
                 cancel_token.clone(),
                 operation_budget.clone(),
                 cancel_context.clone(),
+                notice_tap.clone(),
             )
             .await;
             let retry_sql =
@@ -1910,6 +1931,7 @@ async fn do_execute_typed(
                         cancel_token,
                         operation_budget,
                         cancel_context,
+                        notice_tap,
                     )
                     .await
                 }
@@ -2439,6 +2461,7 @@ async fn execute_postgres_pool_statement(
     cancel_token: Option<CancellationToken>,
     budget: DbOperationBudget,
     cancel_context: Option<db::postgres::PostgresCancelContext>,
+    notice_tap: Option<crate::types::StatementNoticeTap>,
 ) -> Result<db::QueryResult, String> {
     if execution_mode == QueryExecutionMode::PostgresReadOnlyTransaction {
         db::postgres::execute_query_in_read_only_transaction_with_rollback(
@@ -2449,6 +2472,7 @@ async fn execute_postgres_pool_statement(
             cancel_token,
             budget,
             cancel_context,
+            notice_tap,
         )
         .await
     } else if let Some(schema) = schema {
@@ -2462,6 +2486,7 @@ async fn execute_postgres_pool_statement(
             budget,
             cancel_context,
             prefer_text_protocol,
+            notice_tap,
         )
         .await
     } else {
@@ -2473,6 +2498,7 @@ async fn execute_postgres_pool_statement(
             budget,
             cancel_context,
             prefer_text_protocol,
+            notice_tap,
         )
         .await
     }
@@ -3287,6 +3313,12 @@ async fn execute_multi_core_with_options_for_client_and_progress_typed_inner(
     let db_type = connection_database_type(state, connection_id).await;
     validate_query_execution_mode(db_type, sql, &options)?;
     if options.execution_mode == QueryExecutionMode::PostgresReadOnlyTransaction {
+        // Read-only transaction mode is single-statement by validation, so the
+        // live notice tap (if any) always carries statement index 0.
+        let mut options = options;
+        if let Some(notice_sink) = options.notice_sink.as_ref() {
+            options.notice_tap = Some(bake_statement_notice_tap(notice_sink, 0));
+        }
         let result =
             execute_sql_statement_with_options(state, connection_id, database, sql, schema, cancel_token, options)
                 .await?;
@@ -3344,6 +3376,7 @@ async fn execute_multi_core_with_options_for_client_and_progress_typed_inner(
             schema,
             options.catalog.as_deref(),
             options.timeout_secs,
+            options.notice_sink.clone(),
         )
         .await?;
         return Ok(vec![result.into()]);
@@ -3453,6 +3486,10 @@ async fn execute_multi_core_with_options_for_client_and_progress_typed_inner(
             ));
             break;
         }
+        let mut statement_options = statement_options.clone();
+        if let Some(notice_sink) = options.notice_sink.as_ref() {
+            statement_options.notice_tap = Some(bake_statement_notice_tap(notice_sink, statement_index));
+        }
         match execute_sql_statement_with_options_typed(
             state,
             connection_id,
@@ -3460,7 +3497,7 @@ async fn execute_multi_core_with_options_for_client_and_progress_typed_inner(
             stmt,
             schema,
             cancel_token.clone(),
-            statement_options.clone(),
+            statement_options,
         )
         .await
         {
@@ -4419,6 +4456,7 @@ pub async fn execute_statements_with_transaction_option(
             schema,
             None,
             timeout_secs,
+            None,
         )
         .await
         .map_err(|error| error.into_legacy_string())?;
@@ -4938,7 +4976,7 @@ pub async fn execute_statements_in_transaction(
     schema: Option<&str>,
     catalog: Option<&str>,
 ) -> Result<db::QueryResult, String> {
-    execute_statements_in_transaction_typed(state, connection_id, database, statements, schema, catalog, None)
+    execute_statements_in_transaction_typed(state, connection_id, database, statements, schema, catalog, None, None)
         .await
         .map_err(QueryExecutionError::into_legacy_string)
 }
@@ -4952,6 +4990,7 @@ pub async fn execute_statements_in_transaction_typed(
     schema: Option<&str>,
     catalog: Option<&str>,
     timeout_secs: Option<u64>,
+    notice_sink: Option<crate::types::StatementNoticeSink>,
 ) -> Result<db::QueryResult, QueryExecutionError> {
     let sql_ctx = statements.first().map(|s| s.as_str()).unwrap_or("");
     let pool_database = query_pool_database(database, catalog);
@@ -4969,6 +5008,7 @@ pub async fn execute_statements_in_transaction_typed(
         schema,
         catalog,
         timeout_secs,
+        notice_sink,
     )
     .await
 }
@@ -4993,6 +5033,7 @@ pub async fn execute_statements_in_transaction_on_pool(
         schema,
         catalog,
         None,
+        None,
     )
     .await
     .map_err(QueryExecutionError::into_legacy_string)
@@ -5008,6 +5049,7 @@ pub async fn execute_statements_in_transaction_on_pool_typed(
     schema: Option<&str>,
     catalog: Option<&str>,
     timeout_secs: Option<u64>,
+    notice_sink: Option<crate::types::StatementNoticeSink>,
 ) -> Result<db::QueryResult, QueryExecutionError> {
     let db_type = connection_database_type(state, connection_id).await;
 
@@ -5030,7 +5072,17 @@ pub async fn execute_statements_in_transaction_on_pool_typed(
     let result = match path {
         Some(BatchTransactionPath::Pg(pool)) => {
             let cancel_context = state.get_postgres_cancel_context(pool_key).await;
-            exec_tx_pg_inner(pool, db_type, statements, schema, start, operation_budget.clone(), cancel_context).await
+            exec_tx_pg_inner(
+                pool,
+                db_type,
+                statements,
+                schema,
+                start,
+                operation_budget.clone(),
+                cancel_context,
+                notice_sink,
+            )
+            .await
         }
         Some(BatchTransactionPath::Mysql(pool)) => exec_tx_mysql_inner(
             state,
@@ -5161,6 +5213,7 @@ async fn exec_tx_pg_inner(
     start: std::time::Instant,
     budget: DbOperationBudget,
     cancel_context: Option<db::postgres::PostgresCancelContext>,
+    notice_sink: Option<crate::types::StatementNoticeSink>,
 ) -> Result<db::QueryResult, QueryExecutionError> {
     let mut client = db::postgres::checkout_postgres_client(&pool, None, budget.checkout_timeout)
         .await
@@ -5176,7 +5229,10 @@ async fn exec_tx_pg_inner(
         .await
         .map_err(|e| format!("SET search_path failed: {}", e))?;
     }
-    let tx_result = exec_tx_pg_statements(&mut client, statements, &budget, cancel_context).await;
+    // Drop notices from infrastructure statements (search_path setup) so only
+    // messages raised by the batch are attached to the aggregate result.
+    let _ = db::postgres::drain_postgres_notices(&client).await;
+    let tx_result = exec_tx_pg_statements(&mut client, statements, &budget, cancel_context, notice_sink.as_ref()).await;
 
     // GaussDB/openGauss reject PostgreSQL's RESET search_path syntax.
     let reset_result = if had_schema {
@@ -5193,7 +5249,7 @@ async fn exec_tx_pg_inner(
     };
 
     match (tx_result, reset_result) {
-        (Ok(total_affected), Ok(_)) => Ok(db::QueryResult {
+        (Ok((total_affected, notices)), Ok(_)) => Ok(db::QueryResult {
             columns: vec![],
             column_types: Vec::new(),
             column_sortables: vec![],
@@ -5208,7 +5264,7 @@ async fn exec_tx_pg_inner(
             session_id: None,
             has_more: false,
             elasticsearch_raw_body: None,
-            messages: Vec::new(),
+            messages: notices,
         }),
         (Err(e), Ok(_)) => Err(e),
         (Ok(_), Err(reset_err)) => Err(reset_err),
@@ -5221,7 +5277,8 @@ async fn exec_tx_pg_statements(
     statements: &[String],
     budget: &DbOperationBudget,
     cancel_context: Option<db::postgres::PostgresCancelContext>,
-) -> Result<u64, QueryExecutionError> {
+    notice_sink: Option<&crate::types::StatementNoticeSink>,
+) -> Result<(u64, Vec<db::QueryMessage>), QueryExecutionError> {
     let tx = tokio::time::timeout(budget.recycle_timeout, client.transaction())
         .await
         .map_err(|_| {
@@ -5229,10 +5286,20 @@ async fn exec_tx_pg_statements(
         })?
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
     let mut total_affected: u64 = 0;
+    let mut notices: Vec<db::QueryMessage> = Vec::new();
     for (i, sql) in statements.iter().enumerate() {
+        // Live-stream this statement's notices with its index baked in; the
+        // guard drops at the end of the iteration, before the next statement.
+        let _tap_guard = match notice_sink {
+            Some(sink) => {
+                let tap = bake_statement_notice_tap(sink, i);
+                db::postgres::attach_postgres_transaction_notice_tap(&tx, tap).await
+            }
+            None => None,
+        };
         let pg_cancel_token = tx.client().cancel_token();
         let mut is_server_error = false;
-        let affected = db::postgres::wait_postgres_operation(
+        let affected = match db::postgres::wait_postgres_operation(
             pg_cancel_token,
             cancel_context.clone(),
             budget.query_timeout,
@@ -5240,19 +5307,36 @@ async fn exec_tx_pg_statements(
             async {
                 tx.execute(sql, &[]).await.map_err(|error| {
                     is_server_error = error.as_db_error().is_some();
-                    error.to_string()
+                    // Plain formatter: tokio-postgres's `Error` Display is just
+                    // "db error", and the wrapping statement-error path does
+                    // not resolve cursor markers.
+                    db::postgres::pg_error_to_string_plain(error)
                 })
             },
         )
         .await
-        .map_err(|e| postgres_transaction_statement_error(i + 1, &e, sql, is_server_error))?;
+        {
+            Ok(affected) => affected,
+            Err(e) => {
+                // The batch aborts here; the failing statement's notices ride
+                // the error the way the pooled path attaches them, without
+                // flattening the typed error classification.
+                let statement_notices = db::postgres::drain_postgres_transaction_notices(&tx).await;
+                let context = db::postgres::append_postgres_notices_to_error(String::new(), &statement_notices)
+                    .trim_start_matches('\n')
+                    .to_string();
+                let error = postgres_transaction_statement_error(i + 1, &e, sql, is_server_error);
+                return Err(error.with_context(&context));
+            }
+        };
         total_affected += affected;
+        notices.extend(db::postgres::drain_postgres_transaction_notices(&tx).await);
     }
     tokio::time::timeout(budget.cleanup_timeout, tx.commit())
         .await
         .map_err(|_| format!("COMMIT timed out after {} seconds", budget.cleanup_timeout.as_secs()))?
         .map_err(|e| format!("COMMIT failed: {}", e))?;
-    Ok(total_affected)
+    Ok((total_affected, notices))
 }
 
 async fn exec_tx_mysql_inner(
@@ -5807,7 +5891,9 @@ async fn begin_transaction_session(
         TxnPoolHandle::Postgres(pg_pool) => {
             let conn = pg_pool.get().await.map_err(|e| format!("Failed to get Postgres connection: {e}"))?;
             let begin_sql = postgres_transaction_begin_sql(consistent_snapshot);
-            conn.execute_typed(begin_sql, &[]).await.map_err(|e| format!("BEGIN failed: {e}"))?;
+            conn.execute_typed(begin_sql, &[])
+                .await
+                .map_err(|e| format!("BEGIN failed: {}", db::postgres::pg_error_to_string_plain(e)))?;
             if let Some(schema) = schema {
                 db::postgres::set_postgres_search_path(
                     &conn,
@@ -6047,6 +6133,10 @@ pub struct ManualTransactionExecutionOptions {
     /// read-preserving rewrites (hidden primary keys, sort wrappers,
     /// pagination) do not change toolbar semantics. Fail-closed on mismatch.
     pub classification_sql: Option<String>,
+    /// Live notice stream for postgres sessions; the per-statement loop bakes
+    /// the statement index into a tap and attaches it for the statement's
+    /// duration, mirroring the pooled executors.
+    pub notice_sink: Option<crate::types::StatementNoticeSink>,
 }
 
 pub async fn execute_in_manual_transaction_with_options(
@@ -6155,9 +6245,12 @@ pub async fn execute_in_manual_transaction_with_options(
 
     let mut conn = connection.lock().await;
     for (i, statement) in statements.iter().enumerate() {
+        // Same index-baked tap as the pooled multi loop; only the postgres arm
+        // consumes it, but baking unconditionally keeps the arms symmetrical.
+        let notice_tap = options.notice_sink.as_ref().map(|sink| bake_statement_notice_tap(sink, i));
         let result = match &mut *conn {
             TxnConnection::Postgres(conn) => {
-                execute_manual_txn_postgres_statement(conn.as_ref(), statement, row_limit).await
+                execute_manual_txn_postgres_statement(conn.as_ref(), statement, row_limit, notice_tap.as_ref()).await
             }
             TxnConnection::Mysql(conn) => {
                 execute_manual_txn_mysql_statement(
@@ -6473,8 +6566,12 @@ async fn rotate_clean_read_only_snapshot(conn: &mut TxnConnection, schema: Optio
             Ok(())
         }
         TxnConnection::Postgres(conn) => {
-            conn.execute_typed("ROLLBACK", &[]).await.map_err(|e| format!("ROLLBACK failed: {e}"))?;
-            conn.execute_typed("BEGIN", &[]).await.map_err(|e| format!("BEGIN failed: {e}"))?;
+            conn.execute_typed("ROLLBACK", &[])
+                .await
+                .map_err(|e| format!("ROLLBACK failed: {}", db::postgres::pg_error_to_string_plain(e)))?;
+            conn.execute_typed("BEGIN", &[])
+                .await
+                .map_err(|e| format!("BEGIN failed: {}", db::postgres::pg_error_to_string_plain(e)))?;
             if let Some(schema) = schema {
                 db::postgres::set_postgres_search_path(
                     conn,
@@ -6736,11 +6833,27 @@ async fn execute_manual_txn_postgres_statement(
     conn: &deadpool_postgres::Object,
     sql: &str,
     row_limit: usize,
+    notice_tap: Option<&crate::types::StatementNoticeTap>,
 ) -> Result<db::QueryResult, String> {
-    if db::postgres::postgres_statement_returns_rows(sql) {
+    // The transaction session holds its connection for its lifetime, so notices
+    // from BEGIN/SET search_path and earlier statements accumulate in its
+    // buffer; drain them so each statement's result carries only its own
+    // messages (same hygiene as the pooled executors).
+    let _ = db::postgres::drain_postgres_notices(conn).await;
+    // Attach the live tap strictly after the pre-drain so no straggler notice
+    // from an earlier statement streams; the guard drops at the end of this
+    // frame, before the session's next statement attaches its own tap.
+    let _tap_guard = match notice_tap {
+        Some(tap) => db::postgres::attach_postgres_notice_tap(conn, tap.clone()).await,
+        None => None,
+    };
+    let result = if db::postgres::postgres_statement_returns_rows(sql) {
         db::postgres::execute_select_query_unnamed(conn, sql, std::time::Instant::now(), row_limit).await
     } else {
-        let affected = conn.execute_typed(sql, &[]).await.map_err(|e| format!("Query failed: {e}"))?;
+        // Plain formatter: tokio-postgres's `Error` Display is just "db error",
+        // and this path's callers wrap the message without resolving cursor
+        // markers, so the marker-carrying form would leak into user-facing text.
+        let affected = conn.execute_typed(sql, &[]).await.map_err(db::postgres::pg_error_to_string_plain)?;
         Ok(db::QueryResult {
             columns: vec![],
             column_types: Vec::new(),
@@ -6758,6 +6871,20 @@ async fn execute_manual_txn_postgres_statement(
             elasticsearch_raw_body: None,
             messages: Vec::new(),
         })
+    };
+    match result {
+        Ok(mut result) => {
+            result.messages = db::postgres::drain_postgres_notices(conn).await;
+            Ok(result)
+        }
+        Err(error) => {
+            // A failed statement still reports the notices it raised before
+            // failing — they ride the error message (the UI renders it
+            // pre-formatted), and draining clears the buffer for the session's
+            // teardown statements.
+            let notices = db::postgres::drain_postgres_notices(conn).await;
+            Err(db::postgres::append_postgres_notices_to_error(error, &notices))
+        }
     }
 }
 
@@ -6946,6 +7073,34 @@ mod tests {
     use std::sync::atomic::Ordering;
     use tokio::time::timeout;
 
+    #[test]
+    fn bake_statement_notice_tap_bakes_statement_index_into_each_tap() {
+        use std::sync::{Arc, Mutex};
+        let received: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let received = Arc::clone(&received);
+            crate::types::StatementNoticeSink::new(move |index, message: &db::QueryMessage| {
+                received.lock().unwrap().push((index, message.message.clone()));
+            })
+        };
+        for index in [0usize, 1, 2] {
+            let tap = bake_statement_notice_tap(&sink, index);
+            tap.emit(&db::QueryMessage {
+                severity: "NOTICE".to_string(),
+                message: format!("step {index}"),
+                code: None,
+                detail: None,
+                hint: None,
+            });
+        }
+        // Every tap produced from the same sink must report its own baked
+        // statement index so the frontend can attribute live notices.
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![(0, "step 0".to_string()), (1, "step 1".to_string()), (2, "step 2".to_string())]
+        );
+    }
+
     mod manual_transaction_snapshot_tests {
         use super::*;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6994,7 +7149,13 @@ mod tests {
                                     (b'n', Vec::new())
                                 }
                                 b'E' => {
-                                    commands.lock().unwrap().push(statement.clone());
+                                    // The notice-buffer connection-identity probe
+                                    // (SELECT pg_backend_pid()…) is infrastructure,
+                                    // not a user statement; keep it out of the
+                                    // recorded command stream.
+                                    if !statement.contains("pg_backend_pid") {
+                                        commands.lock().unwrap().push(statement.clone());
+                                    }
                                     if fail_once == Some(statement.as_str()) {
                                         fail_once = None;
                                         (b'E', b"SERROR\0CXX000\0Mtest statement failed\0\0".to_vec())
@@ -7169,8 +7330,25 @@ mod tests {
             execute_snapshot_batch(&state, "UPDATE users SET id = 2", Some("UPDATE users SET id = 2")).await.unwrap();
             let error = execute_snapshot_batch(&state, "SELECT 1", Some("SELECT 1")).await.unwrap_err();
             assert!(error.contains("manual transaction was rolled back"));
+            // The statement error carries the server's report (message + code),
+            // not tokio-postgres's bare `Error` Display ("db error").
+            assert!(error.contains("ERROR: test statement failed"), "unexpected error: {error}");
+            assert!(error.contains("SQLSTATE: XX000"), "unexpected error: {error}");
             assert!(!state.transaction_sessions.read().await.contains_key("snapshot"));
             assert_eq!(*commands.lock().unwrap(), ["UPDATE users SET id = 2", "SELECT 1", "ROLLBACK"]);
+        }
+
+        #[tokio::test]
+        async fn failed_command_statement_reports_server_message_not_bare_db_error() {
+            // A non-row-returning statement fails through `execute_typed`; its
+            // error must be formatted from the DbError fields instead of the
+            // raw tokio-postgres Display, which is just "db error".
+            let (state, _commands, _directory) = snapshot_state(Some("UPDATE users SET id = 2")).await;
+            let error = execute_snapshot_batch(&state, "UPDATE users SET id = 2", None).await.unwrap_err();
+            assert!(error.contains("ERROR: test statement failed"), "unexpected error: {error}");
+            assert!(error.contains("SQLSTATE: XX000"), "unexpected error: {error}");
+            assert!(!error.contains("db error"), "unexpected error: {error}");
+            assert!(!state.transaction_sessions.read().await.contains_key("snapshot"));
         }
 
         #[tokio::test]

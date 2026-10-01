@@ -57,6 +57,7 @@ define_registry![
     list_owners,
     get_table_owner,
     list_extensions,
+    list_foreign_servers,
     list_available_extensions,
     list_event_triggers,
 ];
@@ -84,9 +85,10 @@ mod tests {
 
     #[test]
     fn handles_only_schema_commands() {
-        assert_eq!(COMMANDS.len(), 48);
+        assert_eq!(COMMANDS.len(), 49);
         assert!(handles("list_databases"));
         assert!(handles("list_event_triggers"));
+        assert!(handles("list_foreign_servers"));
         assert!(!handles("prepare_schema_diff"));
         assert!(!handles("load_connections"));
     }

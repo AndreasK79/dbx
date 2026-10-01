@@ -572,13 +572,15 @@ describe("RedisKeyBrowser bounded group subtree fill (issue #7918)", () => {
 
   it("rotates Load more continuation between pending expanded subtrees", async () => {
     stubOverflowingViewport();
-    const callsByGroup = { aa: 0, bb: 0 };
+    // Group names are collation-stable on purpose: Norwegian/Danish locales
+    // sort "aa" as "å" (after z), which would flip the rotation start there.
+    const callsByGroup = { g1: 0, g2: 0 };
     mocks.redisScanKeysBatch.mockImplementation((_connectionId: string, _db: number, cursor: number, pattern: string) => {
-      if (pattern === "aa:*" || pattern === "bb:*") {
-        callsByGroup[pattern === "aa:*" ? "aa" : "bb"]++;
+      if (pattern === "g1:*" || pattern === "g2:*") {
+        callsByGroup[pattern === "g1:*" ? "g1" : "g2"]++;
         return Promise.resolve({ cursor: cursor + 1, keys: [], total_keys: 0 });
       }
-      if (cursor === 0) return Promise.resolve({ cursor: 9, keys: [keyInfo("aa:a"), keyInfo("bb:a")], total_keys: 10_000 });
+      if (cursor === 0) return Promise.resolve({ cursor: 9, keys: [keyInfo("g1:a"), keyInfo("g2:a")], total_keys: 10_000 });
       return Promise.resolve({ cursor: 9, keys: [], total_keys: 0 });
     });
 
@@ -588,17 +590,17 @@ describe("RedisKeyBrowser bounded group subtree fill (issue #7918)", () => {
     await settleThoroughly();
     host.querySelectorAll<HTMLElement>("[data-redis-group]")[1]!.parentElement!.parentElement!.click();
     await settleThoroughly();
-    expect(callsByGroup).toEqual({ aa: 7, bb: 7 });
+    expect(callsByGroup).toEqual({ g1: 7, g2: 7 });
 
     clickLoadMore(host);
     await settleThoroughly();
-    expect(callsByGroup).toEqual({ aa: 14, bb: 7 });
+    expect(callsByGroup).toEqual({ g1: 14, g2: 7 });
     clickLoadMore(host);
     await settleThoroughly();
-    expect(callsByGroup).toEqual({ aa: 14, bb: 14 });
+    expect(callsByGroup).toEqual({ g1: 14, g2: 14 });
 
     // Each resumed group retains its own completed pass's cursor.
-    for (const pattern of ["aa:*", "bb:*"]) {
+    for (const pattern of ["g1:*", "g2:*"]) {
       const calls = mocks.redisScanKeysBatch.mock.calls.filter((call: unknown[]) => call[3] === pattern);
       expect(calls[SUBTREE_FILL_MAX_CALLS_BY_ITERATIONS][2]).toBe(SUBTREE_FILL_MAX_CALLS_BY_ITERATIONS);
     }

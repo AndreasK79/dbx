@@ -19,9 +19,10 @@ const props = withDefaults(
     canShowRedisConsole?: boolean;
     resultMode?: RedisResultViewMode;
     messageCount?: number;
+    errorCount?: number;
     compact?: boolean;
   }>(),
-  { compact: false, messageCount: 0, canShowRedisConsole: false, resultMode: "grid" },
+  { compact: false, messageCount: 0, errorCount: 0, canShowRedisConsole: false, resultMode: "grid" },
 );
 
 const emit = defineEmits<{
@@ -32,6 +33,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const messagesTooltip = computed(() => (props.messageCount > 0 ? `${t("tabs.messages")} (${props.messageCount})` : t("tabs.messages")));
+const summaryTooltip = computed(() => (props.errorCount > 0 ? `${t("tabs.executionSummary")} (${props.errorCount})` : t("tabs.executionSummary")));
 const effectiveResultMode = computed<RedisResultViewMode>(() => (props.canShowRedisConsole ? props.resultMode : "grid"));
 
 function selectView(view: PrimaryResultView) {
@@ -75,20 +77,22 @@ function selectResultMode(mode: RedisResultViewMode) {
       </Button>
     </LightTooltip>
 
-    <LightTooltip :text="t('tabs.executionSummary')" :disabled="!compact" side="bottom" :delay="0" :close-delay="0" nowrap>
+    <LightTooltip :text="summaryTooltip" :disabled="!compact" side="bottom" :delay="0" :close-delay="0" nowrap>
       <Button
         size="sm"
         :variant="activeView === 'summary' ? 'secondary' : 'ghost'"
         class="h-5 shrink-0 text-xs leading-none"
         :class="compact ? 'w-6 gap-0 px-0' : 'gap-1 px-2'"
-        :title="t('tabs.executionSummary')"
-        :aria-label="t('tabs.executionSummary')"
+        :title="summaryTooltip"
+        :aria-label="summaryTooltip"
         :aria-pressed="activeView === 'summary'"
         :disabled="!canShowSummary"
         @click="selectView('summary')"
       >
         <ListChecks class="block h-3.5 w-3.5 self-center" />
         <span v-if="!compact" class="inline-flex h-4 items-center leading-none">{{ t("tabs.executionSummary") }}</span>
+        <!-- Not compact-gated: a failed statement must stay visible in the narrow toolbar too. -->
+        <span v-if="errorCount > 0" class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] leading-none tabular-nums text-destructive-foreground">{{ errorCount }}</span>
       </Button>
     </LightTooltip>
 

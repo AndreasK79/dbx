@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub use crate::mysql_event::MysqlEventInfo;
 
@@ -526,6 +527,50 @@ impl QueryMessage {
             line.push_str(&format!(" ({})", extras.join(", ")));
         }
         line
+    }
+}
+
+/// Live-streaming tap invoked by the postgres driver task the moment a notice
+/// is polled off the wire. The statement index is baked in by the executor
+/// loop that creates the tap, so the tap itself only carries the message.
+#[derive(Clone)]
+pub struct StatementNoticeTap(Arc<dyn Fn(&QueryMessage) + Send + Sync>);
+
+impl StatementNoticeTap {
+    pub fn new<F: Fn(&QueryMessage) + Send + Sync + 'static>(tap: F) -> Self {
+        Self(Arc::new(tap))
+    }
+
+    pub fn emit(&self, message: &QueryMessage) {
+        (self.0)(message);
+    }
+}
+
+impl std::fmt::Debug for StatementNoticeTap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StatementNoticeTap")
+    }
+}
+
+/// Per-run notice sink handed to the executor; receives the statement index
+/// alongside each message so the frontend can attribute streamed notices to
+/// statements in a multi-statement run.
+#[derive(Clone)]
+pub struct StatementNoticeSink(Arc<dyn Fn(usize, &QueryMessage) + Send + Sync>);
+
+impl StatementNoticeSink {
+    pub fn new<F: Fn(usize, &QueryMessage) + Send + Sync + 'static>(sink: F) -> Self {
+        Self(Arc::new(sink))
+    }
+
+    pub fn call(&self, statement_index: usize, message: &QueryMessage) {
+        (self.0)(statement_index, message);
+    }
+}
+
+impl std::fmt::Debug for StatementNoticeSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StatementNoticeSink")
     }
 }
 

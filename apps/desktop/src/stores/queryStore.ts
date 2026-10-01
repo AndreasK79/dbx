@@ -501,9 +501,18 @@ const liveBatchSqlExecutions = new WeakMap<QueryTab, BatchSqlExecution>();
 // Per running batch: statements before this index are already settled by an
 // earlier progress event of the same run.
 const batchSqlProgressSettledEnds = new WeakMap<BatchSqlExecution, number>();
+// Re-entrancy guard: programmatic output-view switches during an execution
+// (the live-notice stream's switch to Messages, the mid-batch error switch to
+// Summary) must not count as the user pinning the view.
+let noticeStreamSwitching = false;
 
 function isCompletedBatchStatement(item: BatchStatementExecutionItem): boolean {
   return item.status === "success" || item.status === "error";
+}
+
+/** A statement error that is really the user's own cancellation (stop button / cancel request), not a failure to surface. */
+function batchErrorLooksCancelled(errorDetails: BackendError | undefined, errorText: string | undefined): boolean {
+  return errorDetails?.code === "DBX-JDBC-2003" || /cancel|取消/i.test(errorText ?? "");
 }
 
 function cloneBatchSqlExecution(batch: BatchSqlExecution | undefined): BatchSqlExecution | undefined {
@@ -560,10 +569,10 @@ function applyBatchSqlProgress(
   statementOffset = 0,
 ) {
   const batch = batchSqlExecutionFor(tab, progress.executionId);
-  if (!batch) return;
+  if (!batch) return false;
   const statementIndex = statementOffset + progress.statementIndex;
   const item = batch.items[statementIndex];
-  if (!item) return;
+  if (!item) return false;
   // Statements complete in order and the desktop backend coalesces successful
   // ones, so an event also settles every statement since the previous event.
   // Walking only that gap and counting incrementally keeps a batch linear;
@@ -591,6 +600,7 @@ function applyBatchSqlProgress(
     const next = batch.items[statementOffset + progress.completed];
     if (next?.status === "pending") next.status = "running";
   }
+  return !progress.success;
 }
 
 function reconcileBatchSqlResults(tab: QueryTab, executionId: string, results: QueryResult[]) {
@@ -627,7 +637,7 @@ function finishBatchSqlExecution(tab: QueryTab, executionId: string, cancelled: 
   const batch = batchSqlExecutionFor(tab, executionId);
   if (!batch) return;
   if (cancelled) {
-    const cancelledError = [...batch.items].reverse().find((item) => item.status === "error" && (item.errorDetails?.code === "DBX-JDBC-2003" || /cancel|取消/i.test(item.error ?? "")));
+    const cancelledError = [...batch.items].reverse().find((item) => item.status === "error" && batchErrorLooksCancelled(item.errorDetails, item.error));
     if (cancelledError) {
       cancelledError.status = "cancelled";
       cancelledError.error = undefined;
@@ -5270,7 +5280,87 @@ export const useQueryStore = defineStore("query", () => {
   function updateTabUiState(id: string, patch: Partial<NonNullable<QueryTab["uiState"]>>) {
     const tab = tabs.value.find((candidate) => candidate.id === id);
     if (!tab) return;
+    // A user-driven output view change mid-run pins the view so programmatic
+    // auto-switches (notice stream, mid-batch error switch — both route
+    // through here under their own guard) cannot override it. Post-completion
+    // switches are unaffected: the tab is no longer executing.
+    if (patch.activeOutputView !== undefined && tab.isExecuting && !noticeStreamSwitching) {
+      // streamingNotices may already be settled away on error runs; the tab-level
+      // copy survives until the next run starts so the completion switch and the
+      // mid-batch error switch can still respect the user choice.
+      if (tab.streamingNotices) tab.streamingNotices.userPinnedOutputView = true;
+      tab.userPinnedOutputViewDuringExecution = true;
+    }
     tab.uiState = { ...tab.uiState, ...patch };
+  }
+
+  /** Appends a coalesced batch of live server notices to the tab's stream. */
+  function applyStatementNotices(tab: QueryTab, event: api.StatementNoticesEvent) {
+    const streaming = tab.streamingNotices;
+    if (!streaming || streaming.executionId !== event.executionId) return;
+    const hadItems = streaming.items.length > 0;
+    for (const message of event.notices) {
+      streaming.items.push({ statementIndex: event.statementIndex, message });
+    }
+    // First streamed notice of the run: flip the output view to Messages,
+    // DBeaver-style, unless the user already redirected it after the run
+    // started (userPinnedOutputView).
+    if (!hadItems && streaming.items.length > 0 && !streaming.autoSwitchedToMessages && !streaming.userPinnedOutputView) {
+      streaming.autoSwitchedToMessages = true;
+      noticeStreamSwitching = true;
+      try {
+        updateTabUiState(tab.id, { activeOutputView: "messages" });
+      } finally {
+        noticeStreamSwitching = false;
+      }
+    }
+  }
+
+  /**
+   * A statement error mid-batch flips the output view to the execution summary so
+   * a failure inside a long script is visible immediately, DBeaver-style. Mirrors
+   * the notice stream auto-switch: once per run, never when the user redirected
+   * the view themselves after the run started, and never for cancellations.
+   */
+  function autoSwitchToSummaryOnBatchError(tab: QueryTab, executionId: string, error: BackendError | undefined, errorText: string | undefined) {
+    const batch = batchSqlExecutionFor(tab, executionId);
+    if (!batch || batch.total <= 1 || batch.errorAutoSwitchedToSummary) return;
+    if (tab.isCancelling || batchErrorLooksCancelled(error, errorText)) return;
+    if (tab.userPinnedOutputViewDuringExecution || tab.streamingNotices?.userPinnedOutputView) return;
+    batch.errorAutoSwitchedToSummary = true;
+    // Writing an inactive tab's uiState is intentional (same as the notice
+    // switch): when the user returns to the tab it rests on the summary.
+    noticeStreamSwitching = true;
+    try {
+      updateTabUiState(tab.id, { activeOutputView: "summary" });
+    } finally {
+      noticeStreamSwitching = false;
+    }
+  }
+
+  /**
+   * Settles the stream when its run finishes: success statements' notices
+   * already live in `result.messages`, so their streamed copies are dropped;
+   * error statements deliver theirs only inside the error text, so their
+   * streamed copies stay visible in Messages. All-success runs clear the
+   * stream entirely (no double-render at rest).
+   */
+  function settleStreamingStatementNotices(tab: QueryTab) {
+    const streaming = tab.streamingNotices;
+    if (!streaming) return;
+    const finalResults = tab.results ?? (tab.result ? [tab.result] : []);
+    if (!finalResults.some(isQueryExecutionErrorResult)) {
+      tab.streamingNotices = undefined;
+      return;
+    }
+    const successStatementIndexes = new Set(
+      finalResults
+        .filter((result) => !isQueryExecutionErrorResult(result))
+        .map((result) => result.statement_index)
+        .filter((index): index is number => index !== undefined),
+    );
+    streaming.items = streaming.items.filter((item) => !successStatementIndexes.has(item.statementIndex));
+    if (streaming.items.length === 0) tab.streamingNotices = undefined;
   }
 
   function updateTabPageUiState(id: string, mode: string, patch: Record<string, unknown>, owner?: QueryTab) {
@@ -5769,6 +5859,8 @@ export const useQueryStore = defineStore("query", () => {
         return;
       }
       finishBatchSqlExecution(current, executionId, true);
+      // Forced cancel: the badge/dot/toast suppression applies here too.
+      current.lastRunCancelled = true;
       current.isExecuting = false;
       current.isCancelling = false;
       current.executionId = undefined;
@@ -6837,6 +6929,13 @@ export const useQueryStore = defineStore("query", () => {
       tab.queryExecutionStartedAt = Date.now();
     }
     tab.executionId = executionId;
+    // Eager creation makes user-pin semantics exact: any output-view change
+    // from here until settle counts as the user redirecting the stream.
+    tab.streamingNotices = { executionId, items: [] };
+    // Fresh run, fresh error-surfacing state.
+    tab.userPinnedOutputViewDuringExecution = false;
+    tab.lastRunCancelled = false;
+    tab.lastRunErrorUnacknowledged = false;
     const tableDataNativeSelectionBlockOwner = tab.mode === "data" ? {} : undefined;
     if (tableDataNativeSelectionBlockOwner) beginDataGridNativeSelectionBlock(tableDataNativeSelectionBlockOwner);
     const previousDisplayedSql = tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql;
@@ -7828,7 +7927,8 @@ export const useQueryStore = defineStore("query", () => {
               (progress) => {
                 const current = findExecutionTab(id);
                 if (current?.executionId === executionId) {
-                  applyBatchSqlProgress(current, progress, continueOnBatchError, batchResume?.startStatementIndex ?? 0);
+                  const statementFailed = applyBatchSqlProgress(current, progress, continueOnBatchError, batchResume?.startStatementIndex ?? 0);
+                  if (statementFailed) autoSwitchToSummaryOnBatchError(current, executionId, progress.error, undefined);
                 }
               },
               executionSchema,
@@ -7838,6 +7938,14 @@ export const useQueryStore = defineStore("query", () => {
       };
 
       let executionPromise: Promise<QueryResult[]>;
+      // Live postgres notices: the backend coalesces them into
+      // query-statement-notices events for this executionId; both dispatch
+      // branches below run under the subscription so single-statement runs
+      // stream too. Web degrades to a no-op wrapper.
+      const onStatementNotices = (event: api.StatementNoticesEvent) => {
+        const current = findExecutionTab(id);
+        if (current) applyStatementNotices(current, event);
+      };
       if (tab.autoCommit === false) {
         let useLegacyReadFallback = false;
         if (!tab.txnSessionId) {
@@ -7859,7 +7967,7 @@ export const useQueryStore = defineStore("query", () => {
           }
         }
         if (useLegacyReadFallback) {
-          executionPromise = executeWithoutManualTransaction();
+          executionPromise = api.withStatementNotices(executionId, onStatementNotices, executeWithoutManualTransaction);
         } else {
           queryExecutionLog("info", "execute-in-txn:invoke", { traceId, txnSessionId: tab.txnSessionId, elapsed: elapsed() });
           executionDispatched = true;
@@ -7870,7 +7978,7 @@ export const useQueryStore = defineStore("query", () => {
           const isInitialStickyClassification = usesProvenReadOnlyStickyTransactionState(effectiveDbType) && !options?.pagination?.sessionId;
           const classificationSql = isInitialStickyClassification ? queryBaseSql : undefined;
           let manualTransactionRecoveryAttempted = false;
-          executionPromise = (async () => {
+          executionPromise = api.withStatementNotices(executionId, onStatementNotices, async () => {
             const txnSessionId = tab.txnSessionId;
             if (!txnSessionId) throw new Error("Manual transaction session was not initialized");
             // Offset jumps inside a manual transaction keep the legacy
@@ -7879,8 +7987,8 @@ export const useQueryStore = defineStore("query", () => {
             // strand it after returning the first page.
             const executeInTransaction = (sessionId: string) =>
               useAgentResultSession && !isOffsetJumpPage
-                ? api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, agentProtocolQueryResultMaxRows(queryResultMaxRows), useOracleLobPreview, pageLimit, options?.pagination?.sessionId, classificationSql)
-                : api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, pageLimit ?? agentProtocolQueryResultMaxRows(queryResultMaxRows), useOracleLobPreview, undefined, undefined, classificationSql);
+                ? api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, agentProtocolQueryResultMaxRows(queryResultMaxRows), useOracleLobPreview, pageLimit, options?.pagination?.sessionId, classificationSql, executionId)
+                : api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, pageLimit ?? agentProtocolQueryResultMaxRows(queryResultMaxRows), useOracleLobPreview, undefined, undefined, classificationSql, executionId);
             try {
               return await executeInTransaction(txnSessionId);
             } catch (error) {
@@ -7906,10 +8014,10 @@ export const useQueryStore = defineStore("query", () => {
               queryExecutionLog("info", "manual-txn:restarted", { traceId, txnSessionId: refreshedSessionId, elapsed: elapsed() });
               return executeInTransaction(refreshedSessionId);
             }
-          })();
+          });
         }
       } else {
-        executionPromise = executeWithoutManualTransaction();
+        executionPromise = api.withStatementNotices(executionId, onStatementNotices, executeWithoutManualTransaction);
       }
       const responseResults = await withFrontendQueryTimeout(executionPromise, frontendTimeoutSecs, t("editor.queryTimeoutError", { seconds: frontendTimeoutSecs }), () => {
         void api.cancelQuery(executionId).catch((error) => queryExecutionLog("warn", "frontend-timeout:cancel-failed", { traceId, error }));
@@ -8209,6 +8317,7 @@ export const useQueryStore = defineStore("query", () => {
       const current = findExecutionTab(id);
       if (current?.executionId === executionId) {
         failBatchSqlExecution(current, executionId, e, current.isCancelling === true);
+        if (!current.isCancelling) autoSwitchToSummaryOnBatchError(current, executionId, normalizeBackendError(e) ?? undefined, e instanceof Error ? e.message : undefined);
         const restoredRetainedResult = captureResultRun && (current.isCancelling || !executionDispatched) && restorePendingResultRun(current, executionId);
         if (restoredRetainedResult) {
           queryExecutionLog("info", "retained-result:restored-after-abort", { traceId, elapsed: elapsed() });
@@ -8268,6 +8377,13 @@ export const useQueryStore = defineStore("query", () => {
         const liveBatch = liveBatchSqlExecutions.get(current);
         if (liveBatch?.executionId === executionId) current.batchSqlExecution = liveBatch;
         finishBatchSqlExecution(current, executionId, current.isCancelling === true);
+        settleStreamingStatementNotices(current);
+        const runCancelled = (current.cancelRequestCount ?? 0) > cancelRequestCountAtStart;
+        current.lastRunCancelled = runCancelled;
+        // 错误收尾但用户不在看这个 tab：tab 栏亮点提示；当前 tab 由完成切换在
+        // useSqlExecution 里直接展示错误。取消的运行不算错误。
+        const runHadError = (current.results?.length ? current.results : current.result ? [current.result] : []).some(isQueryExecutionErrorResult);
+        if (runHadError && !runCancelled && activeTabId.value !== id) current.lastRunErrorUnacknowledged = true;
         if (current.activeResultRunId && current.result) syncActiveResultRunFromDisplayed(current);
         if (captureResultRun && !current.activeResultRunId) {
           restorePendingResultRun(current, executionId);
@@ -8863,6 +8979,9 @@ export const useQueryStore = defineStore("query", () => {
     activeTabId,
     (id) => {
       rememberActiveTab(id);
+      // Activating a tab acknowledges its background-run error dot.
+      const activated = id ? tabs.value.find((tab) => tab.id === id) : undefined;
+      if (activated?.lastRunErrorUnacknowledged) activated.lastRunErrorUnacknowledged = false;
       touchResult(
         tabs.value.find((tab) => tab.id === id),
         Date.now(),

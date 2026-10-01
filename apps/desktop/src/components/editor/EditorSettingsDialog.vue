@@ -257,6 +257,7 @@ import { useToast } from "@/composables/useToast";
 import type { DatabaseType, SqlShortcutAction, SqlSnippet } from "@/types/database";
 import { uuid } from "@/lib/common/utils";
 import { MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES, mergeImportedVscodeSnippets, parseVscodeSnippetsFile, serializeVscodeSnippetsFile, type VscodeSnippetsImportError } from "@/lib/sql/vscodeSnippetsImport";
+import { applySnippetRangeSelection } from "@/lib/sql/snippetRangeSelection";
 import { DEFAULT_SQL_SHORTCUT_SELECT_LIMIT } from "@/lib/sql/sqlDialectSelectLimit";
 import {
   BUILTIN_SQL_SHORTCUT_COUNT_ID,
@@ -977,9 +978,36 @@ const selectedSnippetCount = computed(() => editSnippets.value.reduce((count, sn
 // 全选针对当前筛选结果；被筛掉的行保持原选中状态
 const allSnippetsSelected = computed(() => visibleSnippets.value.length > 0 && visibleSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
 
-function toggleSnippetSelected(id: string, checked: boolean) {
-  if (checked) selectedSnippetIds.value.add(id);
-  else selectedSnippetIds.value.delete(id);
+// Shift 范围选择的锚点：最近一次普通点击的复选框行；不驱动渲染，无需响应式
+let snippetSelectionAnchorId: string | undefined;
+// 本次 click 是否为可成范围的 Shift 点击：change 里据此把被点击行翻转后的勾选
+// 态推广到锚点起的整段。全程不 preventDefault——WebView2 上被取消的复选框
+// click 的回弹晚于渲染落回（被点击行刚由绑定勾上又被弹回未选中），取消原生
+// 翻转的两个方案各翻一次车；改为完全顺着原生翻转走：点击行翻转成什么状态，
+// 整段就跟着成什么状态，勾选视觉与集合不可能再分叉。
+let snippetRangeClickPending = false;
+
+function handleSnippetCheckboxClick(event: MouseEvent, snippet: SqlSnippet) {
+  snippetRangeClickPending = event.shiftKey && !!applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id);
+  if (!snippetRangeClickPending) snippetSelectionAnchorId = snippet.id;
+}
+
+function handleSnippetCheckboxChange(snippet: SqlSnippet, checked: boolean) {
+  const pending = snippetRangeClickPending;
+  snippetRangeClickPending = false;
+  const next = pending ? applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id, checked) : null;
+  if (next) {
+    // 范围成立：锚点不动，可继续 Shift 扩选其他段；范围端点含锚点行，其勾选
+    // 态随本段统一，由 :checked 在下次渲染对齐
+    selectedSnippetIds.value = next;
+    return;
+  }
+  // 普通切换，或无锚点可用的 Shift 点击（尚未普通点击过、锚点被筛选隐藏/删
+  // 除、点的就是锚点本身）
+  const update = new Set(selectedSnippetIds.value);
+  if (checked) update.add(snippet.id);
+  else update.delete(snippet.id);
+  selectedSnippetIds.value = update;
 }
 
 function toggleAllSnippetsSelected(checked: boolean) {
@@ -9488,7 +9516,14 @@ LIMIT 100;</pre
                     </tr>
                     <tr v-for="snippet in visibleSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
                       <td class="px-3 py-2">
-                        <input type="checkbox" class="h-3.5 w-3.5 accent-primary" :checked="selectedSnippetIds.has(snippet.id)" :aria-label="t('settings.snippetsSelectSnippet')" @change="toggleSnippetSelected(snippet.id, ($event.target as HTMLInputElement).checked)" />
+                        <input
+                          type="checkbox"
+                          class="h-3.5 w-3.5 accent-primary"
+                          :checked="selectedSnippetIds.has(snippet.id)"
+                          :aria-label="t('settings.snippetsSelectSnippet')"
+                          @click="handleSnippetCheckboxClick($event, snippet)"
+                          @change="handleSnippetCheckboxChange(snippet, ($event.target as HTMLInputElement).checked)"
+                        />
                       </td>
                       <td class="px-3 py-2">{{ snippet.label }}</td>
                       <td class="px-3 py-2">

@@ -1141,6 +1141,66 @@ describe("useDataGridEditor saveChanges reload", () => {
     expect(editor.saveError.value).toBeFalsy();
   });
 
+  it("warns when a successful save affected 0 rows (trigger/conflict rule suppressed the write)", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["UPDATE orders_test SET status='shipped' WHERE id=1"], rollbackStatements: [] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 0 });
+
+    const { editor } = createSaveTestEditor();
+    editor.dirtyRows.value.set(0, new Map([[1, "shipped"]]));
+
+    await editor.saveChanges();
+
+    expect(mocks.executeBatch).toHaveBeenCalledTimes(1);
+    expect(editor.saveWarning.value).toContain("0 affected rows");
+    expect(editor.saveError.value).toBeFalsy();
+  });
+
+  it("raises no 0-rows warning when rows were actually written", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["UPDATE orders_test SET status='shipped' WHERE id=1"], rollbackStatements: [] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 1 });
+
+    const { editor } = createSaveTestEditor();
+    editor.dirtyRows.value.set(0, new Map([[1, "shipped"]]));
+
+    await editor.saveChanges();
+
+    expect(editor.saveWarning.value).toBeFalsy();
+  });
+
+  it("keeps a failed save's error card while the user keeps editing, until the next save clears it", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["UPDATE orders_test SET status='shipped' WHERE id=1"], rollbackStatements: [] });
+    mocks.executeBatch.mockRejectedValue({ message: "constraint violation", code: "23505" });
+
+    const { editor } = createSaveTestEditor();
+    editor.dirtyRows.value.set(0, new Map([[1, "shipped"]]));
+
+    await editor.saveChanges();
+    expect(editor.saveError.value).toContain("constraint violation");
+
+    // Staging another edit must not wipe the error card (sticky since mod 38).
+    editor.stageCellReplacements([{ rowId: 0, col: 1, previousValue: "shipped", value: "returned" }]);
+    expect(editor.saveError.value).toContain("constraint violation");
+
+    // A subsequent successful save clears both surfaces.
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 1 });
+    await editor.saveChanges();
+    expect(editor.saveError.value).toBeFalsy();
+    expect(editor.saveWarning.value).toBeFalsy();
+  });
+
+  it("warns on a manual-transaction save that affected 0 rows in total", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["INSERT INTO orders_test(status) VALUES ('new')"], rollbackStatements: [] });
+    mocks.executeInManualTransaction.mockResolvedValue([{ affected_rows: 0 }]);
+
+    const { editor } = createSaveTestEditor({ manualTransactionSessionId: "txn-1" });
+    editor.newRows.value = [["9", "new"]];
+
+    await editor.saveChanges();
+
+    expect(mocks.executeInManualTransaction).toHaveBeenCalledTimes(1);
+    expect(editor.saveWarning.value).toContain("0 affected rows");
+  });
+
   it("refuses a keyless save when the guard cannot be counted on the server at all", async () => {
     const onExecuteSql = vi.fn().mockResolvedValue(undefined);
     mocks.prepareDataGridSave.mockResolvedValue({

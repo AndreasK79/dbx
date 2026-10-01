@@ -30,6 +30,7 @@ vi.mock("@/lib/backend/debugLog", () => ({
 }));
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   analyzeEditableQueryEditability,
   buildDataGridCountSql,
   buildSortedQuerySql,

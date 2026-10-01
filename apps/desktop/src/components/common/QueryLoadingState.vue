@@ -11,6 +11,9 @@ withDefaults(
     cancelDisabled?: boolean;
     cancelling?: boolean;
     cancelLabelKey?: string;
+    /** Latest streamed server notice (one-line ticker under the spinner). */
+    noticeLine?: string;
+    noticeCount?: number;
   }>(),
   {
     labelKey: "common.loading",
@@ -19,6 +22,8 @@ withDefaults(
     cancelDisabled: false,
     cancelling: false,
     cancelLabelKey: "toolbar.stopQuery",
+    noticeLine: undefined,
+    noticeCount: undefined,
   },
 );
 
@@ -36,6 +41,7 @@ const { t } = useI18n();
       {{ t(labelKey) }}
       <span v-if="elapsedSeconds !== undefined" class="ml-1 tabular-nums text-muted-foreground/80">· {{ elapsedSeconds }}s</span>
     </div>
+    <div v-if="noticeLine !== undefined" class="max-w-[36rem] truncate font-mono text-[11px] text-muted-foreground" :title="noticeLine" data-streaming-notice-line>{{ t("queryMessages.latest", { count: noticeCount ?? 1 }) }} · {{ noticeLine }}</div>
     <Button v-if="showCancel" variant="destructive" size="sm" class="query-loading-cancel-button h-7 gap-1.5" :disabled="cancelDisabled" @click="emit('cancel')">
       <Loader2 v-if="cancelling" class="h-3.5 w-3.5 animate-spin" />
       <Square v-else class="h-3.5 w-3.5 fill-current" />

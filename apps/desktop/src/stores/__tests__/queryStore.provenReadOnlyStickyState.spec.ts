@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   analyzeEditableQueryEditability: mocks.analyzeEditableQueryEditability,
   beginManualTransaction: mocks.beginManualTransaction,
   closeClientConnectionSession: mocks.closeClientConnectionSession,
@@ -246,8 +247,9 @@ describe("queryStore Oracle/OceanBase manual-transaction sticky state (behavior 
     expect(mocks.executeInManualTransaction).toHaveBeenCalledOnce();
     const args = mocks.executeInManualTransaction.mock.calls[0]!;
     expect(args[0]).toBe("txn-oracle");
-    // classificationSql is the last argument of the non-cursor branch.
-    expect(args.at(-1)).toBe("SELECT * FROM EMP");
+    // classificationSql is the last argument before the notice stream's
+    // execution id.
+    expect(args.at(-2)).toBe("SELECT * FROM EMP");
   });
 
   it("keeps a clean Oracle manual session clean after a proven simple SELECT", async () => {
@@ -353,9 +355,9 @@ describe("queryStore Oracle/OceanBase manual-transaction sticky state (behavior 
     });
 
     const args = mocks.executeInManualTransaction.mock.calls[0]!;
-    // Page fetch carries no classificationSql (last argument), so it cannot
-    // change the sticky bit.
-    expect(args.at(-1)).toBeUndefined();
+    // Page fetch carries no classificationSql (second-to-last argument, after
+    // the execution id), so it cannot change the sticky bit.
+    expect(args.at(-2)).toBeUndefined();
     const tab = store.tabs.find((item) => item.id === tabId)!;
     // Page fetch must neither set nor clear the dirty bit.
     expect(tab.txnPossiblyDirty).toBe(true);
@@ -515,7 +517,7 @@ describe("queryStore Oracle/OceanBase manual-transaction sticky state (behavior 
     // No classificationSql is sent and no sticky state exists for non-sticky
     // dialects: commit/rollback follow the legacy always-visible rule.
     const args = mocks.executeInManualTransaction.mock.calls[0]!;
-    expect(args.at(-1)).toBeUndefined();
+    expect(args.at(-2)).toBeUndefined();
     expect(tab.txnPossiblyDirty).toBeUndefined();
     expect(tab.txnSessionId).toBe("txn-jdbc");
   });
@@ -566,7 +568,7 @@ describe.each([
     await store.executeTabSql(tabId, "SELECT * FROM users");
 
     const args = mocks.executeInManualTransaction.mock.calls[0]!;
-    expect(args.at(-1)).toBe("SELECT * FROM users");
+    expect(args.at(-2)).toBe("SELECT * FROM users");
     const tab = store.tabs.find((item) => item.id === tabId)!;
     expect(tab.txnPossiblyDirty).not.toBe(true);
     expect(tab.txnSessionId).toBe(txnId);

@@ -59,7 +59,7 @@ describe("SidebarTreeRuntimeHost foreign-server wiring", () => {
   it("registers the group for label, loaded-toggle and expansion handling", () => {
     expect(hostSource).toContain('"group-foreign-servers",');
     expect(hostSource).toContain('node.type === "group-extensions" || node.type === "group-foreign-servers"');
-    expect(hostSource).toContain('node.type === "group-foreign-servers" && node.connectionId && hasTreeNodeDatabaseContext(node)');
+    expect(hostSource).toContain('(node.type === "group-foreign-servers" || node.type === "group-event-triggers") && node.connectionId && hasTreeNodeDatabaseContext(node)');
   });
 
   it("offers view-details and copy-name in the context menu", () => {

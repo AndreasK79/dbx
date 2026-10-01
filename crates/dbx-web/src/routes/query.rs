@@ -606,6 +606,8 @@ pub async fn execute_multi(
             continue_on_error: req.continue_on_error.unwrap_or(false),
             execution_mode: req.execution_mode.unwrap_or_default(),
             preserve_explicit_transaction: req.preserve_explicit_transaction,
+            notice_sink: None,
+            notice_tap: None,
         },
     )
     .await;

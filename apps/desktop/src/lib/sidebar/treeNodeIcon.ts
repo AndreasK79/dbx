@@ -7,6 +7,30 @@ export type TreeNodeIconInfo = {
   colorClass: string;
 };
 
+/** Sidebar node types for the standalone object kinds (search results, filter chips). */
+export type ObjectKindNodeType = "table" | "view" | "materialized_view" | "procedure" | "function" | "trigger";
+
+/**
+ * Icon + color for an object kind outside the tree (double-Shift search results
+ * and its filter chips), so those surfaces always match the sidebar's coding.
+ */
+export function getObjectKindIconInfo(type: ObjectKindNodeType): TreeNodeIconInfo {
+  switch (type) {
+    case "table":
+      return { icon: Table, colorClass: "text-green-500" };
+    case "view":
+      return { icon: Eye, colorClass: "text-purple-500" };
+    case "materialized_view":
+      return { icon: Eye, colorClass: "text-indigo-500" };
+    case "procedure":
+      return { icon: ScrollText, colorClass: "text-blue-500" };
+    case "function":
+      return { icon: Braces, colorClass: "text-amber-500" };
+    case "trigger":
+      return { icon: Zap, colorClass: "text-orange-300" };
+  }
+}
+
 export function getTreeNodeIconInfo(node: TreeNode): TreeNodeIconInfo | null {
   switch (node.type) {
     case "schema":
@@ -44,11 +68,12 @@ export function getTreeNodeIconInfo(node: TreeNode): TreeNodeIconInfo | null {
     case "consul-root":
       return { icon: Database, colorClass: "text-blue-500" };
     case "table":
-      return { icon: Table, colorClass: "text-green-500" };
     case "view":
-      return { icon: Eye, colorClass: "text-purple-500" };
     case "materialized_view":
-      return { icon: Eye, colorClass: "text-indigo-500" };
+    case "procedure":
+    case "function":
+    case "trigger":
+      return getObjectKindIconInfo(node.type);
     case "column":
       return { icon: Columns3, colorClass: (node.meta as ColumnInfo | undefined)?.is_primary_key ? "text-orange-400" : "text-muted-foreground" };
     case "type-attribute":

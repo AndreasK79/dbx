@@ -1984,6 +1984,9 @@ export default {
     users: "Users & Privileges",
     executionSummary: "Summary",
     messages: "Messages",
+    backgroundRunError: '"{tab}" finished with an error: {message}',
+    backgroundRunErrorOpen: "Open tab",
+    tabRunErrorIndicator: "Last run failed",
     tooltipTitle: "Title:",
     tooltipFilePath: "File Path:",
     tooltipFileStatus: "File Status:",
@@ -2135,6 +2138,7 @@ export default {
   queryMessages: {
     empty: "No messages",
     code: "Code: {code}",
+    latest: "Latest message ({count})",
   },
   chart: {
     title: "Chart",
@@ -2885,6 +2889,8 @@ export default {
     noColumnsFound: "No columns found",
     queryError: "Query Error",
     saveErrorTitle: "Failed to Save Changes",
+    saveZeroRowsWarningTitle: "Nothing Was Written",
+    saveZeroRowsWarning: "The save reported 0 affected rows, so no data was changed. A trigger (e.g. BEFORE ... RETURN NULL) or a conflict rule (ON CONFLICT DO NOTHING) may have suppressed the write.",
     dataUnavailable: "Table data needs to be reloaded.",
     viewSnapshotSelectionNotRestored: "The previous view was restored, but its selection was too large to keep.",
     cachedResultUnavailable: "The cached result is missing or incompatible.",

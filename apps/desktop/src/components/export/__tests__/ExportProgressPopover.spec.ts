@@ -43,6 +43,10 @@ vi.mock("@/lib/common/clipboard", () => ({
   copyToClipboard: vi.fn(),
 }));
 
+// The popover formats counts with the runtime locale's NumberFormat, so the
+// expected separators must follow it too (nb-NO renders 1,000 as "1 000").
+const localeNumber = (value: number) => new Intl.NumberFormat().format(value);
+
 const mountedApps: App[] = [];
 let now = 0;
 
@@ -129,7 +133,7 @@ describe("data generation background task", () => {
     await mountPopover();
 
     expect(document.body.textContent).toContain("Data generation: app.users");
-    expect(document.body.textContent).toContain("1 / 2 tables · users · 250 / 1,000 rows");
+    expect(document.body.textContent).toContain(`1 / 2 tables · users · 250 / ${localeNumber(1_000)} rows`);
     const openButton = document.body.querySelector<HTMLButtonElement>('button[title="Open task"]');
     expect(openButton).not.toBeNull();
     openButton?.click();
@@ -238,7 +242,7 @@ describe("ExportProgressPopover task duration", () => {
     await mountPopover();
 
     expect(document.body.textContent).toContain("Database export: demo_2000_tables");
-    expect(document.body.textContent).toContain("Current: t_0123_with_a_long_descriptive_name (123/2,000)");
+    expect(document.body.textContent).toContain(`Current: t_0123_with_a_long_descriptive_name (123/${localeNumber(2_000)})`);
     expect(document.body.querySelector('[title="t_0123_with_a_long_descriptive_name"]')).not.toBeNull();
   });
 

@@ -1898,6 +1898,9 @@ export default withEnglishFallback({
     users: "用户与权限",
     executionSummary: "摘要",
     messages: "消息",
+    backgroundRunError: "“{tab}”运行出错：{message}",
+    backgroundRunErrorOpen: "打开标签页",
+    tabRunErrorIndicator: "上次运行出错",
     tooltipTitle: "标题：",
     tooltipFilePath: "文件路径：",
     tooltipFileStatus: "文件状态：",
@@ -2049,6 +2052,7 @@ export default withEnglishFallback({
   queryMessages: {
     empty: "没有消息",
     code: "代码：{code}",
+    latest: "最新消息（{count}）",
   },
   chart: {
     title: "图表",
@@ -2798,6 +2802,8 @@ export default withEnglishFallback({
     noColumnsFound: "未找到列",
     queryError: "查询出错",
     saveErrorTitle: "数据修改保存失败",
+    saveZeroRowsWarningTitle: "未写入任何数据",
+    saveZeroRowsWarning: "保存语句影响了 0 行，数据没有变化。触发器（如 BEFORE ... RETURN NULL）或冲突规则（ON CONFLICT DO NOTHING）可能抑制了这次写入。",
     dataUnavailable: "表数据需要重新加载。",
     viewSnapshotSelectionNotRestored: "已恢复上次的视图位置，但过大的选择范围未能保留。",
     dataUnavailableHintPrefix: "按 ",

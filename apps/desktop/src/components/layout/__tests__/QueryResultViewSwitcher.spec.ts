@@ -14,7 +14,7 @@ afterEach(() => {
   }
 });
 
-async function mountSwitcher(canShowRedisConsole: boolean) {
+async function mountSwitcher(canShowRedisConsole: boolean, options: { canShowSummary?: boolean; errorCount?: number } = {}) {
   const state = reactive<{ view: TabOutputView; mode?: RedisResultViewMode }>({ view: "result" });
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -24,11 +24,12 @@ async function mountSwitcher(canShowRedisConsole: boolean) {
         h(QueryResultViewSwitcher, {
           activeView: state.view,
           canShowResult: true,
-          canShowSummary: false,
+          canShowSummary: options.canShowSummary ?? false,
           canShowChart: false,
           canShowMessages: false,
           canShowRedisConsole,
           resultMode: state.mode,
+          errorCount: options.errorCount ?? 0,
           onSelectView: (view: TabOutputView) => {
             state.view = view;
           },
@@ -77,5 +78,26 @@ describe("QueryResultViewSwitcher Redis mode", () => {
   it("does not expose the Redis-only mode on generic result toolbars", async () => {
     const { host } = await mountSwitcher(false);
     expect(host.querySelector('button[aria-label="Command line"]')).toBeNull();
+  });
+});
+
+describe("QueryResultViewSwitcher error badge", () => {
+  function summaryButton(host: HTMLElement) {
+    return [...host.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.getAttribute("aria-label")?.startsWith("Summary"));
+  }
+
+  it("badges the summary button with the error count", async () => {
+    const { host } = await mountSwitcher(false, { canShowSummary: true, errorCount: 2 });
+    const summary = summaryButton(host)!;
+    expect(summary.getAttribute("aria-label")).toBe("Summary (2)");
+    const badge = summary.querySelector("span.rounded-full.bg-destructive");
+    expect(badge?.textContent?.trim()).toBe("2");
+  });
+
+  it("renders no badge on clean runs", async () => {
+    const { host } = await mountSwitcher(false, { canShowSummary: true });
+    const summary = summaryButton(host)!;
+    expect(summary.getAttribute("aria-label")).toBe("Summary");
+    expect(summary.querySelector("span.rounded-full.bg-destructive")).toBeNull();
   });
 });

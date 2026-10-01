@@ -186,7 +186,9 @@ test.each([
     setActivePinia(createPinia());
     const store = useConnectionStore();
     const context = { nodeId: "conn:app", connectionId: "conn", database: "app", schema };
-    const tables = ["aaa", "orders"].map((name) => ({ name, table_type: "TABLE" }));
+    // Collation-stable fixture names ("aaa" sorts as "å" — after "z" — under
+    // nb-NO, flipping the alphabetical-order assertions below).
+    const tables = ["customers", "orders"].map((name) => ({ name, table_type: "TABLE" }));
     const buildGroup = () => grouped
       ? buildGroupedObjectTreeNodes({ ...context, objects: tables.map((table) => ({ name: table.name, object_type: table.table_type, schema })) })[0]
       : { id: context.nodeId, label: "app", type: "schema" as const, ...context, children: buildTableTreeNodes({ ...context, tables }) };
@@ -200,11 +202,11 @@ test.each([
 
     store.setSidebarTableSearchQuery(group.id, "orders");
     assert.deepEqual(project().map((node) => node.label), ["orders"]);
-    assert.deepEqual(project(false).map((node) => node.label), ["aaa", "orders"]);
+    assert.deepEqual(project(false).map((node) => node.label), ["customers", "orders"]);
     store.toggleTreeNodePin(project()[0]);
     store.setSidebarTableSearchQuery(group.id, "");
     const cleared = project();
-    assert.deepEqual(cleared.map((node) => node.label), ["orders", "aaa"]);
+    assert.deepEqual(cleared.map((node) => node.label), ["orders", "customers"]);
     assert.equal(cleared[0].pinned, true);
     assert.equal(target.pinned, true);
     assert.equal(store.isTreeNodePinned(cleared[0]), true);
@@ -213,7 +215,7 @@ test.each([
     assert.equal(project()[0].pinned, true);
     store.toggleTreeNodePin(project()[0]);
     store.setSidebarTableSearchQuery(group.id, "");
-    assert.deepEqual(project().map((node) => node.label), ["aaa", "orders"]);
+    assert.deepEqual(project().map((node) => node.label), ["customers", "orders"]);
     assert.equal(target.pinned, false);
     assert.deepEqual(JSON.parse(storage.values.get("dbx-pinned-tree-nodes")!), []);
 

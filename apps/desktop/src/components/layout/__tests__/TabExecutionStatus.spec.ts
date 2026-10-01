@@ -10,7 +10,7 @@ vi.mock("vue-i18n", () => ({
 
 const mountedApps: ReturnType<typeof createApp>[] = [];
 
-function mountStatus(initial: { mode: "query" | "data"; isExecuting: boolean; isCancelling?: boolean; sourceLoad?: { startedAt: number; error?: string; request: { name: string; objectType: string } } }, withFallback = false) {
+function mountStatus(initial: { mode: "query" | "data"; isExecuting: boolean; isCancelling?: boolean; lastRunErrorUnacknowledged?: boolean; sourceLoad?: { startedAt: number; error?: string; request: { name: string; objectType: string } } }, withFallback = false) {
   const state = reactive(initial);
   const root = document.createElement("div");
   document.body.appendChild(root);
@@ -108,5 +108,38 @@ describe("TabExecutionStatus", () => {
     // 失败态由 tab 内容区的错误 + Retry 表达，tab 栏不应继续转圈
     expect(root.querySelector("[data-tab-execution-status]")).toBeNull();
     expect(root.querySelector("[data-tab-icon]")).not.toBeNull();
+  });
+
+  // 后台运行出错的 tab：图标位换成红点，直到用户切回该 tab。
+  it("shows an error dot for an unacknowledged background-run error", async () => {
+    const { root, state } = mountStatus({ mode: "query", isExecuting: false, lastRunErrorUnacknowledged: true }, true);
+    await nextTick();
+
+    const status = root.querySelector<HTMLElement>("[data-tab-execution-status]");
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute("aria-label")).toBe("tabs.tabRunErrorIndicator");
+    // 红点而非转圈：没有动画图标
+    expect(status?.querySelector("svg")).toBeNull();
+    expect(status?.querySelector("span.bg-destructive")).not.toBeNull();
+    expect(root.querySelector("[data-tab-icon]")).toBeNull();
+
+    state.lastRunErrorUnacknowledged = false;
+    await nextTick();
+    expect(root.querySelector("[data-tab-execution-status]")).toBeNull();
+    expect(root.querySelector("[data-tab-icon]")).not.toBeNull();
+  });
+
+  it("keeps the spinner while executing even with an unacknowledged error, and never on non-query tabs", async () => {
+    const { root, state } = mountStatus({ mode: "query", isExecuting: true, lastRunErrorUnacknowledged: true });
+    await nextTick();
+    expect(root.querySelector<HTMLElement>("[data-tab-execution-status]")?.getAttribute("aria-label")).toBe("common.loading");
+
+    state.isExecuting = false;
+    await nextTick();
+    expect(root.querySelector<HTMLElement>("[data-tab-execution-status]")?.getAttribute("aria-label")).toBe("tabs.tabRunErrorIndicator");
+
+    const data = mountStatus({ mode: "data", isExecuting: false, lastRunErrorUnacknowledged: true });
+    await nextTick();
+    expect(data.root.querySelector("[data-tab-execution-status]")).toBeNull();
   });
 });

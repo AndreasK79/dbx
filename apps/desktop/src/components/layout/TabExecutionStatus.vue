@@ -6,16 +6,17 @@ import { queryExecutionLabelKey } from "@/lib/sql/queryExecutionState";
 import type { QueryTab } from "@/types/database";
 
 const props = defineProps<{
-  tab: Pick<QueryTab, "mode" | "isExecuting" | "isCancelling" | "sourceLoad">;
+  tab: Pick<QueryTab, "mode" | "isExecuting" | "isCancelling" | "sourceLoad" | "lastRunErrorUnacknowledged">;
 }>();
 
 const { t } = useI18n();
 // 源码加载中（issue #9035）与查询执行中共用这一个 tab 栏转圈：两者都是
-// 「这个 tab 正在等后端」，用户需要的反馈是同一种。
-const status = computed<"running" | "cancelling" | "source-loading" | undefined>(() => {
+// 「这个 tab 正在等后端」，用户需要的反馈是同一种。运行结束后若上次执行
+// 在后台出错且用户还没回到这个 tab，图标换成红点提示（点开 tab 即消除）。
+const status = computed<"running" | "cancelling" | "source-loading" | "error" | undefined>(() => {
   if (props.tab.mode !== "query") return undefined;
   if (props.tab.sourceLoad && !props.tab.sourceLoad.error) return "source-loading";
-  if (!props.tab.isExecuting) return undefined;
+  if (!props.tab.isExecuting) return props.tab.lastRunErrorUnacknowledged ? "error" : undefined;
   return props.tab.isCancelling ? "cancelling" : "running";
 });
 
@@ -23,7 +24,10 @@ const labelKey = computed(() => (status.value === "source-loading" ? "common.loa
 </script>
 
 <template>
-  <span v-if="status" data-tab-execution-status role="status" class="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" :class="status === 'cancelling' ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'" :aria-label="t(labelKey)" :title="t(labelKey)">
+  <span v-if="status === 'error'" data-tab-execution-status class="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" :aria-label="t('tabs.tabRunErrorIndicator')" :title="t('tabs.tabRunErrorIndicator')">
+    <span aria-hidden="true" class="h-2 w-2 rounded-full bg-destructive" />
+  </span>
+  <span v-else-if="status" data-tab-execution-status role="status" class="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" :class="status === 'cancelling' ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'" :aria-label="t(labelKey)" :title="t(labelKey)">
     <Loader2 aria-hidden="true" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
   </span>
   <slot v-else />

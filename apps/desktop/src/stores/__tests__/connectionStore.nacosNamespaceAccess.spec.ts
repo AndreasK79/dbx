@@ -29,11 +29,13 @@ describe("connectionStore Nacos namespace access", () => {
       username: "bb",
       password: "secret",
       database: "",
-      visible_databases: ["aa", "bb", "cc", ""],
+      visible_databases: ["ns1", "ns2", "ns3", ""],
     } as ConnectionConfig;
-    // The backend has already removed `bb` and `public`, which the restricted
+    // The backend has already removed `ns2` and `public`, which the restricted
     // account cannot read even when the server's raw list endpoint exposes them.
-    const readableNamespaces = ["aa", "cc"].map((namespace) => ({
+    // The IDs are collation-stable on purpose: Norwegian/Danish locales sort
+    // "aa" as "å" (after z), which would flip the expected display order there.
+    const readableNamespaces = ["ns1", "ns3"].map((namespace) => ({
       namespace,
       namespaceShowName: namespace || "public",
     }));
@@ -83,7 +85,7 @@ describe("connectionStore Nacos namespace access", () => {
 
     expect(nacosListConfigs).not.toHaveBeenCalled();
     expect(nacosSidebarSnapshot).toHaveBeenCalledTimes(1);
-    expect(root.children?.filter((node) => node.type === "nacos-namespace").map((node) => node.label)).toEqual(["aa", "cc"]);
+    expect(root.children?.filter((node) => node.type === "nacos-namespace").map((node) => node.label)).toEqual(["ns1", "ns3"]);
     expect(store.getSidebarVisibleFilterSummary("nacos-bb")).toEqual({ mode: "namespace", isActive: false, selected: 2, total: 2 });
     expect(root.children?.some((node) => node.type === "nacos-access-control")).toBe(false);
   });

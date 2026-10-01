@@ -115,6 +115,10 @@ export function useDatabaseObjectSearch() {
   const errorMessage = ref("");
   const scope = ref<DatabaseObjectSearchScope | null>(null);
   const items = ref<DatabaseObjectSearchItem[]>([]);
+  /** Kinds the current database actually has (drives the filter chip row). */
+  const availableKinds = ref<DatabaseObjectSearchItemType[]>([]);
+  /** Kinds still visible; every load resets to "all on". */
+  const activeTypeFilter = ref<DatabaseObjectSearchItemType[]>([]);
   let loadGeneration = 0;
 
   async function load(nextScope: DatabaseObjectSearchScope | null): Promise<void> {
@@ -124,6 +128,8 @@ export function useDatabaseObjectSearch() {
     selectedIndex.value = 0;
     errorMessage.value = "";
     items.value = [];
+    availableKinds.value = [];
+    activeTypeFilter.value = [];
 
     if (!nextScope) return;
 
@@ -132,6 +138,9 @@ export function useDatabaseObjectSearch() {
     // lists, so the unscoped sidebar kinds already cover every search type.
     const supportedKinds = sidebarObjectKindsForDatabase(effectiveDatabaseTypeForConnection(config)).filter((kind) => SEARCH_OBJECT_KINDS.includes(kind));
     const objectTypes = supportedKinds.length > 0 ? supportedKinds : (["TABLE", "VIEW"] as SidebarObjectKind[]);
+    const kinds = (supportedKinds.length > 0 ? supportedKinds : (["TABLE", "VIEW"] as SidebarObjectKind[])).map((kind) => KIND_TO_ITEM_TYPE[kind]).filter((type): type is DatabaseObjectSearchItemType => !!type);
+    availableKinds.value = kinds;
+    activeTypeFilter.value = [...kinds];
     const querySchema = connectionObjectTreeQuerySchema(config, nextScope.database, nextScope.schema);
     // Schema-scoped engines (postgres family, SQL Server, …) match list objects
     // against a single schema, so the blank "backend resolves it" schema returns
@@ -173,12 +182,13 @@ export function useDatabaseObjectSearch() {
   }
 
   const filteredItems = computed((): MatchedItem[] => {
+    const visible = items.value.filter((item) => activeTypeFilter.value.includes(item.type));
     if (!searchQuery.value.trim()) {
-      return items.value.slice(0, OBJECT_SEARCH_MAX_RESULTS).map((item) => ({ ...item, matchScore: Infinity, matchIndices: [] }));
+      return visible.slice(0, OBJECT_SEARCH_MAX_RESULTS).map((item) => ({ ...item, matchScore: Infinity, matchIndices: [] }));
     }
 
     const matched: MatchedItem[] = [];
-    for (const item of items.value) {
+    for (const item of visible) {
       const labelMatch = matchQuickOpenText(searchQuery.value, item.label);
       const metadataMatch = labelMatch ? null : matchQuickOpenText(searchQuery.value, item.searchText);
       const result = labelMatch ?? metadataMatch;
@@ -208,6 +218,13 @@ export function useDatabaseObjectSearch() {
   watch(searchQuery, () => {
     selectedIndex.value = 0;
   });
+
+  function toggleTypeFilter(type: DatabaseObjectSearchItemType): void {
+    activeTypeFilter.value = activeTypeFilter.value.includes(type) ? activeTypeFilter.value.filter((active) => active !== type) : [...activeTypeFilter.value, type];
+    // Narrowing or widening the filter must also restart navigation (same
+    // rationale as setQuery, reset synchronously rather than via watch).
+    selectedIndex.value = 0;
+  }
 
   const selectedItem = computed((): MatchedItem | null => {
     if (selectedIndex.value < 0 || selectedIndex.value >= filteredItems.value.length) return null;
@@ -239,6 +256,9 @@ export function useDatabaseObjectSearch() {
     loading,
     errorMessage,
     scope,
+    availableKinds,
+    activeTypeFilter,
+    toggleTypeFilter,
     load,
     loadActiveDatabase,
     selectNext,

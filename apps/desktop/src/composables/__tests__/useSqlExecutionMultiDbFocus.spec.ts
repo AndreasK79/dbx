@@ -27,6 +27,7 @@ vi.mock("vue-i18n", () => ({
 }));
 
 vi.mock("@/lib/backend/api", () => ({
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   saveEditorSettings: vi.fn(),
   saveHistory: vi.fn(),
   unlockConnectionWrites: vi.fn(),
