@@ -103,6 +103,7 @@ import { replaceSqlServerLeadingUseQuery, sqlServerLeadingUseScript, switchesDat
 import { classifySqlRisk } from "@/lib/sql/sqlRisk";
 import { externalSqlFileDisplayTitles, normalizeExternalSqlPath } from "@/lib/sql/sqlFileOpen";
 import { clearDataGridPendingSnapshot, clearDataGridPendingSnapshotsForTab } from "@/composables/useDataGridEditor";
+import { combineDataGridOrderByInputs } from "@/composables/useDataGridSortBuilder";
 import { beginClosingDataGridViewSnapshotsForTab, clearDataGridViewSnapshot, clearDataGridViewSnapshotsForTab } from "@/lib/dataGrid/dataGridViewStateCache";
 import { beginClosingBrowserState } from "@/lib/tabs/documentBrowserStateCache";
 import { clearDataGridStructuredFilterStatesForTab } from "@/lib/dataGrid/dataGridFilterBuilderPersistence";
@@ -405,6 +406,7 @@ function releaseResultObjectPayload(result: QueryResult): void {
   result.messages = undefined;
   result.error = undefined;
   result.sourceLabel = undefined;
+  result.sourceLabelKind = undefined;
   result.sourceQualifier = undefined;
   result.sourceName = undefined;
   result.sourceStatement = undefined;
@@ -464,9 +466,9 @@ function annotateQueryResultSources(results: QueryResult[], sql: string, databas
     const customName = queryResultNameFromPreamble(preamble, { databaseType });
     if (customName) {
       result.sourceLabel = customName;
-      // 自定义名称（-- name: xxx）优先：清除结构化来源，避免“结果集名称包含数据库名”设置把它替换成表名
-      result.sourceQualifier = undefined;
-      result.sourceName = undefined;
+      result.sourceLabelKind = "comment";
+      // 保留结构化来源，方便“来源表名”模式在注释存在时仍显示表名。
+      // “注释”模式通过 sourceLabelKind 选择这个自定义名称。
     }
     const successfulUseDatabase = result.execution_error !== true ? useDatabaseFromStatement(statement.sql, databaseType) : undefined;
     if (successfulUseDatabase) {
@@ -688,7 +690,10 @@ function annotateQueryResultSource(result: QueryResult, sourceStatement: string,
     result.sourceQualifier = parts.qualifier;
     result.sourceName = parts.name;
     const label = parts.qualifier ? `${parts.qualifier}.${parts.name}` : parts.name;
-    if (label) result.sourceLabel = label;
+    if (label) {
+      result.sourceLabel = label;
+      result.sourceLabelKind = "source";
+    }
   }
   return result;
 }
@@ -1772,6 +1777,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultLocalSortOriginalMongoDocuments = undefined;
     tab.resultLocalSortOriginalMongoCopyDocuments = undefined;
     tab.orderByInput = undefined;
+    tab.structuredOrderByInput = undefined;
     tab.resultPageSql = undefined;
     tab.resultPageLimit = undefined;
     tab.resultPageOffset = undefined;
@@ -2184,6 +2190,7 @@ export const useQueryStore = defineStore("query", () => {
       createdAt,
       sourceLabel: primaryResult?.sourceLabel,
       sourceName: primaryResult?.sourceName,
+      sourceLabelKind: primaryResult?.sourceLabelKind,
       result: tab.result,
       results: tab.results,
       activeResultIndex: tab.activeResultIndex,
@@ -2592,6 +2599,7 @@ export const useQueryStore = defineStore("query", () => {
       resultSortDirection: t.resultSortDirection,
       resultSortMode: t.resultSortMode,
       orderByInput: t.orderByInput,
+      structuredOrderByInput: t.structuredOrderByInput,
       whereInput: t.whereInput,
       pinned: t.pinned,
       mode: t.mode,
@@ -2621,6 +2629,7 @@ export const useQueryStore = defineStore("query", () => {
         customTitle: run.customTitle,
         sourceLabel: run.sourceLabel,
         sourceName: run.sourceName,
+        sourceLabelKind: run.sourceLabelKind,
         activeResultIndex: run.activeResultIndex,
         resultCacheKey: run.resultCacheKey,
         resultEvicted: run.resultEvicted,
@@ -3414,7 +3423,7 @@ export const useQueryStore = defineStore("query", () => {
     const id = uuid();
     const tab: QueryTab = {
       id,
-      title: conn?.name ? `${conn.name} - ${t("processList.title")}` : t("processList.title"),
+      title: conn?.name ? `${conn.name} - ${t(effectiveDatabaseTypeForConnection(conn) === "xugu" ? "processList.transactionTitle" : "processList.title")}` : t("processList.title"),
       connectionId,
       database: conn?.database || "",
       sql: "",
@@ -4645,18 +4654,19 @@ export const useQueryStore = defineStore("query", () => {
       lastExecutedSql: undefined,
       resultBaseSql: original.resultBaseSql,
       resultSortedSql: undefined,
-      resultSortColumn: undefined,
-      resultSortColumnIndex: undefined,
-      resultSortDirection: undefined,
-      resultSortMode: undefined,
+      resultSortColumn: original.mode === "data" && original.resultSortMode === "database" ? original.resultSortColumn : undefined,
+      resultSortColumnIndex: original.mode === "data" && original.resultSortMode === "database" ? original.resultSortColumnIndex : undefined,
+      resultSortDirection: original.mode === "data" && original.resultSortMode === "database" ? original.resultSortDirection : undefined,
+      resultSortMode: original.mode === "data" && original.resultSortMode === "database" ? original.resultSortMode : undefined,
       resultLocalSortOriginalRows: undefined,
       resultLocalSortOriginalLargeValueCells: undefined,
       resultLocalSortOriginalMongoDocuments: undefined,
       resultLocalSortOriginalMongoCopyDocuments: undefined,
-      orderByInput: undefined,
+      orderByInput: original.mode === "data" ? original.orderByInput : undefined,
+      structuredOrderByInput: original.mode === "data" ? original.structuredOrderByInput : undefined,
       resultPageSql: undefined,
-      resultPageLimit: undefined,
-      resultPageOffset: undefined,
+      resultPageLimit: original.mode === "data" ? original.resultPageLimit : undefined,
+      resultPageOffset: original.mode === "data" ? original.resultPageOffset : undefined,
       resultExecutedPageLimit: undefined,
       resultExecutedPageOffset: undefined,
       resultCountSql: undefined,
@@ -4696,6 +4706,8 @@ export const useQueryStore = defineStore("query", () => {
       objectSource: original.objectSource ? { ...original.objectSource } : undefined,
       sourceView: original.sourceView,
       tableMeta: original.tableMeta ? { ...original.tableMeta, columns: [...original.tableMeta.columns], primaryKeys: [...original.tableMeta.primaryKeys] } : undefined,
+      tableMetaGeneration: original.mode === "data" ? original.tableMetaGeneration : undefined,
+      tableMetaUpdatedAt: original.mode === "data" ? original.tableMetaUpdatedAt : undefined,
       queryAnalysis: original.queryAnalysis ? { ...original.queryAnalysis, sources: original.queryAnalysis.sources?.map((source) => ({ ...source })), columns: original.queryAnalysis.columns.map((c) => ({ ...c })) } : undefined,
       querySourceColumns: original.querySourceColumns ? [...original.querySourceColumns] : undefined,
       queryWriteTargets: original.queryWriteTargets?.map((target) => ({ ...target, sourceColumns: [...target.sourceColumns] })),
@@ -4717,6 +4729,7 @@ export const useQueryStore = defineStore("query", () => {
       focusedGroupId.value = owner.id;
     }
     activeTabId.value = newId;
+    if (newTab.mode === "data") void refreshDataTab(newId);
   }
 
   function closeTabsWhere(predicate: (tab: QueryTab) => boolean) {
@@ -4881,7 +4894,7 @@ export const useQueryStore = defineStore("query", () => {
       clearInvalidDataTabSortState(tab, tableMeta.columns);
       const primaryKeys = tab.tableMeta ? tab.tableMeta.primaryKeys : tableMeta.primaryKeys;
       const sortOrder = tab.resultSortColumn && tab.resultSortDirection ? `${quoteTableDataIdentifier(effectiveDbType, tab.resultSortColumn, identifierQuote)} ${tab.resultSortDirection.toUpperCase()}` : undefined;
-      const orderBy = tab.orderByInput?.trim() || sortOrder;
+      const orderBy = combineDataGridOrderByInputs(tab.orderByInput, tab.structuredOrderByInput) || sortOrder;
       const limit = tab.resultPageLimit ?? tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize);
       const offset = tab.resultPageOffset ?? 0;
       const useDriverRowOffset = jdbcConnectionUsesDriverRowOffset(conn, effectiveDbType);
@@ -5629,7 +5642,11 @@ export const useQueryStore = defineStore("query", () => {
       tab.orderByInput,
       columns.map((column) => column.name),
     );
-    if (!structuredSortMissing && !simpleOrderMissing) return false;
+    const structuredOrderMissing = simpleDataGridOrderByReferencesMissingColumn(
+      tab.structuredOrderByInput,
+      columns.map((column) => column.name),
+    );
+    if (!structuredSortMissing && !simpleOrderMissing && !structuredOrderMissing) return false;
     if (structuredSortMissing) {
       tab.resultSortColumn = undefined;
       tab.resultSortColumnIndex = undefined;
@@ -5642,6 +5659,7 @@ export const useQueryStore = defineStore("query", () => {
       tab.resultLocalSortOriginalMongoCopyDocuments = undefined;
     }
     if (simpleOrderMissing) tab.orderByInput = undefined;
+    if (structuredOrderMissing) tab.structuredOrderByInput = undefined;
     return true;
   }
 
@@ -5933,8 +5951,12 @@ export const useQueryStore = defineStore("query", () => {
       });
       if (nextLabel) {
         tab.result.sourceLabel = nextLabel;
+        tab.result.sourceLabelKind = "source";
         const matching = tab.results?.find((result) => result === tab.result);
-        if (matching) matching.sourceLabel = nextLabel;
+        if (matching) {
+          matching.sourceLabel = nextLabel;
+          matching.sourceLabelKind = "source";
+        }
       }
     }
   }
@@ -7116,6 +7138,7 @@ export const useQueryStore = defineStore("query", () => {
               annotated.sourceQualifier = currentDatabase || undefined;
               annotated.sourceName = mongoCommand.collection;
               annotated.sourceLabel = currentDatabase ? `${currentDatabase}.${mongoCommand.collection}` : mongoCommand.collection;
+              annotated.sourceLabelKind = "source";
             }
             return commandTiming.finish(annotated);
           };
@@ -9023,7 +9046,7 @@ export const useQueryStore = defineStore("query", () => {
       const identifierQuote = connStore.connectionIdentifierQuote?.(tab.connectionId);
       const primaryKeys = tab.tableMeta ? tab.tableMeta.primaryKeys : tableMeta.primaryKeys;
       const sortOrder = tab.resultSortColumn && tab.resultSortDirection ? `${quoteTableDataIdentifier(effectiveDbType, tab.resultSortColumn, identifierQuote)} ${tab.resultSortDirection.toUpperCase()}` : undefined;
-      const orderBy = tab.orderByInput?.trim() || sortOrder;
+      const orderBy = combineDataGridOrderByInputs(tab.orderByInput, tab.structuredOrderByInput) || sortOrder;
       const queryTimeoutSecs = queryTimeoutSecsForConnection(conn, settingsStore.editorSettings.globalQueryTimeoutSecs);
       const executionDatabase = tab.database;
       const rows: QueryResult["rows"] = [];
