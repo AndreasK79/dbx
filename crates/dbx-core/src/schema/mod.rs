@@ -17,6 +17,8 @@ use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(all(test, unix))]
+mod agent_metadata_routing_tests;
 mod agent_pg_sequences;
 #[cfg(all(test, unix))]
 mod external_table_filter_tests;
@@ -688,12 +690,21 @@ async fn list_databases_once(state: &AppState, connection_id: &str) -> Result<Ve
             return Ok(vec![db::DatabaseInfo { name, ..Default::default() }]);
         }
         try_sqlserver!(pool_handle, list_databases);
-        if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
+        if matches!(pool_handle.as_ref(), Some(PoolKind::Agent(_)))
+            || (pool_handle.is_none()
+                && db_config.as_ref().is_some_and(|config| {
+                    crate::database_capabilities::is_agent_type(&config.db_type)
+                        || crate::connection::sqlserver_uses_legacy_driver(config)
+                }))
+        {
             let is_mongo = db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::MongoDb);
             if is_mongo {
                 let dbs = crate::mongo_ops::mongo_list_databases_core(state, connection_id).await?;
                 return Ok(dbs.into_iter().map(|name| db::DatabaseInfo { name, ..Default::default() }).collect());
             }
+            let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, None, None).await?;
+            let metadata_pool = state.pool_handle(&pool_key).await;
+            let client = extract_pool!(metadata_pool.as_ref(), Agent).ok_or("Pool not found")?;
             let mut client = client.lock().await;
             return client.list_databases(agent_metadata_timeout(db_config.as_ref())).await;
         }
@@ -6503,10 +6514,18 @@ pub async fn list_object_statistics_core(
     database: &str,
     schema: &str,
 ) -> Result<Vec<db::ObjectStatistics>, String> {
-    retry_metadata_connection(state, connection_id, Some(database), || {
-        list_object_statistics_once(state, connection_id, database, schema)
-    })
-    .await
+    let metadata_session =
+        EphemeralAgentMetadataSession::open(state, connection_id, Some(database), "object-statistics").await;
+    let result = retry_metadata_connection_for_session(
+        state,
+        connection_id,
+        Some(database),
+        metadata_session.client_session_id(),
+        || list_object_statistics_once(state, connection_id, database, schema, metadata_session.client_session_id()),
+    )
+    .await;
+    metadata_session.finish(state, connection_id, Some(database)).await;
+    result
 }
 
 pub async fn list_completion_objects_core(
@@ -6943,8 +6962,10 @@ async fn list_object_statistics_once(
     connection_id: &str,
     database: &str,
     schema: &str,
+    client_session_id: Option<&str>,
 ) -> Result<Vec<db::ObjectStatistics>, String> {
-    let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
+    let pool_key =
+        state.get_or_create_metadata_pool_for_session(connection_id, Some(database), client_session_id).await?;
     let db_config = connection_config(state, connection_id).await;
     let pool_handle = state.pool_handle(&pool_key).await;
     try_sqlserver!(pool_handle, list_object_statistics, schema);
