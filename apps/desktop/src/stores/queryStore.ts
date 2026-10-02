@@ -1,4 +1,5 @@
 import { createQueryRequestTiming } from "@/lib/queryRequestTiming";
+import { appendNeo4jNodeCells, extractNeo4jNodeCells } from "@/lib/neo4j/neo4jNodeResult";
 import { UPDATE_RESTORE_KEY, assertUpdateAllowsInteraction } from "@/lib/app/updatePreparation";
 import { defineStore } from "pinia";
 import { isRedisMonitorCommand, startRedisMonitor } from "@/lib/redis/redisMonitor";
@@ -211,8 +212,9 @@ interface BuildQueryResultExportRequestOptions {
   insertMode?: SqlInsertMode;
 }
 
-interface OpenSavedSqlOptions {
+export interface OpenSavedSqlOptions {
   targetMode?: SavedSqlOpenTargetMode;
+  reveal?: { line: number; column?: number };
 }
 
 interface OpenObjectSourceTabOptions {
@@ -305,7 +307,9 @@ function droppedTableObjectSchemaCandidates(target: DroppedTableObjectTarget): S
 }
 
 function markQueryResultRowsRaw(result: QueryResult): QueryResult {
+  extractNeo4jNodeCells(result);
   markRaw(result.rows);
+  if (result.neo4j_node_cells) markRaw(result.neo4j_node_cells);
   if (result.large_value_cells) markRaw(result.large_value_cells);
   if (result.mongo_documents) markRaw(result.mongo_documents);
   if (result.mongo_copy_documents) markRaw(result.mongo_copy_documents);
@@ -333,6 +337,8 @@ export function appendQueryResultSegment(previous: QueryResult, segment: QueryRe
     throw new Error("Result columns changed while loading the next segment");
   }
   const remainingRows = Math.max(0, maxRows - previous.rows.length);
+  markQueryResultRowsRaw(previous);
+  markQueryResultRowsRaw(segment);
   const appendedRowCount = Math.min(remainingRows, segment.rows.length);
   const appendParallelValues = <T>(existing: T[] | undefined, next: T[] | undefined): T[] | undefined => {
     if (!existing || !next) return undefined;
@@ -356,6 +362,7 @@ export function appendQueryResultSegment(previous: QueryResult, segment: QueryRe
     ...segment,
     appended_from_row_count: previous.rows.length,
     rows: [...previous.rows, ...segment.rows.slice(0, appendedRowCount)],
+    neo4j_node_cells: appendNeo4jNodeCells(previous, segment, appendedRowCount),
     spatial_columns: spatial_columns.length > 0 ? spatial_columns : undefined,
     spatial_values: appendParallelValues(previous.spatial_values, segment.spatial_values),
     large_value_cells: appendLargeValueCells(previous.large_value_cells, segment.large_value_cells, previous.rows.length, appendedRowCount),
@@ -399,6 +406,7 @@ function releaseResultObjectPayload(result: QueryResult): void {
   result.local_column_filters = undefined;
   result.local_hidden_column_keys = undefined;
   result.mongo_documents = undefined;
+  result.neo4j_node_cells = undefined;
   result.mongo_copy_documents = undefined;
   result.large_value_cells = undefined;
   result.elasticsearch_raw_body = undefined;
@@ -5515,6 +5523,9 @@ export const useQueryStore = defineStore("query", () => {
         existing.editorViewport = restored.viewport;
       }
       applySavedSqlExecutionTarget(existing, target);
+      if (options.reveal) {
+        existing.editorRevealRequest = { id: ++contentRevealSeq, line: options.reveal.line, column: options.reveal.column };
+      }
       switchTab(existing.id);
       return existing.id;
     }
@@ -5538,6 +5549,7 @@ export const useQueryStore = defineStore("query", () => {
       isExplaining: false,
       mode: "query",
       autoCommit: defaultAutoCommitForDbTypeWithSetting(dbType),
+      editorRevealRequest: options.reveal ? { id: ++contentRevealSeq, line: options.reveal.line, column: options.reveal.column } : undefined,
       editorSelection: restoredPosition.selection,
       editorViewport: restoredPosition.viewport,
     };
@@ -8871,6 +8883,61 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
+  async function resolveResultMetadataForBatch(id: string, result: QueryResult): Promise<QueryMetadataPatch | undefined> {
+    const tab = findExecutionTab(id);
+    if (!tab || !result.sourceStatement) return undefined;
+    // Resolve on a detached context: checking a non-active result must never
+    // replace the visible grid or apply its metadata to another result.
+    const location = queryResultExecutionLocation(tab);
+    const connection = useConnectionStore().getConfig(location.connectionId);
+    const databaseType = effectiveDatabaseTypeForConnection(connection);
+    if (result === tab.result) {
+      if (tab.mode === "data" && (tab.tableMetaPending || !tab.tableMeta?.columns.length)) return undefined;
+      const tableMeta = tab.mode === "data" ? tableMetaForDataTab(tab) : tab.tableMeta;
+      const structure = analyzeSelectStructureForDisplay(result.sourceStatement);
+      const sameTable = structure?.tableName && tableMeta?.tableName && structure.tableName.toLowerCase() === tableMeta.tableName.toLowerCase() && (!structure.schema || !tableMeta.schema || structure.schema.toLowerCase() === tableMeta.schema.toLowerCase());
+      if (!sameTable || !tableMeta?.tableName || !canInsertTableRows(databaseType) || tableMeta.tableType?.toUpperCase().includes("VIEW")) return undefined;
+      const metadataNames = tableMeta.columns.map((column) => column.name);
+      const querySourceColumns = structure.selectStar
+        ? result.columns.map((column) => resolveMetadataColumnName(databaseType ?? "", column, undefined, metadataNames))
+        : structure.columns.length === result.columns.length
+          ? structure.columns.map((column) => {
+              if (!column.sourceName || (column.sourceQualifier && !column.sourceKey)) return undefined;
+              return resolveMetadataColumnName(databaseType ?? "", column.sourceName, column.sourceNameQuoted, metadataNames);
+            })
+          : undefined;
+      if (!querySourceColumns || querySourceColumns.some((column) => !column)) return undefined;
+      return {
+        queryAnalysis: {
+          schema: tableMeta.schema,
+          tableName: tableMeta.tableName,
+          tableAlias: structure.tableAlias,
+          selectStar: structure.selectStar,
+          columns: structure.columns,
+          allowInsert: true,
+          allowInsertDelete: true,
+        },
+        querySourceColumns,
+        queryEditabilityReason: undefined,
+        tableMeta,
+      };
+    }
+    const statements = splitSqlStatementRanges(tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql, databaseType);
+    const resultIndex = Number.isInteger(result.statement_index) && result.statement_index! >= 0 ? result.statement_index! : Math.max(0, tab.results?.indexOf(result) ?? 0);
+    for (const [index, statement] of statements.entries()) {
+      if (index >= resultIndex) break;
+      const statementResult = tab.results?.find((candidate, fallbackIndex) => (candidate.statement_index ?? fallbackIndex) === index);
+      if (statementResult?.execution_error) continue;
+      location.database = useDatabaseFromStatement(statement.sql, databaseType) ?? location.database;
+    }
+    // Batch actions can also be invoked from data/table tabs. Metadata
+    // resolution is read-only and uses the same query parser, so provide the
+    // query-mode context expected by buildQueryMetadataPatch without changing
+    // the live tab mode or its displayed result.
+    const context = { ...tab, ...location, mode: "query" as const, result };
+    return buildQueryMetadataPatch(context, result.sourceStatement, location.database, undefined, undefined, [], connection);
+  }
+
   function setActiveResultIndex(id: string, index: number) {
     const tab = findExecutionTab(id);
     if (!tab?.results || index < 0 || index >= tab.results.length) return;
@@ -9692,6 +9759,7 @@ export const useQueryStore = defineStore("query", () => {
     closeQueryResult,
     clearQueryResults,
     setActiveResultIndex,
+    resolveResultMetadataForBatch,
     executeCurrentTab,
     executeCurrentSql,
     executeTabSql,

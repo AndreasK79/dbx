@@ -582,6 +582,8 @@ export default withEnglishFallback({
     sortByDate: "Dəyişiklik tarixinə görə sırala",
     sortByFolder: "Qovluq quruluşuna görə sırala",
     collapseAll: "Hamısını yığ",
+    moreMatches: "+ {count} uyğunluq daha",
+    collapseMatches: "Yığ",
   },
 
   connection: {
@@ -3420,6 +3422,8 @@ export default withEnglishFallback({
     templateSelectorDeselectAll: "Bütün seçimləri ləğv et",
     templateSelectorLoading: "Yüklənir...",
     skillsEntry: "Skills",
+    skillsSelectAll: "Hamısını seç",
+    skillsDeselectAll: "Bütün seçimləri ləğv et",
     skillsLoading: "Skills yüklənir…",
     skillsEmpty: "Hələ skill tapılmadı",
     skillsRefresh: "Siyahını yenilə",
@@ -7997,6 +8001,8 @@ export default withEnglishFallback({
     shortcutScopeHintSearch: "Axtarış sahəsi fokusda olduqda keçərlidir",
     shortcutScopeHintSidebar: "Yan panel fokusda olduqda keçərlidir",
     shortcutGroupCount: "{count} əməliyyat",
+    shortcutGroupCollapse: "Qrupu yığ",
+    shortcutGroupExpand: "Qrupu genişləndir",
     shortcutGroupUnbound: "{count} təyin edilməyib",
     shortcutGroupUnboundTooltip: "Bu əməliyyatlara qısayol təyin edilməyib; sətirdəki karandaş ikonundan istifadə edərək təyin edin.",
     shortcutModifiedTag: "Dəyişdirilib",

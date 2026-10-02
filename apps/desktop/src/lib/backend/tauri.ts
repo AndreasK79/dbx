@@ -5931,6 +5931,7 @@ export interface DatabaseExportRequest {
   preventOverwrite?: boolean;
   outputCompression?: "none" | "gzip";
   insertDialect?: SqlInsertDialect;
+  insertMode?: "batch" | "single";
   snapshotSessionId?: string;
   batchSize: number;
   splitMaxMb?: number;

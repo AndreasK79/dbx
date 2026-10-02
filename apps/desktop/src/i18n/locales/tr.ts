@@ -584,6 +584,8 @@ export default withEnglishFallback({
     sortByDate: "Değiştirilme Tarihine Göre Sırala",
     sortByFolder: "Klasör Yapısına Göre Sırala",
     collapseAll: "Tümünü daralt",
+    moreMatches: "+ {count} eşleşme daha",
+    collapseMatches: "Daralt",
   },
 
   connection: {
@@ -3393,6 +3395,8 @@ export default withEnglishFallback({
     templateSelectorDeselectAll: "Tüm Seçimleri Kaldır",
     templateSelectorLoading: "Yükleniyor...",
     skillsEntry: "Skills",
+    skillsSelectAll: "Tümünü seç",
+    skillsDeselectAll: "Tümünün seçimini kaldır",
     skillsLoading: "Skills yükleniyor…",
     skillsEmpty: "Henüz skill bulunamadı",
     skillsRefresh: "Listeyi yenile",
@@ -7896,6 +7900,8 @@ export default withEnglishFallback({
     shortcutScopeHintSearch: "Arama alanı odaktayken geçerli",
     shortcutScopeHintSidebar: "Kenar çubuğu odaktayken geçerli",
     shortcutGroupCount: "{count} eylem",
+    shortcutGroupCollapse: "Grubu daralt",
+    shortcutGroupExpand: "Grubu genişlet",
     shortcutGroupUnbound: "{count} atanmamış",
     shortcutGroupUnboundTooltip: "Bu eylemlerde kısayol atanmamış; satırdaki kalem simgesiyle atayabilirsiniz.",
     shortcutModifiedTag: "Değiştirildi",

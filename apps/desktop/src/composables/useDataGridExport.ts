@@ -1273,13 +1273,13 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     await exportCurrentPageXlsxResult(true);
   }
 
-  async function exportAllResultsXlsxResult(includeSqlSheet: boolean) {
+  async function exportResultSheetsXlsxResult(sheetsToExport: Array<{ sheetName: string; result: QueryResult; sql?: string }> | undefined, includeSqlSheet: boolean) {
     const exportOptions = await showXlsxHeaderDialog();
     if (exportOptions === null) return;
 
     await runExclusiveExport(async () => {
       try {
-        const sheets = (allExportResults?.value ?? []).filter((sheet) => sheet.result.columns.length > 0);
+        const sheets = (sheetsToExport ?? allExportResults?.value ?? []).filter((sheet) => sheet.result.columns.length > 0);
         if (sheets.length === 0) return;
 
         let outputPath = exportFileName("query-results", "xlsx", { allResults: true });
@@ -1314,11 +1314,11 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
   }
 
   async function exportAllResultsXlsx() {
-    await exportAllResultsXlsxResult(false);
+    await exportResultSheetsXlsxResult(undefined, false);
   }
 
   async function exportAllResultsXlsxWithSql() {
-    await exportAllResultsXlsxResult(true);
+    await exportResultSheetsXlsxResult(undefined, true);
   }
 
   /**
@@ -1834,6 +1834,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     exportCurrentPageXlsxWithSql,
     exportAllResultsXlsx,
     exportAllResultsXlsxWithSql,
+    exportResultSheetsXlsx: (sheets: Array<{ sheetName: string; result: QueryResult; sql?: string }>) => exportResultSheetsXlsxResult(sheets, false),
     exportSql,
     exportCurrentPageSql,
     copySql,
