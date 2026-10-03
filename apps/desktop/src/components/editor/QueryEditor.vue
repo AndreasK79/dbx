@@ -100,6 +100,7 @@ import { createQueryEditorSqlShortcutDomHandler, isCharacterProducingShortcut } 
 import { createQueryEditorReplaceShortcutBindings, createQueryEditorReplaceShortcutHandler, createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { createQueryEditorEscapeHandler } from "@/lib/editor/queryEditorEscape";
 import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignmentExtension } from "@/lib/editor/queryEditorLineNumbers";
+import { keepGuttersAttachedDuringSync } from "@/lib/editor/codemirrorGutterSync";
 import { searchKeymapWithoutShortcutConflicts } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { createShowWhitespaceExtension } from "@/lib/editor/codemirrorShowWhitespace";
@@ -557,7 +558,7 @@ const {
 const hoverContent = createQueryEditorHoverContent({ isDark, t, toast });
 const { resolveSqlHoverTooltip } = useQueryEditorHover({ props, contextMenuOpen, settingsStore, connectionStore, metadata: completionMetadata, createHoverDom: hoverContent.createHoverDom, semanticCompletionEnabled: SEMANTIC_SQL_COMPLETION_ENABLED, maxCompletionTables: MAX_COMPLETION_TABLES });
 const pointerInteractions = useQueryEditorPointer({ props, clearTableNavigationHover: () => clearTableNavigationHover(), emit });
-const { registerEditorScrollbarPointerGuard, registerEditorNativeSelectionDragGuard, startEditorSelectionDrag } = pointerInteractions;
+const { registerEditorScrollbarPointerGuard, registerEditorNativeSelectionDragGuard, registerEditorNativeSelectionScrollGuard, startEditorSelectionDrag } = pointerInteractions;
 const tableDrop = useQueryEditorTableDrop({ props, view, editorRef, settingsStore });
 const { hasDroppedTableReference, insertDroppedTableReference, queryEditorDropCaret, queryEditorDropCaretStyle, showQueryEditorDropCaretAt, hideQueryEditorDropCaret, registerTableReferenceDropListener, unregisterTableReferenceDropListener } = tableDrop;
 const objectNavigation = useQueryEditorObjectNavigation({
@@ -1952,6 +1953,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         createQueryEditorLineNumberAlignmentExtension(ViewPlugin),
         currentStatementFrameExtension,
         highlightActiveLineGutter(),
+        keepGuttersAttachedDuringSync(ViewPlugin),
         highlightSpecialChars(),
         initializedRuntime.historyResetComp.of(history()),
         foldGutter({
@@ -2204,6 +2206,10 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         // such a copy happens rather than here, because that is the only moment
         // the normalizer is used.
         registerEditorNativeSelectionDragGuard(view.value, { finalizeClipboardText: (text) => clipboardLineEndings(text) });
+        // The same park, held for the length of a scroll burst: scrolling a
+        // long selection costs macOS 26/27 the same per-run serialization on
+        // every scroll event that a drag pays per pointer move.
+        registerEditorNativeSelectionScrollGuard(view.value, { finalizeClipboardText: (text) => clipboardLineEndings(text) });
         view.value.scrollDOM.addEventListener("scroll", scheduleEditorViewportEmit, {
           passive: true,
         });
@@ -2433,20 +2439,25 @@ watch([() => props.clientSessionId, () => props.completionContextVersion], () =>
   scheduleSemanticDiagnostics();
 });
 
-watch([() => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlDriverProfile], () => {
-  executableStatementRangeCache = null;
-  statementBoundaries.invalidate();
-  if (!view.value || !codeMirrorRuntime.sqlLanguageComp || !codeMirrorRuntime.buildSqlLanguageExtension || !codeMirrorRuntime.sqlSemanticHighlightComp || !codeMirrorRuntime.buildSqlSemanticHighlightExtension || !codeMirrorRuntime.sqlSignatureComp || !codeMirrorRuntime.buildSqlSignatureExtension)
-    return;
-  // Signature tooltips depend on the external dialect, so refresh them even when the document and selection stay unchanged.
-  view.value.dispatch({
-    effects: [
-      codeMirrorRuntime.sqlLanguageComp.reconfigure(codeMirrorRuntime.buildSqlLanguageExtension()),
-      codeMirrorRuntime.sqlSemanticHighlightComp.reconfigure(codeMirrorRuntime.buildSqlSemanticHighlightExtension()),
-      codeMirrorRuntime.sqlSignatureComp.reconfigure(codeMirrorRuntime.buildSqlSignatureExtension()),
-    ],
-  });
-});
+watch(
+  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlDriverProfile],
+  () => {
+    executableStatementRangeCache = null;
+    statementBoundaries.invalidate();
+    if (!view.value || !codeMirrorRuntime.sqlLanguageComp || !codeMirrorRuntime.buildSqlLanguageExtension || !codeMirrorRuntime.sqlSemanticHighlightComp || !codeMirrorRuntime.buildSqlSemanticHighlightExtension || !codeMirrorRuntime.sqlSignatureComp || !codeMirrorRuntime.buildSqlSignatureExtension)
+      return;
+    // Signature tooltips depend on the external dialect, so refresh them even when the document and selection stay unchanged.
+    view.value.dispatch({
+      effects: [
+        codeMirrorRuntime.sqlLanguageComp.reconfigure(codeMirrorRuntime.buildSqlLanguageExtension()),
+        codeMirrorRuntime.sqlSemanticHighlightComp.reconfigure(codeMirrorRuntime.buildSqlSemanticHighlightExtension()),
+        codeMirrorRuntime.sqlSignatureComp.reconfigure(codeMirrorRuntime.buildSqlSignatureExtension()),
+      ],
+    });
+    applyEditorCompletionExtension();
+  },
+  { flush: "post" },
+);
 
 // openGauss compatibility mode is loaded asynchronously from the backend into a
 // dedicated store map (not the sidebar tree). A restored tab may open before the

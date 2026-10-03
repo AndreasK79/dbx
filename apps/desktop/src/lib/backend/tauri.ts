@@ -541,6 +541,7 @@ export interface QueryPaginationExecutionPlan {
   exactQueryRowBound?: number;
   useAgentResultSession: boolean;
   paginationRowNumberColumn?: string;
+  paginationError?: string;
 }
 
 export type QuerySortDirection = "asc" | "desc";

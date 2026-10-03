@@ -14,6 +14,7 @@ import type {
   BatchSqlExecution,
   BatchStatementExecutionItem,
   ConnectionConfig,
+  DatabaseSearchTabState,
   DatabaseType,
   IndexInfo,
   NacosConfigEditorViewport,
@@ -139,6 +140,7 @@ import type { SavedSqlFile } from "@/types/database";
 import i18n, { currentLocale } from "@/i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
 import type { SqlExecutionTargetContext } from "@/lib/database/sqlExecutionTargetRegistry";
+import { targetDefaultDatabase } from "@/lib/database/sqlExecutionTargetCapabilities";
 import type { DriverProfileWorkspaceScope } from "@/lib/database/driverProfileExtensions";
 import type { MultiDbExecutionTarget, MultiDbResultRunExecution } from "@/types/sqlExecution";
 
@@ -166,8 +168,8 @@ const QUERY_RESULT_EXPORT_UNSUPPORTED_ERROR = "Streaming export is unsupported f
 const BACKGROUND_CLIENT_SESSION_SUFFIXES = ["count", "explain", "export"] as const;
 const CANCEL_QUERY_TIMEOUT_MS = 10_000;
 const CANCEL_ACK_SETTLE_TIMEOUT_MS = 2_000;
-const ORACLE_QUERY_METADATA_PREFLIGHT_BUDGET_MS = 1_000;
-const ORACLE_QUERY_METADATA_PREFLIGHT_TIMEOUT = Symbol("oracle-query-metadata-preflight-timeout");
+const QUERY_METADATA_PREFLIGHT_BUDGET_MS = 1_000;
+const QUERY_METADATA_PREFLIGHT_TIMEOUT = Symbol("query-metadata-preflight-timeout");
 const SAVED_SQL_EDITOR_POSITION_PERSIST_DELAY_MS = 500;
 type CloseConfirmContext = "tab" | "batch" | "app";
 
@@ -788,13 +790,13 @@ async function withCancelQueryTimeout<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-async function waitForOracleQueryMetadataPreflight<T>(promise: Promise<T>): Promise<T | typeof ORACLE_QUERY_METADATA_PREFLIGHT_TIMEOUT> {
+async function waitForQueryMetadataPreflight<T>(promise: Promise<T>): Promise<T | typeof QUERY_METADATA_PREFLIGHT_TIMEOUT> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
-      new Promise<typeof ORACLE_QUERY_METADATA_PREFLIGHT_TIMEOUT>((resolve) => {
-        timer = setTimeout(() => resolve(ORACLE_QUERY_METADATA_PREFLIGHT_TIMEOUT), ORACLE_QUERY_METADATA_PREFLIGHT_BUDGET_MS);
+      new Promise<typeof QUERY_METADATA_PREFLIGHT_TIMEOUT>((resolve) => {
+        timer = setTimeout(() => resolve(QUERY_METADATA_PREFLIGHT_TIMEOUT), QUERY_METADATA_PREFLIGHT_BUDGET_MS);
       }),
     ]);
   } finally {
@@ -3328,6 +3330,36 @@ export const useQueryStore = defineStore("query", () => {
     return registerOpenTab(tab);
   }
 
+  function openDatabaseSearch(connectionId: string, database: string, schema?: string, initialState?: DatabaseSearchTabState) {
+    const existing = tabs.value.find((tab) => tab.mode === "database-search" && tab.connectionId === connectionId && tab.database === database && (tab.schema || "") === (schema || ""));
+    if (existing) {
+      if (initialState) {
+        existing.databaseSearchState = {
+          ...existing.databaseSearchState,
+          ...initialState,
+        };
+      }
+      switchTab(existing.id);
+      return existing.id;
+    }
+
+    const id = uuid();
+    const tab: QueryTab = {
+      id,
+      title: "Database Search",
+      connectionId,
+      database,
+      schema,
+      sql: "",
+      isExecuting: false,
+      isCancelling: false,
+      isExplaining: false,
+      mode: "database-search",
+      databaseSearchState: initialState,
+    };
+    return registerOpenTab(tab);
+  }
+
   function openDatabaseBrowser(connectionId: string) {
     const existing = tabs.value.find((tab) => tab.mode === "databases" && tab.connectionId === connectionId);
     if (existing) {
@@ -5423,6 +5455,12 @@ export const useQueryStore = defineStore("query", () => {
     tab.objectBrowser = { ...tab.objectBrowser, filter };
   }
 
+  function updateDatabaseSearchState(id: string, state: DatabaseSearchTabState) {
+    const tab = tabs.value.find((t) => t.id === id);
+    if (!tab || tab.mode !== "database-search") return;
+    tab.databaseSearchState = state;
+  }
+
   function updateNacosConfigEditorViewport(connectionId: string, namespace: string, viewport: NacosConfigEditorViewport) {
     if (!Number.isFinite(viewport.scrollTop) || !Number.isFinite(viewport.scrollLeft)) return;
     const tab = tabs.value.find((candidate) => candidate.mode === "nacos" && candidate.connectionId === connectionId && (candidate.nacosNamespace || "") === namespace);
@@ -5510,8 +5548,12 @@ export const useQueryStore = defineStore("query", () => {
 
   function openSavedSql(file: SavedSqlFile, options: OpenSavedSqlOptions = {}) {
     const targetMode = options.targetMode ?? useSettingsStore().editorSettings.savedSqlOpenTargetMode;
-    const currentTarget = targetMode === "current" ? currentSavedSqlExecutionTarget() : undefined;
-    const target = resolveSavedSqlExecutionTarget(file, targetMode, currentTarget);
+    const currentTarget = currentSavedSqlExecutionTarget();
+    const resolvedCurrent = targetMode === "current" ? currentTarget : undefined;
+    const effectiveConnectionId = file.connectionId || resolvedCurrent?.connectionId || currentTarget?.connectionId || "";
+    const connection = effectiveConnectionId ? useConnectionStore().getConfig(effectiveConnectionId) : undefined;
+    const fallbackDb = connection ? targetDefaultDatabase(connection) || connection.database : undefined;
+    const target = resolveSavedSqlExecutionTarget(file, targetMode, resolvedCurrent ?? currentTarget, fallbackDb);
     const existing = tabs.value.find((tab) => tab.savedSqlId === file.id);
     if (existing) {
       persistSavedSqlEditorPosition(existing);
@@ -6326,12 +6368,12 @@ export const useQueryStore = defineStore("query", () => {
         void fullMetadataPromise.catch((error) => queryExecutionLog("warn", "metadata:table-prefetch:failed", { traceId, error, elapsed: elapsed() }));
         const wholeSourceAutoCommit = projectsAllColumnsForSource(target.analysis, target.source.key) && tab.autoCommit !== false;
         if (wholeSourceAutoCommit) {
-          const indexes = await waitForOracleQueryMetadataPreflight(loadTableIndexes(target.request));
-          if (indexes === ORACLE_QUERY_METADATA_PREFLIGHT_TIMEOUT) {
+          const indexes = await waitForQueryMetadataPreflight(loadTableIndexes(target.request));
+          if (indexes === QUERY_METADATA_PREFLIGHT_TIMEOUT) {
             queryExecutionLog("info", "metadata:preflight:timeout", {
               traceId,
               table: target.request.tableName,
-              budgetMs: ORACLE_QUERY_METADATA_PREFLIGHT_BUDGET_MS,
+              budgetMs: QUERY_METADATA_PREFLIGHT_BUDGET_MS,
               elapsed: elapsed(),
             });
             return unchanged;
@@ -6341,7 +6383,23 @@ export const useQueryStore = defineStore("query", () => {
         loaded = loadedEditableSourceFromMetadata(target, (await fullMetadataPromise).metadata);
       }
 
-      loaded ??= await loadEditableQuerySource(tab, analysis, source, conn, databaseType, executionDatabase, traceId, elapsed);
+      if (!loaded) {
+        // 可编辑性所需的源表元数据加载，对所有数据库统一施加预算上限：慢元数据
+        // （如 SQLServer 只读账号、宽表、跨 schema 同义词）超时则先显示查询结果、
+        // 放弃本次结果可编辑；loadEditableQuerySource 仍在后台完成加载并写入缓存，
+        // 下次打开同一查询即可编辑（原先仅 Oracle/Xugu 有预算，其它库会被慢元数据阻塞）。
+        const loadedOrTimeout = await waitForQueryMetadataPreflight(loadEditableQuerySource(tab, analysis, source, conn, databaseType, executionDatabase, traceId, elapsed));
+        if (loadedOrTimeout === QUERY_METADATA_PREFLIGHT_TIMEOUT) {
+          queryExecutionLog("info", "metadata:preflight:timeout", {
+            traceId,
+            table: target.request.tableName,
+            budgetMs: QUERY_METADATA_PREFLIGHT_BUDGET_MS,
+            elapsed: elapsed(),
+          });
+          return unchanged;
+        }
+        loaded = loadedOrTimeout;
+      }
       if (loaded.tableMeta.columns.length === 0) return unchanged;
       if (loaded.tableMeta.tableType?.toUpperCase().includes("VIEW")) return unchanged;
       const columnPrimaryKeys = loaded.tableMeta.columns.filter((column) => column.is_primary_key).map((column) => column.name);
@@ -7772,6 +7830,10 @@ export const useQueryStore = defineStore("query", () => {
           firstPageUsesActualSql: hiddenPrimaryKeys.length > 0,
         });
         const canPaginateSqlServerUseScript = !!sqlServerUseScript && !!plan.pageSql && typeof plan.pageLimit === "number" && typeof plan.pageOffset === "number";
+        if (plan.paginationError) throw new Error(plan.paginationError);
+        if (effectiveDbType === "oceanbase-oracle" && tab.autoCommit === false && plan.useAgentResultSession && !plan.pageSql && pagination.offset > 0 && !pagination.sessionId) {
+          throw new Error("This query requires an existing result session for offset pagination in a manual transaction");
+        }
         if (sqlServerUseScript && !canPaginateSqlServerUseScript) {
           sqlToExecute = sqlBeforePagination;
         } else {
@@ -9690,6 +9752,7 @@ export const useQueryStore = defineStore("query", () => {
     updateObjectBrowserViewport,
     updateObjectBrowserSearch,
     updateObjectBrowserFilter,
+    updateDatabaseSearchState,
     updateNacosConfigEditorViewport,
     setAutoCommit,
     markManualTransactionDirty,
@@ -9698,6 +9761,7 @@ export const useQueryStore = defineStore("query", () => {
     ensureManualTransactionSession,
     renameTab,
     openDatabaseBrowser,
+    openDatabaseSearch,
     openDriverProfileWorkspace,
     openObjectBrowser,
     openMongoGridFs,

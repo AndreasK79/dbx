@@ -117,7 +117,7 @@ import { buildAddForeignKeySql } from "@/lib/table/foreignKeySql";
 import { buildAddConstraintSql } from "@/lib/table/constraintSql";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind } from "@/lib/dataGrid/cellValueGeneration";
-import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue, mongoDocumentRelaxedExtendedJson } from "@/lib/mongo/mongoDocumentValues";
+import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue, mongoDocumentGridNumericValue, mongoDocumentRelaxedExtendedJson } from "@/lib/mongo/mongoDocumentValues";
 import { compactHeaderColumnType, formatMetadataColumnTypeLabel, isNumericColumnType, resolveDataGridTypeVisualKind, resolveHeaderColumnType, resolveResultColumnType } from "@/lib/dataGrid/dataGridColumnType";
 import { dataGridCellTextClass, dataGridTypeVisualClass } from "@/lib/dataGrid/dataGridCellTextVisual";
 import { DATA_GRID_TYPE_COLOR_KEYS, resolveActiveDataGridTypeColors } from "@/lib/dataGrid/dataGridTypeColorScheme";
@@ -251,7 +251,17 @@ import {
   type DataGridScrollPosition,
 } from "@/lib/dataGrid/dataGridInfiniteScroll";
 import { resolveDataGridWheelScroll } from "@/lib/dataGrid/dataGridWheel";
-import { CANVAS_DATA_GRID_ROW_HEIGHT, MAX_CANVAS_DATA_GRID_PIXEL_RATIO, canvasDataGridActionOverlayWidth, canvasDataGridActionReservedWidth, dataGridSearchMatchKey, drawCanvasDataGrid, resolveCanvasCellTextLayout, type CanvasDevicePixelSize } from "@/lib/dataGrid/canvasDataGridRenderer";
+import {
+  CANVAS_DATA_GRID_ROW_HEIGHT,
+  MAX_CANVAS_DATA_GRID_PIXEL_RATIO,
+  canvasDataGridActionOverlayWidth,
+  canvasDataGridActionReservedWidth,
+  dataGridSearchMatchKey,
+  drawCanvasDataGrid,
+  resolveCanvasBackingStoreMetrics,
+  resolveCanvasCellTextLayout,
+  type CanvasDevicePixelSize,
+} from "@/lib/dataGrid/canvasDataGridRenderer";
 import { resolveDataGridRowNumberLabel } from "@/lib/dataGrid/dataGridRowNumber";
 import { resolveCrosshairTarget, type CrosshairTarget } from "@/lib/dataGrid/crosshairHighlight";
 import { DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG, dataGridActiveRowBackground } from "@/lib/dataGrid/dataGridPaintTheme";
@@ -284,7 +294,7 @@ import { allNullColumnIndexes } from "@/lib/dataGrid/dataGridColumnVisibility";
 import { buildDataGridColumnLookupItems, dataGridColumnCommentFor, filterDataGridColumnLookupItems } from "@/lib/dataGrid/dataGridColumnLookup";
 import { uniqueDataGridColumnOrderKeys } from "@/lib/dataGrid/dataGridColumnOrder";
 import { dataGridColumnLayoutScopeKey, TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, tableDataGridColumnOrderScopeKey } from "@/lib/dataGrid/dataGridColumnLayoutStorage";
-import { createPendingSelectionSummary, formatSelectionAggregate, formatSelectionAverage, summarizeSelection } from "@/lib/dataGrid/gridSelection";
+import { createPendingSelectionSummary, formatSelectionAggregate, formatSelectionAverage, summarizeSelection, type SelectionSummaryOptions } from "@/lib/dataGrid/gridSelection";
 import { captureDataGridSelection, restoreDataGridSelection, type CaptureDataGridSelectionOptions, type PersistedDataGridSelection } from "@/lib/dataGrid/dataGridSelectionPersistence";
 import { buildDataGridViewProbe, clampDataGridViewSelection, DATA_GRID_VIEW_SNAPSHOT_RESTORE, consumeDataGridViewSnapshot, peekDataGridViewSnapshot, saveDataGridViewSnapshot, shouldNotifyOverBudgetSelection, type DataGridViewSelectionSnapshot } from "@/lib/dataGrid/dataGridViewStateCache";
 import { dataGridFrameCoversRow, dataGridSelectionEdgeMask, dataGridSelectionFrameKindAtCell, dataGridSelectionUsesOuterFrame, resolveDataGridSelectionFrames } from "@/lib/dataGrid/dataGridSelectionFrames";
@@ -577,6 +587,7 @@ interface DataGridProps {
   /** Column names captured with a document-store local-filter snapshot. */
   localColumnFilterColumns?: string[];
   exportSql?: string;
+  pageSql?: string;
   onExecuteSql?: (sql: string) => Promise<void>;
   fullExportResult?: (onProgress?: (info: { rowsExported: number; totalRows: number | null }) => void) => Promise<QueryResult | undefined>;
   queryResultExportRequest?: (options: {
@@ -5931,13 +5942,18 @@ const multiRowCount = computed(() => {
   return 1;
 });
 
+// The MongoDB collection grid keeps int32/int64/decimal128 scalars as typed text
+// (`NumberLong("-7")`, `{"$numberDecimal":"-12.5"}`). Resolving those here keeps
+// SUM/AVG over a whole column equal to every number in that column.
+const selectionSummaryOptions = computed<SelectionSummaryOptions>(() => (usesMongoDocumentGridValues.value ? { numericValue: mongoDocumentGridNumericValue } : {}));
+
 // 框选拖拽中不物化 selectedCells / 不做数值汇总（大选区下这是 DOM 卡顿主因）
 const selectionSummary = computed(() => {
   if (!hasCellSelection.value) return null;
   if (isSelectingCells.value) {
     return createPendingSelectionSummary(selectedCellCount.value, multiRowCount.value);
   }
-  return summarizeSelection(selectedCells.value);
+  return summarizeSelection(selectedCells.value, selectionSummaryOptions.value);
 });
 const selectionSummarySumText = computed(() => {
   if (isSelectingCells.value) return "…";
@@ -7287,6 +7303,9 @@ function attachCanvasPixelRatioWatcher() {
 function attachCanvasResizeObserver() {
   if (!dataGridIsActive) return;
   if (!useCanvasGridRows.value) return;
+  // 画布（重）挂载后 canvas 元素是全新的，重置签名强制下一帧走翻转，
+  // 甩掉空/错误/正常分支切换时旧元素可能滞留的幽灵层。
+  lastPresentedCanvasBackingKey = null;
   attachCanvasPixelRatioWatcher();
   canvasRuntime.observeViewport();
 }
@@ -7818,17 +7837,38 @@ const canvasRightAlignedActionCell = computed(() => {
   };
 });
 
+// 幽灵合成层只在后备存储（canvas.width/height）被重建时滞留，而后备存储仅随像素
+// 尺寸/DPR 变化而重建（见 canvasDataGridRenderer 对 pixelWidth/pixelHeight 的比较）。
+// 因此只有尺寸变化这一帧才画进隐藏 canvas 再翻转（换掉显示元素甩掉幽灵层）；纯滚动、
+// hover、选区、搜索、编辑等尺寸不变的重绘直接就地画在可见 canvas 上、不翻转，避免每帧
+// 销毁+重建两个合成层造成的卡顿（issue #10132 / tauri-apps/wry#1848）。
+let lastPresentedCanvasBackingKey: string | null = null;
+
 function drawCanvasGrid() {
-  const canvas = inactiveCanvasSurface();
   const scroller = canvasScrollerElement();
-  if (!canvas || !scroller || !useCanvasGridRows.value) return;
+  if (!scroller || !useCanvasGridRows.value) return;
+
+  const width = Math.max(1, canvasSurfaceWidth.value || scroller.clientWidth);
+  const height = Math.max(1, canvasViewportHeight.value || scroller.clientHeight);
+  const backingMetrics = resolveCanvasBackingStoreMetrics({
+    width,
+    height,
+    // 与渲染器 drawCanvasDataGrid 内部 fallbackRatio=Math.max(1, pixelRatio) 对齐，
+    // 保证签名算出的后备存储尺寸与渲染器实际重建判定逐位一致，不受上游 ratio 口径变化影响。
+    pixelRatio: Math.max(1, canvasBackingPixelRatio.value),
+    devicePixelSize: canvasMeasuredDevicePixelSize.value,
+  });
+  const backingKey = `${backingMetrics.pixelWidth}x${backingMetrics.pixelHeight}`;
+  const needsSurfaceSwap = backingKey !== lastPresentedCanvasBackingKey;
+  const canvas = needsSurfaceSwap ? inactiveCanvasSurface() : activeCanvasSurface();
+  if (!canvas) return;
 
   const drawnResult = props.result;
   const drawn = drawCanvasDataGrid({
     canvas,
     scroller,
-    width: Math.max(1, canvasSurfaceWidth.value || scroller.clientWidth),
-    height: Math.max(1, canvasViewportHeight.value || scroller.clientHeight),
+    width,
+    height,
     pixelRatio: canvasBackingPixelRatio.value,
     devicePixelSize: canvasMeasuredDevicePixelSize.value,
     isDark: isDark.value,
@@ -7869,7 +7909,8 @@ function drawCanvasGrid() {
     rowNumberMode: dataGridRowNumberMode.value,
   });
   if (!drawn) return;
-  flipCanvasSurface();
+  if (needsSurfaceSwap) flipCanvasSurface();
+  lastPresentedCanvasBackingKey = backingKey;
   completeResultCanvasDraw(drawnResult);
 }
 
@@ -8087,7 +8128,7 @@ function sqlWithDisplayDatabaseName(sql: string): string {
 
 async function syncUserFacingSql() {
   const generation = ++userFacingSqlGeneration;
-  const executionSql = props.sql?.trim() ?? "";
+  const executionSql = (props.pageSql || props.sql)?.trim() ?? "";
   const includeDatabaseName = settingsStore.editorSettings.generateSqlIncludeDatabaseName;
   const shouldRebuildSql = executionSql.includes("__DBX_LARGE_VALUE_BYTES_") || includeDatabaseName;
   if (props.context !== "table-data" || !shouldRebuildSql || !props.tableMeta?.tableName) {
@@ -8129,7 +8170,7 @@ async function syncUserFacingSql() {
 }
 
 watch(
-  () => [props.sql, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, currentWhereInput(), effectiveOrderBy(), settingsStore.editorSettings.generateSqlIncludeDatabaseName],
+  () => [props.sql, props.pageSql, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, currentWhereInput(), effectiveOrderBy(), settingsStore.editorSettings.generateSqlIncludeDatabaseName],
   () => void syncUserFacingSql(),
   { immediate: true },
 );
@@ -8178,6 +8219,7 @@ const {
   extractorOptions: computed(() => settingsStore.editorSettings.dataGridExtractorOptions),
   sql: computed(() => props.sql),
   exportSql: computed(() => props.exportSql),
+  pageSql: computed(() => props.pageSql),
   tableMeta: computed(() => (props.tableMeta ? { ...props.tableMeta } : undefined)),
   includeDatabaseName: computed(() => settingsStore.editorSettings.generateSqlIncludeDatabaseName),
   copyInsertTargetLabel: computed(() => props.tableMeta?.tableName ?? props.customSaveHandler?.targetLabel),

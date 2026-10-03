@@ -85,6 +85,7 @@ export interface UseDataGridExportOptions {
   extractorOptions?: ComputedRef<DataGridExtractorOptions>;
   sql: ComputedRef<string | undefined>;
   exportSql?: ComputedRef<string | undefined>;
+  pageSql?: ComputedRef<string | undefined>;
   tableMeta: ComputedRef<DataGridTableMeta | undefined>;
   /** Editor setting "Include database name in generated SQL" — passed through to SQL extractors. */
   includeDatabaseName?: ComputedRef<boolean>;
@@ -191,6 +192,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     extractorOptions: extractorOptionsOption,
     sql,
     exportSql: resultExportSql,
+    pageSql: resultPageSql,
     tableMeta,
     copyInsertTargetLabel,
     sourceColumns,
@@ -522,8 +524,13 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     return resultExportSql?.value || sql.value;
   }
 
-  async function writeXlsxResult(outputPath: string, result: { columns: string[]; columnTypes: string[]; columnComments?: (string | null)[]; rows: CellValue[][] }, includeSqlSheet: boolean, autoFilter: boolean) {
-    const sqlWorksheet = includeSqlSheet ? buildXlsxSqlWorksheet([{ sql: currentExportSql() || "" }]) : undefined;
+  function currentPageExportSql(): string | undefined {
+    return resultPageSql?.value || currentExportSql();
+  }
+
+  async function writeXlsxResult(outputPath: string, result: { columns: string[]; columnTypes: string[]; columnComments?: (string | null)[]; rows: CellValue[][] }, includeSqlSheet: boolean, autoFilter: boolean, sqlOverride?: string) {
+    const effectiveSql = sqlOverride ?? currentExportSql();
+    const sqlWorksheet = includeSqlSheet ? buildXlsxSqlWorksheet([{ sql: effectiveSql || "" }]) : undefined;
     const rightAlign = useSettingsStore().editorSettings.numericColumnRightAlign;
     // The rows are already rendered with the global export pattern, but the
     // workbook still needs the pattern itself so its numFmt matches; without it
@@ -545,7 +552,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           numericColumnRightAlign: rightAlign,
           autoFilter,
         },
-        { ...sqlWorksheet, autoFilter },
+        { ...sqlWorksheet, autoFilter: false },
       ],
       autoFilter,
       dateTimeFormat,
@@ -1257,7 +1264,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           outputPath = path as string;
         }
         const result = await resultToExport(undefined, undefined, false, true, exportOptions.headerMode);
-        await writeXlsxResult(outputPath, result, includeSqlSheet, exportOptions.autoFilter);
+        await writeXlsxResult(outputPath, result, includeSqlSheet, exportOptions.autoFilter, currentPageExportSql());
         toast(t("grid.exported"));
       } catch (e: any) {
         toast(t("grid.exportFailed", { message: translateBackendError(t, e) }), 5000);
@@ -1305,7 +1312,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           autoFilter: exportOptions.autoFilter,
         }));
         const sqlWorksheet = includeSqlSheet ? buildXlsxSqlWorksheet(sheets.map((sheet) => ({ resultName: sheet.sheetName, sql: sheet.sql || sheet.result.sourceStatement || "" }))) : undefined;
-        await api.exportQueryResultsXlsx(outputPath, sqlWorksheet ? [...worksheets, { ...sqlWorksheet, autoFilter: exportOptions.autoFilter }] : worksheets, exportOptions.autoFilter, exportPattern || undefined);
+        await api.exportQueryResultsXlsx(outputPath, sqlWorksheet ? [...worksheets, { ...sqlWorksheet, autoFilter: false }] : worksheets, exportOptions.autoFilter, exportPattern || undefined);
         toast(t("grid.exported"));
       } catch (e: any) {
         toast(t("grid.exportFailed", { message: translateBackendError(t, e) }), 5000);

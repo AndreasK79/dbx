@@ -80,6 +80,7 @@ export type ShortcutActionId =
   | "copySidebarSelection"
   | "pasteSidebarSelection"
   | "editSidebarConnection"
+  | "disconnectSidebarConnection"
   | "openDataInNewTab"
   | "viewTableDdl"
   | "sendSelectionToAi"
@@ -686,6 +687,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutEditSidebarConnection",
     scope: "sidebar",
     defaultShortcut: "Mod+E",
+  },
+  {
+    id: "disconnectSidebarConnection",
+    labelKey: "settings.shortcutDisconnectSidebarConnection",
+    scope: "sidebar",
+    defaultShortcut: "Shift+Mod+E",
   },
   {
     id: "openDataInNewTab",

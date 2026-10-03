@@ -46,7 +46,6 @@ const emit = defineEmits<
   ContentAreaSurfaceEmits & {
     "focus-group": [groupId: string];
     "activate-tab": [tabId: string];
-    "locate-tab": [tab: QueryTab];
     "toggle-zen-mode": [];
     "start-resize": [event: PointerEvent];
     "toggle-collapse": [];

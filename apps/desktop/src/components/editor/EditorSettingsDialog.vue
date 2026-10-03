@@ -846,6 +846,7 @@ const editSidebarSearchOpenedDatabasesOnly = ref(settingsStore.editorSettings.si
 const editAutoSelectActiveSidebarNode = ref(settingsStore.editorSettings.autoSelectActiveSidebarNode);
 const editSidebarBrowseObjectsOnDatabaseActivation = ref(settingsStore.editorSettings.sidebarBrowseObjectsOnDatabaseActivation);
 const editOpenTabsRestoreMode = ref<OpenTabsRestoreMode>(settingsStore.editorSettings.openTabsRestoreMode);
+const editAutoReloadRestoredDataTabsOnOpen = ref(settingsStore.editorSettings.autoReloadRestoredDataTabsOnOpen);
 const editDisconnectTabHandlingMode = ref<DisconnectTabHandlingMode>(settingsStore.editorSettings.disconnectTabHandlingMode);
 const editDeleteConnectionTabHandlingMode = ref<DeleteConnectionTabHandlingMode>(settingsStore.editorSettings.deleteConnectionTabHandlingMode);
 const editRememberConnectionDatabaseOnDelete = ref(settingsStore.editorSettings.rememberConnectionDatabaseOnDelete);
@@ -1194,6 +1195,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     autoSelectActiveSidebarNode: editAutoSelectActiveSidebarNode.value,
     sidebarBrowseObjectsOnDatabaseActivation: editSidebarBrowseObjectsOnDatabaseActivation.value,
     openTabsRestoreMode: editOpenTabsRestoreMode.value,
+    autoReloadRestoredDataTabsOnOpen: editAutoReloadRestoredDataTabsOnOpen.value,
     disconnectTabHandlingMode: editDisconnectTabHandlingMode.value,
     deleteConnectionTabHandlingMode: editDeleteConnectionTabHandlingMode.value,
     rememberConnectionDatabaseOnDelete: editRememberConnectionDatabaseOnDelete.value,
@@ -2000,6 +2002,7 @@ function syncEditorSettingsDraftFromStore() {
   editAutoSelectActiveSidebarNode.value = settingsStore.editorSettings.autoSelectActiveSidebarNode;
   editSidebarBrowseObjectsOnDatabaseActivation.value = settingsStore.editorSettings.sidebarBrowseObjectsOnDatabaseActivation;
   editOpenTabsRestoreMode.value = settingsStore.editorSettings.openTabsRestoreMode;
+  editAutoReloadRestoredDataTabsOnOpen.value = settingsStore.editorSettings.autoReloadRestoredDataTabsOnOpen;
   editDisconnectTabHandlingMode.value = settingsStore.editorSettings.disconnectTabHandlingMode;
   editDeleteConnectionTabHandlingMode.value = settingsStore.editorSettings.deleteConnectionTabHandlingMode;
   editRememberConnectionDatabaseOnDelete.value = settingsStore.editorSettings.rememberConnectionDatabaseOnDelete;
@@ -2141,6 +2144,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   autoSelectActiveSidebarNode: editAutoSelectActiveSidebarNode,
   sidebarBrowseObjectsOnDatabaseActivation: editSidebarBrowseObjectsOnDatabaseActivation,
   openTabsRestoreMode: editOpenTabsRestoreMode,
+  autoReloadRestoredDataTabsOnOpen: editAutoReloadRestoredDataTabsOnOpen,
   disconnectTabHandlingMode: editDisconnectTabHandlingMode,
   deleteConnectionTabHandlingMode: editDeleteConnectionTabHandlingMode,
   rememberConnectionDatabaseOnDelete: editRememberConnectionDatabaseOnDelete,
@@ -2648,6 +2652,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editAutoSelectActiveSidebarNode.value = DEFAULT_EDITOR_SETTINGS.autoSelectActiveSidebarNode;
     editSidebarBrowseObjectsOnDatabaseActivation.value = DEFAULT_EDITOR_SETTINGS.sidebarBrowseObjectsOnDatabaseActivation;
     editOpenTabsRestoreMode.value = DEFAULT_EDITOR_SETTINGS.openTabsRestoreMode;
+    editAutoReloadRestoredDataTabsOnOpen.value = DEFAULT_EDITOR_SETTINGS.autoReloadRestoredDataTabsOnOpen;
     editDisconnectTabHandlingMode.value = DEFAULT_EDITOR_SETTINGS.disconnectTabHandlingMode;
     editDeleteConnectionTabHandlingMode.value = DEFAULT_EDITOR_SETTINGS.deleteConnectionTabHandlingMode;
     editRememberConnectionDatabaseOnDelete.value = DEFAULT_EDITOR_SETTINGS.rememberConnectionDatabaseOnDelete;
@@ -2830,6 +2835,7 @@ function resetAllDefaults() {
   editAutoSelectActiveSidebarNode.value = DEFAULT_EDITOR_SETTINGS.autoSelectActiveSidebarNode;
   editSidebarBrowseObjectsOnDatabaseActivation.value = DEFAULT_EDITOR_SETTINGS.sidebarBrowseObjectsOnDatabaseActivation;
   editOpenTabsRestoreMode.value = DEFAULT_EDITOR_SETTINGS.openTabsRestoreMode;
+  editAutoReloadRestoredDataTabsOnOpen.value = DEFAULT_EDITOR_SETTINGS.autoReloadRestoredDataTabsOnOpen;
   editDisconnectTabHandlingMode.value = DEFAULT_EDITOR_SETTINGS.disconnectTabHandlingMode;
   editDeleteConnectionTabHandlingMode.value = DEFAULT_EDITOR_SETTINGS.deleteConnectionTabHandlingMode;
   editRememberConnectionDatabaseOnDelete.value = DEFAULT_EDITOR_SETTINGS.rememberConnectionDatabaseOnDelete;
@@ -8083,6 +8089,15 @@ onUnmounted(() => {
                 <p class="text-xs text-muted-foreground">
                   {{ t("settings.openTabsRestoreModeHint") }}
                 </p>
+              </div>
+              <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div class="flex items-center gap-2">
+                  <Label for="auto-reload-restored-data-tabs">{{ t("settings.autoReloadRestoredDataTabsOnOpen") }}</Label>
+                  <HelpTooltip :label="t('settings.autoReloadRestoredDataTabsOnOpen')">
+                    {{ t("settings.autoReloadRestoredDataTabsOnOpenDescription") }}
+                  </HelpTooltip>
+                </div>
+                <Switch id="auto-reload-restored-data-tabs" v-model="editAutoReloadRestoredDataTabsOnOpen" />
               </div>
               <div class="settings-item space-y-2 rounded-md border bg-muted/20 px-3 py-2">
                 <div class="flex items-center gap-2">
