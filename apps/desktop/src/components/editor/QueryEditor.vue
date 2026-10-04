@@ -76,6 +76,7 @@ import { restoreSqlFromSourcePaste } from "@/lib/sql/sqlSourcePaste";
 import { enabledSqlParameterSyntaxes, resolveSqlVariableSyntaxToggles } from "@/lib/sql/sqlVariableSyntax";
 
 import { createQueryEditorExecutionViewportOwnership, isQueryEditorPositionVisible } from "@/lib/editor/queryEditorExecutionViewport";
+import { mapQueryEditorFormatSelection } from "@/lib/editor/queryEditorFormatSelection";
 import { joinQueryEditorLines } from "@/lib/editor/queryEditorJoinLines";
 
 import { resolveSqlSingleQuoteKeyAction } from "@/lib/sql/sqlQuoteCaret";
@@ -103,6 +104,7 @@ import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignm
 import { keepGuttersAttachedDuringSync } from "@/lib/editor/codemirrorGutterSync";
 import { searchKeymapWithoutShortcutConflicts } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
+import { createQueryEditorFoldShortcutBindings, foldKeymapWithoutAllBindings } from "@/lib/editor/queryEditorFoldKeymap";
 import { createShowWhitespaceExtension } from "@/lib/editor/codemirrorShowWhitespace";
 
 import { clampEditorFontSize, createEditorWheelZoomGestureGuard, createEditorZoomCommitScheduler, fontSizeFromGestureScale, fontSizeFromWheelDelta } from "@/lib/editor/editorZoom";
@@ -979,6 +981,12 @@ function executeInNewResultTabFromContextMenu() {
   focusEditor();
 }
 
+function explainFromContextMenu() {
+  if (!canExecuteContextSql.value) return;
+  emit("explain");
+  focusEditor();
+}
+
 function exportQueryFromContextMenu(format: "csv" | "xlsx" | "txt") {
   const sql = executableSql.value;
   if (!sql.trim()) return;
@@ -1204,6 +1212,7 @@ function selectSqlLineFromGutter(currentView: EditorViewType, line: { from: numb
 const contextMenuActions: QueryEditorContextMenuActions = {
   executeFromContextMenu,
   executeInNewResultTabFromContextMenu,
+  explainFromContextMenu,
   requestPreviewChanges,
   exportQueryFromContextMenu,
   toggleCommentFromContextMenu,
@@ -1229,6 +1238,15 @@ const contextMenuActions: QueryEditorContextMenuActions = {
   sendSelectionToAi: () => {
     if (selectedSql.value.trim()) emit("sendSelectionToAi", selectedSql.value);
   },
+  toggleFoldFromContextMenu: () => {
+    toggleFold();
+  },
+  foldAllFromContextMenu: () => {
+    foldAll();
+  },
+  unfoldAllFromContextMenu: () => {
+    unfoldAll();
+  },
 };
 function getContextMenuState(): QueryEditorContextMenuState {
   const target = selectStarExpansionTarget.value;
@@ -1242,6 +1260,8 @@ function getContextMenuState(): QueryEditorContextMenuState {
     contextObjectTarget: contextObjectTarget.value,
     shortcuts: settingsStore.editorSettings.shortcuts,
     expandSelectStar: target ? () => void expandSelectStar(target) : undefined,
+    canExplain: props.canExplain ?? (canExecuteContextSql.value && !props.readOnly && !props.hideExecutionControls),
+    hasContent: (view.value?.state.doc.length ?? 0) > 0,
   };
 }
 
@@ -1392,6 +1412,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.uppercaseSelection, () => convertSelectedSqlCase("upper")),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.lowercaseSelection, () => convertSelectedSqlCase("lower")),
+        ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.toggleCaseSelection, () => convertSelectedSqlCase("toggle")),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.convertNamingStyle, () => convertSelectedNamingStyle()),
         ...binding(shortcuts.toggleLineComment, (view) => codeMirrorRuntime.codeMirrorToggleLineComment?.(view) ?? false),
         ...binding(shortcuts.toggleBlockComment, (view) => {
@@ -1399,6 +1420,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
           return codeMirrorRuntime.codeMirrorToggleBlockComment?.(view) ?? false;
         }),
         ...binding(shortcuts.toggleFold, (view) => codeMirrorRuntime.codeMirrorToggleFold?.(view) ?? false),
+        ...createQueryEditorFoldShortcutBindings(shortcuts, foldAllForView, (view) => codeMirrorRuntime.codeMirrorUnfoldAll?.(view) ?? false),
         ...binding(shortcuts.exPasteSqlInCondition, () => {
           if (!supportsSqlInListPaste(props.databaseType)) return false;
           void pasteClipboardAsSqlInCondition();
@@ -1675,9 +1697,11 @@ async function formatCurrentSql() {
   const to = formatsSelection ? selection.to : originalState.doc.length;
   const source = originalState.sliceDoc(from, to);
   if (!source.trim()) return;
+  const formatDialect = props.formatDialect ?? props.dialect ?? "generic";
 
   try {
     let formatted: string;
+    let formattedAsSql = false;
     if (props.databaseType === "mongodb") {
       formatted = formatMongoShellText(source, settingsStore.editorSettings.sqlFormatter);
     } else {
@@ -1700,7 +1724,8 @@ async function formatCurrentSql() {
           toast(t("toolbar.formatAutoDetectFailed"), 3000);
           return;
         } else {
-          formatted = await formatSqlForEditing(source, props.formatDialect ?? props.dialect ?? "generic", settingsStore.editorSettings.sqlFormatter);
+          formattedAsSql = true;
+          formatted = await formatSqlForEditing(source, formatDialect, settingsStore.editorSettings.sqlFormatter);
         }
       }
     }
@@ -1708,9 +1733,13 @@ async function formatCurrentSql() {
       return;
     }
     if (formatted === source) return;
+    // The semantic mapper's contract is SQL-only. Mongo shell, Elasticsearch,
+    // JSON, and XML keep the replacement selection behavior used before the
+    // SQL caret-preservation fix.
+    const replacementSelection = formattedAsSql ? mapQueryEditorFormatSelection(source, formatted, { anchor: selection.anchor - from, head: selection.head - from }, formatDialect) : formatsSelection ? { anchor: 0, head: formatted.length } : { anchor: formatted.length, head: formatted.length };
     currentView.dispatch({
       changes: { from, to, insert: formatted },
-      selection: formatsSelection ? { anchor: from, head: from + formatted.length } : { anchor: from + formatted.length },
+      selection: { anchor: from + replacementSelection.anchor, head: from + replacementSelection.head },
     });
   } catch (e: any) {
     emit("formatError", String(e?.message || e));
@@ -1809,7 +1838,7 @@ const completion = useQueryEditorCompletion({
 });
 const { triggerSqlCompletion, shouldTriggerSqlCompletionForPosition, scheduleSqlCompletionStart, consumeSqlCompletionAutoStartSuppression, scheduleDeferredCompletionTrigger, clearDeferredCompletionTrigger } = completion;
 
-const { editorIndentUnit, handleTab, handleEnter, acceptCompletionOrNextSnippetField, acceptSqlServerCompletionOnSpace, clearPendingCompletionEnter, clearPendingCompletionTab } = useQueryEditorCompletionKeys({
+const { editorIndentUnit, handleTab, handleEnter, acceptCompletionOrNextSnippetField, handleSpace, clearPendingCompletionEnter, clearPendingCompletionTab } = useQueryEditorCompletionKeys({
   props,
   settingsStore,
   runtime: codeMirrorRuntime,
@@ -1994,8 +2023,8 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
         initializedRuntime.vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
         initializedRuntime.defaultKeymapComp.of(defaultKeymapExtension()),
-        keymap.of([...searchKeymapWithoutShortcutConflicts(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
-        Prec.highest(keymap.of([{ key: "Space", run: acceptSqlServerCompletionOnSpace }])),
+        keymap.of([...searchKeymapWithoutShortcutConflicts(searchKeymap), ...historyKeymap, ...foldKeymapWithoutAllBindings(foldKeymap, initializedRuntime.codeMirrorFoldAll, initializedRuntime.codeMirrorUnfoldAll), ...completionKeymap]),
+        Prec.highest(keymap.of([{ key: "Space", run: handleSpace }])),
         initializedRuntime.sqlLanguageComp.of(sqlExtensions.buildSqlLanguageExtension()),
         initializedRuntime.sqlSemanticHighlightComp.of(sqlExtensions.buildSqlSemanticHighlightExtension()),
         createSqlUnknownObjectHighlights({
@@ -2754,6 +2783,33 @@ function cancelGutterExecutionViewport(requestId: number) {
   return executionViewportOwnership.cancelPendingRequest(requestId);
 }
 
+function toggleFold(): boolean {
+  if (!view.value) return false;
+  return codeMirrorRuntime.codeMirrorToggleFold?.(view.value) ?? false;
+}
+
+function foldAllForView(currentView: EditorViewType): boolean {
+  const command = codeMirrorRuntime.codeMirrorFoldAll;
+  if (!command) return false;
+  if (!shouldUseQueryEditorLargeDocumentModeForSize(currentView.state.doc.length, currentView.state.doc.lines)) return command(currentView);
+  const expectedDoc = currentView.state.doc;
+  void statementBoundaries.ensureStatementCache(currentView.state).then((result) => {
+    if (!result || view.value !== currentView || currentView.state.doc !== expectedDoc) return;
+    command(currentView);
+  });
+  return true;
+}
+
+function foldAll(): boolean {
+  if (!view.value) return false;
+  return foldAllForView(view.value);
+}
+
+function unfoldAll(): boolean {
+  if (!view.value) return false;
+  return codeMirrorRuntime.codeMirrorUnfoldAll?.(view.value) ?? false;
+}
+
 function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: EditorViewType | null = view.value): boolean {
   return (currentView ? isEditorComposing(currentView) : false) || (event ? postCompositionKeyGuard.blocks(event) : false);
 }
@@ -2776,6 +2832,9 @@ defineExpose({
   focusErrorPosition,
   previewStatementRange,
   refreshCompletionCache,
+  toggleFold,
+  foldAll,
+  unfoldAll,
 });
 </script>
 

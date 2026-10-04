@@ -1810,6 +1810,7 @@ export const useConnectionStore = defineStore("connection", () => {
       return !!node.connectionId && !!node.schema && isDefaultSchema(node.connectionId, node.schema);
     }
     if (node.type !== "database" && node.type !== "redis-db" && node.type !== "mongo-db") return false;
+    if (!settingsStore.editorSettings.sidebarPinDefaultDatabase) return false;
     return !!node.connectionId && typeof node.database === "string" && isDefaultDatabase(node.connectionId, node.database);
   }
 
@@ -1820,6 +1821,14 @@ export const useConnectionStore = defineStore("connection", () => {
   function syncPinnedTreeState(nodes: TreeNode[]) {
     syncPinnedTreeNodeStateInPlace(nodes, pinnedTreeNodeIds.value, pinnedTreeNodeOrder.value, isFixedPriorityTreeNode);
   }
+
+  watch(
+    () => settingsStore.editorSettings.sidebarPinDefaultDatabase,
+    () => {
+      syncPinnedTreeState(treeNodes.value);
+    },
+    { flush: "post" },
+  );
 
   function isConnectionUtilityNode(node: TreeNode): boolean {
     // dameng-users / dameng-roles must be here too: they are synthesized admin
@@ -5060,18 +5069,22 @@ export const useConnectionStore = defineStore("connection", () => {
    * sidebar" guidance instead of triggering an interactive prompt from a
    * background re-init.
    */
-  async function repushPluginConnection(connectionId: string): Promise<void> {
+  async function repushPluginConnection(connectionId: string, options: { ignoreRecentHealthCheck?: boolean } = {}): Promise<boolean> {
     const config = getConfig(connectionId);
-    if (!config || config.db_type !== "plugin" || !connectedIds.value.has(connectionId)) return;
+    if (!config || config.db_type !== "plugin" || !connectedIds.value.has(connectionId)) return false;
     // A successful connect/health probe within the TTL means the sidebar open
     // (or a fresh restore connect) pushed the config moments ago and the
     // sidecar registry cannot plausibly be empty yet — skipping here keeps the
     // first open from paying a redundant disconnect+connect cycle on the
     // plugin's first `ready`. The 2s in-memory TTL dies with the frontend, so
-    // every realistic reload path still re-pushes.
-    if (hasRecentConnectionHealthCheck(connectionId)) return;
-    if (!(await canReconnectPluginConnectionWithoutPrompt(config))) return;
+    // every realistic reload path still re-pushes. The restore path overrides
+    // the skip: the SPA's boot restore can mark a connection healthy without
+    // ever delivering credentials to the sidecar, so trusting the TTL there
+    // strands the plugin with an empty registry (dbx-plugin-ssh#144).
+    if (!options.ignoreRecentHealthCheck && hasRecentConnectionHealthCheck(connectionId)) return false;
+    if (!(await canReconnectPluginConnectionWithoutPrompt(config))) return false;
     await ensureConnected(connectionId, { activate: false, forceReconnect: true, allowPasswordPrompt: false });
+    return true;
   }
 
   /**
@@ -10299,6 +10312,7 @@ export const useConnectionStore = defineStore("connection", () => {
     databaseCompatibilityModes,
     isTreeNodePinned,
     orderByPinnedTreeNodes,
+    syncPinnedTreeState,
     toggleTreeNodePin,
     beginPinnedTreeNodeReorder,
     endPinnedTreeNodeReorder,

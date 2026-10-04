@@ -70,6 +70,7 @@ import {
 } from "@lucide/vue";
 import type { ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { CONNECTION_ATTEMPT_CANCELLED_MESSAGE, useConnectionStore } from "@/stores/connectionStore";
+import { getTableMutationHistoryStoreOrNull, recordTableMutationHistory } from "@/lib/history/tableMutationHistory";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
@@ -683,6 +684,9 @@ const {
   executeWithProductionGuard: executeTreeNodeSqlWithProductionGuard,
   closeDroppedTableObjectTabsForNode,
   refreshMutatedTableDataTabsForNode,
+  historyStore: {
+    add: (entry) => getTableMutationHistoryStoreOrNull()?.add(entry) ?? Promise.resolve(),
+  },
 });
 
 const batchDropProgress = ref({ completed: 0, total: 0 });
@@ -1626,7 +1630,7 @@ function onDoubleClick(event: MouseEvent) {
     void openObjectBrowser(false, false, true);
   } else if (action === "open-object-browser-and-expand") {
     void openObjectBrowser(false, false, true);
-    if (!activeNode.value.isExpanded) void toggle(requestId);
+    void toggle(requestId);
   } else if (action === "open-data") {
     openDataImmediately(activeNode.value);
   } else if (action === "activate-data") {
@@ -3536,6 +3540,7 @@ async function confirmBatchDrop() {
         }),
       );
       const batchSql = plan.map(({ sql }) => sql).join(";\n");
+      const startTime = Date.now();
       const result = await executeWithProductionSqlGuard({
         connection: connectionStore.getConfig(first.connectionId!),
         database: first.database!,
@@ -3554,6 +3559,17 @@ async function confirmBatchDrop() {
       });
       if (!result) return;
 
+      await recordTableMutationHistory(getTableMutationHistoryStoreOrNull(), {
+        connectionId: first.connectionId!,
+        connectionName: connectionStore.getConfig(first.connectionId!)?.name,
+        database: first.database!,
+        sql: batchSql,
+        elapsedMs: Date.now() - startTime,
+        success: !result.failed,
+        error: result.failed ? String(result.failed.message || result.failed) : undefined,
+        target: targets.map((t) => t.label).join(", "),
+      }).catch((err) => console.warn("[DBX] failed to record batch drop history", err));
+
       for (const target of result.succeeded) {
         closeDroppedTableObjectTabsForNode(target);
         connectionStore.removeTreeNode(target.id);
@@ -3570,7 +3586,22 @@ async function confirmBatchDrop() {
       await connectionStore.ensureConnected(target.connectionId);
       const sql = await dropSqlForTreeNode(target, { cascade: useCascade });
       if (!sql) continue;
-      await executeTreeNodeSqlWithProductionGuard(target, sql, { database: target.database, schema: target.schema });
+      const startTime = Date.now();
+      const guardResult = await executeTreeNodeSqlWithProductionGuard(target, sql, { database: target.database, schema: target.schema });
+      if (guardResult === undefined) {
+        // The production guard declined the SQL: it was never sent, so keep the
+        // node, skip the history record, and move on to the next target.
+        continue;
+      }
+      await recordTableMutationHistory(getTableMutationHistoryStoreOrNull(), {
+        connectionId: target.connectionId,
+        connectionName: connectionStore.getConfig(target.connectionId)?.name,
+        database: target.database,
+        sql,
+        elapsedMs: Date.now() - startTime,
+        success: true,
+        target: target.label,
+      }).catch((err) => console.warn("[DBX] failed to record drop history", err));
       closeDroppedTableObjectTabsForNode(target);
       // Remove immediately so a later failure cannot leave dropped objects in the tree.
       connectionStore.removeTreeNode(target.id);
@@ -3601,8 +3632,19 @@ async function confirmBatchTruncate() {
         await connectionStore.ensureConnected(target.connectionId);
         const sql = await truncateSqlForTreeNode(target, { cascade: useCascade });
         if (!sql) return false;
+        const startTime = Date.now();
         const result = await executeTreeNodeSqlWithProductionGuard(target, sql, { database: target.database, schema: target.schema });
-        return result === undefined ? false : undefined;
+        if (result === undefined) return false;
+        await recordTableMutationHistory(getTableMutationHistoryStoreOrNull(), {
+          connectionId: target.connectionId,
+          connectionName: connectionStore.getConfig(target.connectionId)?.name,
+          database: target.database,
+          sql,
+          elapsedMs: Date.now() - startTime,
+          success: true,
+          target: target.label,
+        }).catch((err) => console.warn("[DBX] failed to record batch truncate history", err));
+        return undefined;
       },
       refreshMutatedTableDataTabsForNodes,
     );
@@ -3622,7 +3664,22 @@ async function confirmBatchEmpty() {
     await connectionStore.ensureConnected(target.connectionId);
     const sql = await emptySqlForTreeNode(target);
     if (!sql) throw new Error("Empty table SQL is unavailable");
-    await executeTreeNodeSqlWithProductionGuard(target, sql, { database: target.database, schema: target.schema });
+    const startTime = Date.now();
+    const guardResult = await executeTreeNodeSqlWithProductionGuard(target, sql, { database: target.database, schema: target.schema });
+    if (guardResult === undefined) {
+      // The production guard declined the SQL: it was never sent, so this must
+      // not be recorded as a success nor counted as an emptied table.
+      throw new Error("Production safety confirmation declined");
+    }
+    await recordTableMutationHistory(getTableMutationHistoryStoreOrNull(), {
+      connectionId: target.connectionId,
+      connectionName: connectionStore.getConfig(target.connectionId)?.name,
+      database: target.database,
+      sql,
+      elapsedMs: Date.now() - startTime,
+      success: true,
+      target: target.label,
+    }).catch((err) => console.warn("[DBX] failed to record batch empty history", err));
   });
   for (const failure of result.failed) {
     console.error(`Failed to empty table "${failure.target.label}":`, failure.error);

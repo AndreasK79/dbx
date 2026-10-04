@@ -33,8 +33,8 @@ use crate::db::proxy_tunnel::ProxyTunnelManager;
 use crate::db::ssh_tunnel::TunnelManager;
 use crate::models::connection::{
     database_info_from_protocol_value, parse_jdbc_host_port, parse_mongo_first_host, rewrite_jdbc_url_host,
-    ConnectionConfig, ConnectionLivenessFailureKind, ConnectionLivenessMessage, ConnectionTestResult,
-    DatabaseConnectionInfo, DatabaseType, TransportLayerConfig,
+    validate_jdbc_transport_url, ConnectionConfig, ConnectionLivenessFailureKind, ConnectionLivenessMessage,
+    ConnectionTestResult, DatabaseConnectionInfo, DatabaseType, TransportLayerConfig,
 };
 use crate::mongo_oidc::MongoOidcBrowserOpener;
 use crate::nacos::config::{NACOS_CONSOLE_SESSION_PASSWORD, NACOS_PRIMARY_SESSION_PASSWORD};
@@ -1871,7 +1871,9 @@ impl AppState {
                     Some(external_driver_connect_timeout(config)),
                 )
                 .await;
-            session.shutdown().await;
+            if let Err(error) = session.shutdown().await {
+                log::warn!("Failed to stop the plugin runtime after testing connection '{}': {error}", config.name);
+            }
             return result.map(|response| {
                 ConnectionTestResult::success("Connection successful")
                     .with_database_info(database_info_from_protocol_value(&response))
@@ -1916,7 +1918,12 @@ impl AppState {
                 session,
             }),
             Err(error) => {
-                session.shutdown().await;
+                if let Err(shutdown_error) = session.shutdown().await {
+                    log::warn!(
+                        "Failed to stop the plugin runtime after failing to connect '{}': {shutdown_error}",
+                        config.name
+                    );
+                }
                 Err(error)
             }
         }
@@ -2429,7 +2436,7 @@ impl AppState {
 
         let shutdown = async {
             let routing = self.pool_routing_control();
-            tokio::join!(
+            let (_, _, _, _, _, _, plugin_shutdown) = tokio::join!(
                 self.task_supervisor.shutdown(deadline),
                 routing.close_removed(removed_pools),
                 self.tunnels.stop_all_tunnels(),
@@ -2438,6 +2445,9 @@ impl AppState {
                 self.agent_manager.stop_daemons(),
                 self.plugin_host.stop_all(),
             );
+            if let Err(error) = plugin_shutdown {
+                log::warn!("Failed to stop plugin runtimes during shutdown: {error}");
+            }
         };
         if tokio::time::timeout(deadline, shutdown).await.is_err() {
             log::warn!("Timed out shutting down DBX runtime resources after {}ms", deadline.as_millis());
@@ -3490,6 +3500,7 @@ impl AppState {
                             1,
                             false,
                             leaf.allow_exec_channel_proxy,
+                            &leaf.proxy_command,
                         )
                         .await
                         .map(|_| ())
@@ -3610,6 +3621,12 @@ impl AppState {
         if config.db_type == DatabaseType::Plugin && self.plugin_host.wants_proxy_route(config).await {
             if let Some(proxy) = self.socks5_route_for_transport_layers(connection_id, &transport_layers).await? {
                 return Ok(ConnectionEndpoint { host: config.host.clone(), port: config.port, proxy: Some(proxy) });
+            }
+        }
+
+        if config.db_type == DatabaseType::Jdbc {
+            if let Some(url) = config.connection_string.as_deref().filter(|url| !url.is_empty()) {
+                validate_jdbc_transport_url(url)?;
             }
         }
 
@@ -6840,7 +6857,7 @@ async fn close_pool_kind(pool: PoolKind) -> Result<(), String> {
             client.disconnect().await?;
         }
         PoolKind::ExternalDriver { session, .. } => {
-            session.shutdown().await;
+            session.shutdown().await?;
         }
         PoolKind::PluginConnection(handle) => {
             if let Err(error) = handle.disconnect().await {
@@ -8530,6 +8547,7 @@ mod tests {
             ssh_agent_sock_path: String::new(),
             auth_method: "password".to_string(),
             allow_exec_channel_proxy: false,
+            proxy_command: String::new(),
             profile_id: String::new(),
         });
         assert!(state.test_tunnel_profile(&ssh).await.is_err());
@@ -11210,6 +11228,7 @@ for line in sys.stdin:
             ssh_agent_sock_path: String::new(),
             auth_method: String::new(),
             allow_exec_channel_proxy: false,
+            proxy_command: String::new(),
             profile_id: profile_id.to_string(),
         }
     }

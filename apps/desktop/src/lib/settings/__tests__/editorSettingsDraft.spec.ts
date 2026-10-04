@@ -71,6 +71,11 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("savedSqlOpenTargetMode");
   });
 
+  it("includes the privacy-safe welcome page mode", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("welcomePageMode");
+    expect(editorSettingsDraftFromSettings(makeSettings({ welcomePageMode: "workspace" })).welcomePageMode).toBe("workspace");
+  });
+
   it("includes the regular expression match limit", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("regexMaxMatchCount");
   });
@@ -92,6 +97,12 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
 
   it("includes adjacent data-tab opening", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("openDataTabsNextToActive");
+  });
+
+  it("includes snippet trigger key setting in draft keys and draft conversion", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("snippetTriggerKey");
+    const draft = editorSettingsDraftFromSettings(makeSettings({ snippetTriggerKey: "space" }));
+    expect(draft.snippetTriggerKey).toBe("space");
   });
 
   it("includes data grid type colors", () => {
@@ -130,6 +141,14 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
 
   it("includes the cell detail button visibility", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("dataGridCellDetailButtonVisible");
+  });
+
+  it("includes zebra row background in draft keys", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("dataGridZebraRowBg");
+  });
+
+  it("includes dataGridCellDetailDialogDefault", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("dataGridCellDetailDialogDefault");
   });
 
   it("includes completionTriggerMode", () => {
@@ -346,6 +365,15 @@ describe("editorSettingsPatchFromDraft", () => {
     expect(editorSettingsPatchFromDraft(hidden, visible)).toEqual({ dataGridCellDetailButtonVisible: false });
     expect(editorSettingsPatchFromDraft(visible, visible)).toEqual({});
     expect(editorSettingsPatchFromDraft(visible, hidden)).toEqual({ dataGridCellDetailButtonVisible: true });
+  });
+
+  it("applies, cancels, and re-enables cell detail dialog default", () => {
+    const enabled = editorSettingsDraftFromSettings(makeSettings({ dataGridCellDetailDialogDefault: true }));
+    const disabled = editorSettingsDraftFromSettings(makeSettings({ dataGridCellDetailDialogDefault: false }));
+
+    expect(editorSettingsPatchFromDraft(enabled, disabled)).toEqual({ dataGridCellDetailDialogDefault: true });
+    expect(editorSettingsPatchFromDraft(enabled, enabled)).toEqual({});
+    expect(editorSettingsPatchFromDraft(disabled, enabled)).toEqual({ dataGridCellDetailDialogDefault: false });
   });
 
   it("includes the multi-statement default view when changed", () => {

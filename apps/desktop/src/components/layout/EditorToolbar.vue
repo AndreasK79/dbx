@@ -21,6 +21,8 @@ import {
   AlertTriangle,
   ClipboardPaste,
   Minimize2,
+  FoldVertical,
+  UnfoldVertical,
   SpellCheck2,
   Layers,
   MoreHorizontal,
@@ -51,7 +53,7 @@ import { supportsQueryExecution } from "@/lib/database/databaseFeatureSupport";
 import { connectionIsDorisFamilyCatalogCapable } from "@/lib/database/databaseFeatureSupport";
 import { hexToRgba } from "@/lib/common/color";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
-import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
+import { formatShortcutDisplay, formatShortcutTooltip } from "@/lib/editor/shortcutDisplay";
 import { resolveNextEditorToolbarTier, type EditorToolbarTier } from "@/lib/tabs/editorToolbarLayout";
 import { canSaveSqlTab } from "@/lib/tabs/sqlTabSaveTarget";
 import { looksLikeDmlStatement } from "@/lib/sql/dmlChangePreview";
@@ -99,6 +101,8 @@ const emit = defineEmits<{
   "update:explainMode": [mode: "explain" | "autotrace"];
   formatSql: [];
   compressSql: [];
+  foldAll: [];
+  unfoldAll: [];
   toggleSqlKeywordCase: [];
   saveSql: [tabId: string];
   openSql: [];
@@ -333,10 +337,14 @@ const supportsTransaction = computed(() => supportsTransactionFeature(props.acti
 const hasDefaultDatabaseOption = computed(() => activeDatabaseOptions.value.includes(""));
 const schemaDatabaseKey = computed(() => props.activeTab.database || (isSingleDb.value ? "_" : ""));
 const saveTooltip = computed(() => {
-  if (props.activeTab.objectSource) return t("objects.saveSource");
-  if (props.activeTab.externalSqlPath) return t("toolbar.saveSqlFile");
-  return t("toolbar.saveSql");
+  let label = t("toolbar.saveSql");
+  if (props.activeTab.objectSource) label = t("objects.saveSource");
+  else if (props.activeTab.externalSqlPath) label = t("toolbar.saveSqlFile");
+  return formatShortcutTooltip(label, settingsStore.editorSettings.shortcuts.saveSql);
 });
+const explainPlanTooltip = computed(() => formatShortcutTooltip(t("toolbar.explainPlan"), settingsStore.editorSettings.shortcuts.explainSql));
+const formatSqlTooltip = computed(() => formatShortcutTooltip(t("toolbar.formatSql"), settingsStore.editorSettings.shortcuts.formatSql));
+const exPasteSqlInConditionTooltip = computed(() => formatShortcutTooltip(t("toolbar.exPasteSqlInCondition"), settingsStore.editorSettings.shortcuts.exPasteSqlInCondition));
 const isObjectSourceTab = computed(() => !!props.activeTab.objectSource || !!props.activeTab.sourceLoad);
 const objectSourceRefreshing = computed(() => !!props.activeTab.sourceLoad && !props.activeTab.sourceLoad.error);
 
@@ -347,11 +355,7 @@ function refreshObjectSource() {
 }
 const executeShortcutDisplay = computed(() => formatShortcutDisplay(settingsStore.editorSettings.shortcuts.executeSql));
 const executeShortcutTooltip = computed(() => t("toolbar.executeShortcut", { shortcut: executeShortcutDisplay.value }));
-const executeInNewResultTabShortcutDisplay = computed(() => formatShortcutDisplay(settingsStore.editorSettings.shortcuts.executeSqlInNewResultTab));
-const executeInNewResultTabTooltip = computed(() => {
-  const label = t("settings.shortcutExecuteSqlInNewResultTab");
-  return executeInNewResultTabShortcutDisplay.value ? `${label} (${executeInNewResultTabShortcutDisplay.value})` : label;
-});
+const executeInNewResultTabTooltip = computed(() => formatShortcutTooltip(t("settings.shortcutExecuteSqlInNewResultTab"), settingsStore.editorSettings.shortcuts.executeSqlInNewResultTab));
 // executableSql 在无选区时可能是整篇文档；只要有 DML 语句出现就显示预览按钮，
 // 具体"当前语句"由编辑器（QueryEditor）按执行模式解析。
 const DML_KEYWORD_RE = /(^|\s)(update|insert|delete)\s/i;
@@ -488,6 +492,15 @@ const canFormatSql = computed(() => canFormatSqlForDatabaseType(props.activeConn
 const showFormatButton = computed(() => canFormatSql.value && toolbarTier.value < 2);
 const showExplainAnalyzeToggle = computed(() => toolbarTier.value < 3);
 const showCompressButton = computed(() => toolbarTier.value < 1);
+const showFoldButtons = computed(() => toolbarTier.value < 1);
+const foldAllTooltip = computed(() => {
+  const shortcut = formatShortcutDisplay(settingsStore.editorSettings.shortcuts.foldAll);
+  return shortcut ? `${t("toolbar.foldAll")} (${shortcut})` : t("toolbar.foldAll");
+});
+const unfoldAllTooltip = computed(() => {
+  const shortcut = formatShortcutDisplay(settingsStore.editorSettings.shortcuts.unfoldAll);
+  return shortcut ? `${t("toolbar.unfoldAll")} (${shortcut})` : t("toolbar.unfoldAll");
+});
 const showKeywordCaseButton = computed(() => toolbarTier.value < 1);
 const showWordWrapButton = computed(() => toolbarTier.value < 1);
 const showSemanticDiagnosticsButton = computed(() => supportsSqlSemanticDiagnosticsToggle.value && toolbarTier.value < 1);
@@ -609,7 +622,7 @@ async function changeCatalog(selectedCatalog: string) {
             <GitBranch v-else class="h-3.5 w-3.5" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{{ activeTab.isExplaining ? t("toolbar.stopExplain") : t("toolbar.explainPlan") }}</TooltipContent>
+        <TooltipContent>{{ activeTab.isExplaining ? t("toolbar.stopExplain") : explainPlanTooltip }}</TooltipContent>
       </Tooltip>
       <!-- Autotrace (DM) / EXPLAIN ANALYZE (Postgres) / actual plan (SQL Server) toggle -->
       <Tooltip v-if="showExplainAnalyzeToggle">
@@ -635,7 +648,7 @@ async function changeCatalog(selectedCatalog: string) {
             <AlignLeft class="h-3.5 w-3.5" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{{ t("toolbar.formatSql") }}</TooltipContent>
+        <TooltipContent>{{ formatSqlTooltip }}</TooltipContent>
       </Tooltip>
       <Tooltip v-if="showCompressButton">
         <TooltipTrigger as-child>
@@ -644,6 +657,22 @@ async function changeCatalog(selectedCatalog: string) {
           </Button>
         </TooltipTrigger>
         <TooltipContent>{{ t("toolbar.compressSql") }}</TooltipContent>
+      </Tooltip>
+      <Tooltip v-if="showFoldButtons">
+        <TooltipTrigger as-child>
+          <Button variant="ghost" size="icon" class="h-6 w-6 text-muted-foreground hover:bg-muted hover:text-foreground" :disabled="activeTab.isExecuting || activeTab.isExplaining || !activeTab.sql.trim()" :aria-label="t('toolbar.foldAll')" @click="emit('foldAll')">
+            <FoldVertical class="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{{ foldAllTooltip }}</TooltipContent>
+      </Tooltip>
+      <Tooltip v-if="showFoldButtons">
+        <TooltipTrigger as-child>
+          <Button variant="ghost" size="icon" class="h-6 w-6 text-muted-foreground hover:bg-muted hover:text-foreground" :disabled="activeTab.isExecuting || activeTab.isExplaining || !activeTab.sql.trim()" :aria-label="t('toolbar.unfoldAll')" @click="emit('unfoldAll')">
+            <UnfoldVertical class="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{{ unfoldAllTooltip }}</TooltipContent>
       </Tooltip>
       <Tooltip v-if="showKeywordCaseButton">
         <TooltipTrigger as-child>
@@ -770,7 +799,7 @@ async function changeCatalog(selectedCatalog: string) {
             <ClipboardPaste class="h-3.5 w-3.5" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{{ t("toolbar.exPasteSqlInCondition") }}</TooltipContent>
+        <TooltipContent>{{ exPasteSqlInConditionTooltip }}</TooltipContent>
       </Tooltip>
       <Tooltip v-if="showMultiExecuteButton">
         <TooltipTrigger as-child>
@@ -790,6 +819,14 @@ async function changeCatalog(selectedCatalog: string) {
           <DropdownMenuItem :disabled="activeTab.isExecuting || activeTab.isExplaining || !activeTab.sql.trim()" @select="emit('compressSql')">
             <Minimize2 class="h-3.5 w-3.5" />
             {{ t("toolbar.compressSql") }}
+          </DropdownMenuItem>
+          <DropdownMenuItem :disabled="activeTab.isExecuting || activeTab.isExplaining || !activeTab.sql.trim()" @select="emit('foldAll')">
+            <FoldVertical class="h-3.5 w-3.5" />
+            {{ t("toolbar.foldAll") }}
+          </DropdownMenuItem>
+          <DropdownMenuItem :disabled="activeTab.isExecuting || activeTab.isExplaining || !activeTab.sql.trim()" @select="emit('unfoldAll')">
+            <UnfoldVertical class="h-3.5 w-3.5" />
+            {{ t("toolbar.unfoldAll") }}
           </DropdownMenuItem>
           <DropdownMenuItem @select="emit('toggleSqlKeywordCase')">
             <span class="inline-flex h-4 w-4 shrink-0 items-center justify-center font-mono text-xs font-semibold" aria-hidden="true">

@@ -29,10 +29,13 @@ export type ShortcutActionId =
   | "selectAllSelectionOccurrences"
   | "uppercaseSelection"
   | "lowercaseSelection"
+  | "toggleCaseSelection"
   | "convertNamingStyle"
   | "convertSelectionToDelimited"
   | "exPasteSqlInCondition"
   | "toggleFold"
+  | "foldAll"
+  | "unfoldAll"
   | "editTableStructure"
   | "copyCurrentRow"
   | "deleteCurrentRow"
@@ -147,6 +150,11 @@ export function gotoLineDefaultShortcut(platform = globalThis.navigator?.platfor
   return isMacShortcutPlatform(platform) ? "Mod+Alt+G" : "Mod+G";
 }
 
+export function foldAllDefaultShortcut(actionId: "foldAll" | "unfoldAll", platform = globalThis.navigator?.platform || ""): string {
+  const key = actionId === "foldAll" ? "[" : "]";
+  return `${isMacShortcutPlatform(platform) ? "Ctrl+Alt" : "Shift+Alt"}+${key}`;
+}
+
 const PLATFORM_DEFAULT_SHORTCUTS: Partial<Record<ShortcutActionId, ReadonlySet<string>>> = {
   closeOtherTabs: new Set(["Alt+Mod+W", "Shift+Alt+W"]),
   navigateTabHistoryBack: new Set(["Ctrl+Alt+ArrowLeft", "Mod+Alt+ArrowLeft"]),
@@ -155,6 +163,8 @@ const PLATFORM_DEFAULT_SHORTCUTS: Partial<Record<ShortcutActionId, ReadonlySet<s
   selectAllSelectionOccurrences: new Set(["Ctrl+Mod+G", "Ctrl+Alt+Shift+J"]),
   toggleAiPanel: new Set(["Ctrl+Mod+I", "Ctrl+Alt+I"]),
   gotoLine: new Set(["Mod+G", "Mod+Alt+G"]),
+  foldAll: new Set(["Mod+Alt+[", "Ctrl+Alt+[", "Shift+Alt+["]),
+  unfoldAll: new Set(["Mod+Alt+]", "Ctrl+Alt+]", "Shift+Alt+]"]),
 };
 const LEGACY_CLOSE_TAB_DEFAULT = "Meta+W";
 const LEGACY_COPY_CURRENT_ROW_DEFAULT = "Mod+D";
@@ -334,6 +344,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: "Shift+Alt+L",
   },
   {
+    id: "toggleCaseSelection",
+    labelKey: "settings.shortcutToggleCaseSelection",
+    scope: "editor",
+    defaultShortcut: "Mod+Shift+U",
+  },
+  {
     id: "convertNamingStyle",
     labelKey: "settings.shortcutConvertNamingStyle",
     scope: "editor",
@@ -356,6 +372,18 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutToggleFold",
     scope: "editor",
     defaultShortcut: "Mod+.",
+  },
+  {
+    id: "foldAll",
+    labelKey: "settings.shortcutFoldAll",
+    scope: "editor",
+    defaultShortcut: foldAllDefaultShortcut("foldAll"),
+  },
+  {
+    id: "unfoldAll",
+    labelKey: "settings.shortcutUnfoldAll",
+    scope: "editor",
+    defaultShortcut: foldAllDefaultShortcut("unfoldAll"),
   },
   {
     id: "editTableStructure",
@@ -759,6 +787,7 @@ function shortcutDefaultForPlatform(definition: ShortcutDefinition, platform: st
   if (definition.id === "navigateTabHistoryBack") return tabNavigationHistoryDefaultShortcut("back", platform);
   if (definition.id === "navigateTabHistoryForward") return tabNavigationHistoryDefaultShortcut("forward", platform);
   if (definition.id === "toggleAiPanel") return toggleAiPanelDefaultShortcut(platform);
+  if (definition.id === "foldAll" || definition.id === "unfoldAll") return foldAllDefaultShortcut(definition.id, platform);
   return definition.defaultShortcut;
 }
 

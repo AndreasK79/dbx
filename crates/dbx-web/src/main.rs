@@ -9,6 +9,7 @@ mod web_mcp;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use argon2::password_hash::rand_core::OsRng;
@@ -39,6 +40,51 @@ use web_mcp::WebMcpRuntime;
 
 const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const DATA_GRID_EXTRACTOR_BODY_LIMIT_BYTES: usize = 96 * 1024 * 1024;
+const NON_WINDOWS_HELP_TEXT: &str = r#"Usage: dbx-web [OPTION]
+
+Start the DBX Web browser service.
+
+Options:
+  -h, --help, /help  Show this help message and exit.
+
+Environment variables:
+  DBX_PORT              Listen port (default: 4224)
+  DBX_DATA_DIR          Data directory (default: ~/.dbx-web)
+  DBX_PUBLIC_BASE_PATH  URL path prefix (default: /)
+  DBX_PASSWORD          Set the Web login password
+  DBX_DISABLE_PASSWORD  Set to 1 to disable login protection
+  DBX_STATIC_DIR        Serve frontend assets from this directory
+  RUST_LOG              Configure backend log filtering
+  RUST_BACKTRACE        Set to 1 to include Rust backtraces
+
+Examples:
+  DBX_PORT=8080 dbx-web
+  RUST_LOG=dbx_web=debug,tower_http=info dbx-web
+  RUST_BACKTRACE=1 RUST_LOG=dbx_web=debug dbx-web
+"#;
+const WINDOWS_HELP_TEXT: &str = r#"Usage: dbx-web [OPTION]
+
+Start the DBX Web browser service.
+
+Options:
+  -h, --help, /help  Show this help message and exit.
+
+Environment variables:
+  DBX_PORT              Listen port (default: 4224)
+  DBX_DATA_DIR          Data directory (default: %HOME%\.dbx-web; .\.dbx-web if HOME is unset)
+  DBX_PUBLIC_BASE_PATH  URL path prefix (default: /)
+  DBX_PASSWORD          Set the Web login password
+  DBX_DISABLE_PASSWORD  Set to 1 to disable login protection
+  DBX_STATIC_DIR        Serve frontend assets from this directory
+  RUST_LOG              Configure backend log filtering
+  RUST_BACKTRACE        Set to 1 to include Rust backtraces
+
+Examples:
+  set "DBX_PORT=8080" && dbx-web.exe
+  set "RUST_LOG=dbx_web=debug,tower_http=info" && dbx-web.exe
+  set "RUST_BACKTRACE=1" && set "RUST_LOG=dbx_web=debug" && dbx-web.exe
+"#;
+const HELP_TEXT: &str = if cfg!(windows) { WINDOWS_HELP_TEXT } else { NON_WINDOWS_HELP_TEXT };
 
 #[derive(OpenApi)]
 #[openapi(
@@ -55,6 +101,29 @@ async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
 #[cfg(test)]
 mod data_grid_extractor_openapi_tests {
     use super::*;
+
+    #[test]
+    fn help_flags_are_detected_without_starting_the_server() {
+        for flag in ["-h", "--help", "/help"] {
+            assert!(help_requested(&[flag.to_string()]));
+        }
+        assert!(help_requested(&["extra".to_string(), "--help".to_string()]));
+        assert!(!help_requested(&["--helpful".to_string()]));
+    }
+
+    #[test]
+    fn native_help_matches_the_target_shell() {
+        assert!(WINDOWS_HELP_TEXT.contains(r".\.dbx-web if HOME is unset"));
+        assert!(WINDOWS_HELP_TEXT.contains(r#"set "DBX_PORT=8080" && dbx-web.exe"#));
+        assert!(!WINDOWS_HELP_TEXT.contains("DBX_PORT=8080 dbx-web\n"));
+        if cfg!(windows) {
+            assert!(HELP_TEXT.contains(r#"set "DBX_PORT=8080" && dbx-web.exe"#));
+            assert!(!HELP_TEXT.contains("DBX_PORT=8080 dbx-web\n"));
+        } else {
+            assert!(HELP_TEXT.contains("DBX_PORT=8080 dbx-web\n"));
+            assert!(!HELP_TEXT.contains("dbx-web.exe"));
+        }
+    }
 
     #[test]
     fn extractor_openapi_contains_the_versioned_request_and_error_responses() {
@@ -173,6 +242,10 @@ where
             }
         }),
     )
+}
+
+fn help_requested(args: &[String]) -> bool {
+    args.iter().any(|arg| matches!(arg.as_str(), "-h" | "--help" | "/help"))
 }
 
 /// Frontend build output compiled into the binary by the `embed-static` feature.
@@ -384,12 +457,28 @@ fn add_mq_routes(router: Router<Arc<WebState>>) -> Router<Arc<WebState>> {
     router
 }
 
-fn main() {
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if help_requested(&args) {
+        print!("{HELP_TEXT}");
+        return ExitCode::SUCCESS;
+    }
+
     let runtime = dbx_core::scheduled_backup::worker_runtime().expect("Failed to build tokio runtime");
-    runtime.block_on(serve());
+    match runtime.block_on(serve()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-async fn serve() {
+fn web_mcp_startup_error(error: String) -> String {
+    format!("Failed to start DBX Web: invalid Web MCP configuration: {error}")
+}
+
+async fn serve() -> Result<(), String> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -464,7 +553,7 @@ async fn serve() {
     let web_mcp = Arc::new(if migration_ready {
         WebMcpRuntime::load(&app_state.storage, !password_disabled && password_hash.is_some())
             .await
-            .expect("Invalid DBX Web MCP configuration")
+            .map_err(web_mcp_startup_error)?
     } else {
         WebMcpRuntime::disabled()
     });
@@ -1380,7 +1469,7 @@ async fn serve() {
         .layer(CompressionLayer::new().compress_when(web_compression_predicate()))
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
-    let mcp_router = web_mcp_router(&web_state).expect("Invalid DBX Web MCP configuration");
+    let mcp_router = web_mcp_router(&web_state).map_err(web_mcp_startup_error)?;
     app = app.merge(
         mcp_router
             .layer(middleware::from_fn_with_state(web_state.clone(), web_mcp_demo_gate))

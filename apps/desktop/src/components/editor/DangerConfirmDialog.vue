@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, type ComponentPublicInstance } from "vue";
 import { useI18n } from "vue-i18n";
 import { AlertTriangle, Check, Copy, Loader2, TextWrap } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,13 @@ const props = withDefaults(
     cancelRunningLoading?: boolean;
     /** Holds the confirm button back until the caller's own precondition is met (e.g. the operator typed the target name). */
     confirmDisabled?: boolean;
+    /**
+     * Controls which element should receive focus when the dialog opens.
+     * - "confirm": Focus the confirm button (default) if not disabled or loading.
+     * - "cancel": Focus the cancel button.
+     * - "default": Do not override default focus behavior (Reka UI will focus the first tabbable element).
+     */
+    initialFocus?: "confirm" | "cancel" | "default";
   }>(),
   {
     sql: "",
@@ -57,6 +64,7 @@ const props = withDefaults(
     cancelable: false,
     cancelRunningLoading: false,
     confirmDisabled: false,
+    initialFocus: "confirm",
   },
 );
 
@@ -90,6 +98,27 @@ watch(
   },
   { immediate: true },
 );
+
+const confirmButtonRef = ref<ComponentPublicInstance | HTMLButtonElement | null>(null);
+const cancelButtonRef = ref<ComponentPublicInstance | HTMLButtonElement | null>(null);
+
+function focusButton(buttonRef: ComponentPublicInstance | HTMLButtonElement | null) {
+  const el = buttonRef instanceof HTMLElement ? buttonRef : (buttonRef?.$el as HTMLElement | null);
+  el?.focus?.();
+}
+
+function onDangerDialogOpenAutoFocus(event: Event) {
+  if (props.initialFocus === "default") return;
+  if (props.initialFocus === "cancel") {
+    event.preventDefault();
+    focusButton(cancelButtonRef.value);
+    return;
+  }
+  if (!props.confirmDisabled && !props.loading) {
+    event.preventDefault();
+    focusButton(confirmButtonRef.value);
+  }
+}
 
 /**
  * Restores focus through CodeMirror's own `EditorView.focus()` instead of the browser default.
@@ -136,12 +165,15 @@ async function copyFullCode() {
 
 <template>
   <Dialog v-model:open="dialogOpen">
-    <DialogContent class="sm:max-w-[480px]" @close-auto-focus="onDangerDialogCloseAutoFocus">
+    <DialogContent class="sm:max-w-[480px]" @open-auto-focus="onDangerDialogOpenAutoFocus" @close-auto-focus="onDangerDialogCloseAutoFocus">
       <!-- Enter confirms: the dialog body is a form whose submit runs Confirm, and the destructive
            Confirm button is its only submit control (Cancel, Cancel Query, and the code-preview
            helpers are type="button"), matching the SQL parameter dialog. The loading/confirmDisabled
            guards hold on this path too — a disabled submit button also blocks the browser's implicit
-           Enter submission. `display: contents` keeps the parent grid layout untouched. -->
+           Enter submission. `display: contents` keeps the parent grid layout untouched.
+           Upstream's open-auto-focus (initialFocus) puts focus on Confirm by default, so a plain
+           Enter lands on that same submit control; the button itself carries no @click — a click
+           on a submit button already routes through the form's submit path. -->
       <form class="contents" @submit.prevent="onConfirm">
         <DialogHeader>
           <DialogTitle class="flex items-center gap-2 text-destructive">
@@ -179,12 +211,12 @@ async function copyFullCode() {
         </div>
 
         <DialogFooter>
-          <Button v-if="loading && cancelable" variant="outline" type="button" :disabled="cancelRunningLoading" @click="$emit('cancel-running')">
+          <Button v-if="loading && cancelable" ref="cancelButtonRef" variant="outline" type="button" :disabled="cancelRunningLoading" @click="$emit('cancel-running')">
             <Loader2 v-if="cancelRunningLoading" class="h-3.5 w-3.5 animate-spin" />
             {{ t("dangerDialog.cancelRunning") }}
           </Button>
-          <Button v-else variant="outline" type="button" :disabled="loading" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
-          <Button variant="destructive" class="gap-1.5" type="submit" :disabled="loading || confirmDisabled">
+          <Button v-else ref="cancelButtonRef" variant="outline" type="button" :disabled="loading" @click="open = false">{{ t("dangerDialog.cancel") }}</Button>
+          <Button ref="confirmButtonRef" variant="destructive" class="gap-1.5" type="submit" :disabled="loading || confirmDisabled">
             <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin" />
             {{ confirmLabel || t("dangerDialog.confirm") }}
           </Button>
