@@ -2,7 +2,7 @@ import type { DatabaseType, ObjectSourceKind, TreeNode, TreeNodeType } from "@/t
 import { customTypeCapabilities, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
 import { matchesShortcut, type ShortcutLikeEvent } from "@/lib/editor/keyboardShortcuts";
 
-export type TreeNodeRowAction = "open-data" | "open-source" | "open-extension-details" | "open-foreign-server-details" | "open-event-trigger-details" | "open-saved-sql" | "open-object-browser" | "open-object-browser-and-expand" | "toggle" | "none";
+export type TreeNodeRowAction = "open-data" | "open-source" | "open-extension-details" | "open-foreign-server-details" | "open-event-trigger-details" | "open-saved-sql" | "open-object-browser" | "open-object-browser-and-expand" | "locate-column" | "toggle" | "none";
 export type TreeNodeRowDoubleClickAction =
   | "open-data"
   | "activate-data"
@@ -14,6 +14,8 @@ export type TreeNodeRowDoubleClickAction =
   | "open-foreign-server-details"
   | "open-event-trigger-details"
   | "open-saved-sql"
+  | "locate-column"
+  | "open-structure-editor"
   | "toggle"
   | "none";
 export type SidebarSelectionCopyAction = "copy-name" | "none";
@@ -153,6 +155,7 @@ export function treeNodeRowAction(type: TreeNodeType, canExpand: boolean, activa
   if (type === "event-trigger") return "open-event-trigger-details";
   if (savedSqlNodeTypes.has(type)) return "open-saved-sql";
   if (dataNodeTypes.has(type)) return "open-data";
+  if (type === "column") return "locate-column";
   // PostgreSQL-family custom types: open read-only details (toggle when expandable).
   if (type === "type" && customTypeCapabilities(dbType).details) return canExpand ? "toggle" : "none";
   // Xugu and other databases: expandable package/type nodes toggle their members.
@@ -172,11 +175,16 @@ export function shouldRunTreeNodeRowAction(action: TreeNodeRowAction, clickDetai
 
 export function treeNodeRowDoubleClickAction(type: TreeNodeType, canOpenObjectBrowser: boolean, activation: SidebarActivation = "single", canExpand = false, dbType?: DatabaseType, canOpenDatabaseBrowser = false, browseObjectsOnDatabaseActivation = false): TreeNodeRowDoubleClickAction {
   // Single-click activation already handles the first click in a dblclick
-  // sequence. Only double-click activation needs a second-stage table action.
+  // sequence. Most rows have no trailing action, while field/index rows have
+  // an explicit structure-editor action in either activation mode.
   if (type === "table") return activation === "double" ? "activate-data" : "none";
   // 双击激活模式下，双击连接节点应当展开树（与单击模式下单击展开一致），
   // “打开数据库浏览”只保留给单击激活模式下的双击手势。
   if (type === "connection" && canOpenDatabaseBrowser && activation !== "double") return "open-database-browser";
+  // Field and index rows have an explicit double-click action regardless of
+  // the sidebar activation preference. Single-click field navigation remains
+  // responsible for locating a column in the data grid.
+  if (type === "column" || type === "index") return "open-structure-editor";
   if (activation === "double") {
     if (canOpenObjectBrowser && shouldBrowseObjectsOnDatabaseActivation(type, browseObjectsOnDatabaseActivation)) {
       return canExpand ? "open-object-browser-and-expand" : "open-object-browser";

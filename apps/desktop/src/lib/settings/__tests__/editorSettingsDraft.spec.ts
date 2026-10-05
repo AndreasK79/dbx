@@ -73,6 +73,7 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
 
   it("includes the privacy-safe welcome page mode", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("welcomePageMode");
+    expect(editorSettingsDraftFromSettings(makeSettings({ welcomePageMode: "intro" })).welcomePageMode).toBe("intro");
     expect(editorSettingsDraftFromSettings(makeSettings({ welcomePageMode: "workspace" })).welcomePageMode).toBe("workspace");
   });
 
@@ -139,6 +140,10 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("multiStatementDefaultView");
   });
 
+  it("includes the default explain view", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("defaultExplainView");
+  });
+
   it("includes the cell detail button visibility", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("dataGridCellDetailButtonVisible");
   });
@@ -165,6 +170,15 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
 
   it("includes the SQL variable substitution master switch", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("sqlVariableSubstitutionEnabled");
+  });
+
+  it("includes functionCompletionIncludeParams in draft keys, draft conversion, and patch", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("functionCompletionIncludeParams");
+    const draft = editorSettingsDraftFromSettings(makeSettings({ functionCompletionIncludeParams: false }));
+    const base = editorSettingsDraftFromSettings(makeSettings({ functionCompletionIncludeParams: true }));
+    expect(draft.functionCompletionIncludeParams).toBe(false);
+    expect(editorSettingsDraftChanged(draft, base)).toBe(true);
+    expect(editorSettingsPatchFromDraft(draft, base)).toEqual({ functionCompletionIncludeParams: false });
   });
 });
 
@@ -233,6 +247,10 @@ describe("editorSettingsDraftFromSettings", () => {
 
   it("maps the multi-statement default view from settings", () => {
     expect(editorSettingsDraftFromSettings(makeSettings({ multiStatementDefaultView: "summary" })).multiStatementDefaultView).toBe("summary");
+  });
+
+  it("maps the default explain view from settings", () => {
+    expect(editorSettingsDraftFromSettings(makeSettings({ defaultExplainView: "table" })).defaultExplainView).toBe("table");
   });
 
   it("preserves the table-open default for legacy settings", () => {
@@ -381,6 +399,13 @@ describe("editorSettingsPatchFromDraft", () => {
     const summary = editorSettingsDraftFromSettings(makeSettings({ multiStatementDefaultView: "summary" }));
 
     expect(editorSettingsPatchFromDraft(summary, result)).toEqual({ multiStatementDefaultView: "summary" });
+  });
+
+  it("includes the default explain view when changed", () => {
+    const canvas = editorSettingsDraftFromSettings(makeSettings({ defaultExplainView: "canvas" }));
+    const table = editorSettingsDraftFromSettings(makeSettings({ defaultExplainView: "table" }));
+
+    expect(editorSettingsPatchFromDraft(table, canvas)).toEqual({ defaultExplainView: "table" });
   });
 
   it("includes continueOnErrorOnBatch in patch when changed", () => {
@@ -560,5 +585,40 @@ describe("editorSettingsDraftPatchFromSettings", () => {
   it("normalizes imported values per key", () => {
     const patch = editorSettingsDraftPatchFromSettings({ pageSize: 999999 } as Partial<EditorSettings>);
     expect(patch.pageSize).toBe(normalizeTableOpenPageSizeDraft(999999));
+  });
+});
+
+describe("editorSettingsDraft - tabMaxWidth", () => {
+  it("includes tabMaxWidth in EDITOR_SETTINGS_DRAFT_KEYS", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("tabMaxWidth");
+  });
+
+  it("maps tabMaxWidth from settings", () => {
+    expect(editorSettingsDraftFromSettings(makeSettings({ tabMaxWidth: 240 })).tabMaxWidth).toBe(240);
+    expect(editorSettingsDraftFromSettings(makeSettings({ tabMaxWidth: 0 })).tabMaxWidth).toBe(0);
+  });
+
+  it("detects change in tabMaxWidth", () => {
+    const settings = makeSettings({ tabMaxWidth: 0 });
+    const draft = editorSettingsDraftFromSettings(settings);
+    const base = editorSettingsDraftFromSettings(settings);
+    draft.tabMaxWidth = 240;
+    expect(editorSettingsDraftChanged(draft, base)).toBe(true);
+  });
+
+  it("detects no change when tabMaxWidth matches", () => {
+    const settings = makeSettings({ tabMaxWidth: 240 });
+    const draft = editorSettingsDraftFromSettings(settings);
+    const base = editorSettingsDraftFromSettings(settings);
+    expect(editorSettingsDraftChanged(draft, base)).toBe(false);
+  });
+
+  it("includes tabMaxWidth in patch when changed", () => {
+    const settings = makeSettings({ tabMaxWidth: 0 });
+    const draft = editorSettingsDraftFromSettings(settings);
+    const base = editorSettingsDraftFromSettings(settings);
+    draft.tabMaxWidth = 240;
+    const patch = editorSettingsPatchFromDraft(draft, base);
+    expect(patch.tabMaxWidth).toBe(240);
   });
 });

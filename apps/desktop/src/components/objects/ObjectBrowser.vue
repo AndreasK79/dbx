@@ -13,6 +13,7 @@ import {
   Braces,
   Check,
   CheckSquare,
+  CircleX,
   Clock,
   Clipboard,
   Code2,
@@ -99,6 +100,7 @@ import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceStatements, buildRoutineRenameObjectSourceStatements, executeObjectSourceSave, formatObjectSourceSaveError, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { buildRenameObjectSql, supportsObjectRename } from "@/lib/table/objectRenameSql";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
+import { autoRevealExportedPathIfConfigured, promptExportSavePath } from "@/lib/export/exportPath";
 import { generateDatabaseExportId } from "@/lib/export/databaseExport";
 import { buildXlsxHeaderOverrides, hasXlsxHeaderComments, type XlsxExportOptions, type XlsxHeaderMode } from "@/lib/export/xlsxHeader";
 import { showSqlInsertModeDialog, type SqlInsertDialect, type SqlInsertMode } from "@/lib/export/sqlInsertMode";
@@ -1116,6 +1118,7 @@ const tableOverviewRows = computed(() => {
     { label: t("common.table"), value: sidePanelRow.value?.name ?? "" },
     { label: t("common.schema"), value: sidePanelRow.value?.schema || selectedSchema.value || props.database },
     { label: t("common.database"), value: props.database },
+    ...(sidePanelRow.value?.valid != null ? [{ label: t("objects.validity"), value: t(sidePanelRow.value.valid ? "objects.validStatus" : "objects.invalidStatus") }] : []),
     { label: t("structureEditor.comment"), value: tableOverviewComment.value ?? "" },
     { label: t("grid.tableInfoEstimatedRows"), value: formatObjectBrowserCount(stats?.estimated_rows) },
     { label: t("grid.tableInfoTotalSize"), value: formatObjectBrowserBytes(stats?.total_bytes) },
@@ -1954,10 +1957,9 @@ function closeSource() {
 
 async function saveFileContent(content: string, defaultFileName: string, filterName: string, filterExt: string) {
   if (isTauriRuntime()) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    const path = await save({
-      defaultPath: defaultFileName,
+    const path = await promptExportSavePath({
+      defaultFileName,
       filters: [{ name: filterName, extensions: [filterExt] }],
     });
     if (path) await writeTextFile(path, content);
@@ -2413,16 +2415,16 @@ async function exportDataLegacy(row: ObjectBrowserRow, format: "json") {
     if (format === "json") {
       let outputPath = `${row.name}.json`;
       if (isTauriRuntime()) {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const path = await save({
-          defaultPath: outputPath,
+        const path = await promptExportSavePath({
+          defaultFileName: outputPath,
           filters: [{ name: "JSON", extensions: ["json"] }],
         });
         if (!path) return;
-        outputPath = path as string;
+        outputPath = path;
       }
       await api.exportQueryResultJson(outputPath, result.columns, result.rows);
       toast(t("grid.exported"));
+      void autoRevealExportedPathIfConfigured(outputPath);
     }
   } catch (e: any) {
     toast(t("grid.exportFailed", { message: e?.message || String(e) }), 5000);
@@ -2489,10 +2491,9 @@ async function exportTableData(row: ObjectBrowserRow, format: "csv" | "xlsx" | "
 
   if (isTauriRuntime()) {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
       const filter = format === "csv" ? { name: "CSV", extensions: ["csv"] } : format === "xlsx" ? { name: "Excel", extensions: ["xlsx"] } : splitSqlOutput ? { name: "ZIP", extensions: ["zip"] } : { name: "SQL", extensions: ["sql"] };
-      const path = await save({
-        defaultPath: defaultName,
+      const path = await promptExportSavePath({
+        defaultFileName: defaultName,
         filters: [filter],
       });
       if (!path) return;
@@ -2523,6 +2524,7 @@ async function exportTableData(row: ObjectBrowserRow, format: "csv" | "xlsx" | "
         await api.exportQueryResultXlsx(filePath, row.name, result.columns, result.column_types ?? result.columns.map(() => ""), headerOverrides, result.rows, undefined, autoFilter, settingsStore.editorSettings.globalDateTimeExportFormat || undefined);
       }
       toast(t("grid.exported"));
+      void autoRevealExportedPathIfConfigured(filePath);
       return;
     }
     let columns: string[] | undefined;
@@ -4108,7 +4110,10 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
                       <ChevronRight v-else class="h-3.5 w-3.5" />
                     </button>
                     <span v-else-if="item.partitionParentId" class="h-5 w-5 shrink-0" />
-                    <component :is="iconFor(item)" class="h-3.5 w-3.5 shrink-0" :class="iconClass(item.type)" />
+                    <span class="relative flex h-3.5 w-3.5 shrink-0" :class="{ 'overflow-visible': item.valid === false }">
+                      <component :is="iconFor(item)" class="h-3.5 w-3.5 shrink-0" :class="iconClass(item.type)" />
+                      <CircleX v-if="item.valid === false" data-invalid-object-indicator="true" class="pointer-events-none absolute -right-1 -bottom-1 h-2.5 w-2.5 rounded-full bg-background text-destructive stroke-[3]" aria-hidden="true" />
+                    </span>
                     <span class="truncate text-[13px] font-medium text-foreground" :title="item.displayName">{{ item.displayName }}</span>
                     <span v-if="item.partitionCount" class="shrink-0 rounded border bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground">
                       {{ t("objects.partitions", { count: item.partitionCount }) }}
@@ -4116,7 +4121,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
                   </div>
                   <div class="flex min-w-0 items-center gap-1.5 truncate text-xs text-muted-foreground">
                     <span class="truncate">{{ typeLabel(item) }}</span>
-                    <span v-if="item.type === 'VIEW' && item.valid != null" class="shrink-0 rounded border px-1 py-px text-[10px] font-medium" :class="item.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
+                    <span v-if="item.valid != null" class="shrink-0 rounded border px-1 py-px text-[10px] font-medium" :class="item.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
                       {{ t(item.valid ? "objects.validStatus" : "objects.invalidStatus") }}
                     </span>
                   </div>
@@ -4159,13 +4164,14 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
                       <CheckSquare v-if="selectedTableIds.has(item.id)" class="h-3.5 w-3.5 text-primary" />
                       <Square v-else class="h-3.5 w-3.5" />
                     </button>
-                    <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-sm" :class="iconBgClass(item.type)">
+                    <div class="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full shadow-sm" :class="[iconBgClass(item.type), { 'overflow-visible': item.valid === false }]">
                       <component :is="iconFor(item)" class="h-6 w-6" :class="iconClass(item.type)" />
+                      <CircleX v-if="item.valid === false" data-invalid-object-indicator="true" class="pointer-events-none absolute -right-0.5 -bottom-0.5 h-4 w-4 rounded-full bg-background text-destructive stroke-[3]" aria-hidden="true" />
                     </div>
                     <span class="w-full truncate text-sm font-medium leading-tight text-foreground">{{ item.displayName }}</span>
                     <div class="flex items-center gap-1.5">
                       <span class="text-xs text-muted-foreground">{{ typeLabel(item) }}</span>
-                      <span v-if="item.type === 'VIEW' && item.valid != null" class="rounded border px-1 py-px text-[10px] font-medium" :class="item.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
+                      <span v-if="item.valid != null" class="rounded border px-1 py-px text-[10px] font-medium" :class="item.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
                         {{ t(item.valid ? "objects.validStatus" : "objects.invalidStatus") }}
                       </span>
                       <span v-if="showObjectRowStats && item.estimatedRows != null && item.estimatedRows > 0" class="object-browser-stat-badge object-browser-stat-badge-rows rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-primary">{{
@@ -4412,6 +4418,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
           <div class="flex h-8 shrink-0 items-center gap-2 border-b bg-muted/20 px-3">
             <Code2 class="h-3.5 w-3.5 text-muted-foreground" />
             <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ sourceTitle(sourceRow) }}</span>
+            <span v-if="sourceRow?.valid != null" class="shrink-0 rounded border px-1 py-px text-[10px] font-medium" :class="sourceRow.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
+              {{ t(sourceRow.valid ? "objects.validStatus" : "objects.invalidStatus") }}
+            </span>
             <Button v-if="sourceEditing" variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="sourceSaving || !sourceDraft.trim()" @click="saveSource">
               <Loader2 v-if="sourceSaving" class="mr-1 h-3 w-3 animate-spin" />
               {{ t("objects.saveSource") }}

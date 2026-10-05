@@ -182,6 +182,7 @@ import { elasticsearchJsonResponseForResult } from "@/lib/elasticsearch/elastics
 import { elasticsearchProfileBodyForResult, parseElasticsearchProfile } from "@/lib/elasticsearch/elasticsearchProfile";
 import * as api from "@/lib/backend/api";
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
+import { promptExportSavePath } from "@/lib/export/exportPath";
 import { queryResultExportBaseName } from "@/lib/export/saveTextFile";
 import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaseline, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
 import { buildMongoQueryResultOperations, formatMongoQueryResultOperationPreview } from "@/lib/mongo/mongoQueryResultEditing";
@@ -222,7 +223,7 @@ type DataGridHandle = DataGridColumnLayoutHandle & {
   showDdl: boolean;
   toggleDdl: (tab?: TableInfoTab) => void;
   canOpenTableStructureEditor: boolean;
-  openTableStructureEditor: (tab: TableInfoTab) => void;
+  openTableStructureEditor: (tab?: TableInfoTab) => boolean;
   multiRowTranspose: boolean;
   setMultiRowTranspose: (value: boolean) => void;
   exportCsv: () => Promise<void>;
@@ -1312,6 +1313,11 @@ function openGoToColumn(): boolean {
   return dataGridRef.value?.openGoToColumn() ?? false;
 }
 
+function openTableStructureEditor(initialTab: TableInfoTab = "columns"): boolean {
+  if (props.activeTab.mode !== "data") return false;
+  return dataGridRef.value?.openTableStructureEditor?.(initialTab) ?? false;
+}
+
 function refreshQueryEditorCompletionCache(): boolean {
   if (props.activeTab.mode !== "query" || !queryEditorRef.value) return false;
   queryEditorRef.value.refreshCompletionCache();
@@ -1682,11 +1688,14 @@ async function handleExportQuery(payload: { sql: string; format: "csv" | "xlsx" 
   if (!tab || tab.mode !== "query") return;
   let filePath = `query-result.${payload.format}`;
   if (isTauriRuntime()) {
-    const { save } = await import("@tauri-apps/plugin-dialog");
     const filterName = payload.format === "csv" ? "CSV" : payload.format === "xlsx" ? "Excel" : "Text";
-    const picked = await save({ defaultPath: filePath, filters: [{ name: filterName, extensions: [payload.format] }] });
+    const picked = await promptExportSavePath({
+      defaultFileName: filePath,
+      filters: [{ name: filterName, extensions: [payload.format] }],
+      preferredPath: settingsStore.editorSettings.preferredExportPath,
+    });
     if (!picked) return;
-    filePath = picked as string;
+    filePath = picked;
   }
   await queryStore.exportQuerySqlDirect(tab.id, payload.sql, payload.format, filePath, payload.columnComments);
 }
@@ -1803,6 +1812,7 @@ defineExpose({
   focusQueryEditor,
   focusWhere,
   openGoToColumn,
+  openTableStructureEditor,
   refreshData,
   toggleResultsPane,
   refreshQueryEditorCompletionCache,
@@ -2375,6 +2385,7 @@ defineExpose({
               :explain-sql="activeTab.explainSql"
               :table-result="activeTab.explainTableResult"
               :table-error="activeTab.explainTableError"
+              :default-view="settingsStore.editorSettings.defaultExplainView"
             />
 
             <ElasticsearchProfilePanel v-else-if="activeOutputView === 'profile' && canShowProfile" class="flex-1 min-h-0" :body="activeElasticsearchProfileBody ?? ''" />
@@ -2537,6 +2548,7 @@ defineExpose({
                 :allow-insert-rows="activeTab.queryAnalysis?.allowInsert ?? activeTab.queryAnalysis?.allowInsertDelete !== false"
                 :allow-delete-rows="activeTab.queryAnalysis?.allowDelete ?? activeTab.queryAnalysis?.allowInsertDelete !== false"
                 context="results"
+                :reveal-column-request="activeTab.gridRevealColumnRequest"
                 :auto-transpose-single-row="settingsStore.editorSettings.dataGridAutoTransposeSingleRow"
                 :database-type="activeEffectiveDatabaseType"
                 :connection-id="activeResultConnectionId"
@@ -3037,6 +3049,7 @@ defineExpose({
           :show-cancel="shouldShowCancelAction(activeTab)"
           :cancelling="activeTab.isCancelling"
           :cancel-disabled="!canCancelQueryExecution(activeTab)"
+          :reveal-column-request="activeTab.gridRevealColumnRequest"
           @cancel="emit('cancel', activeTab.id)"
           @update:where-input="(v: string) => (activeTab.whereInput = v)"
           @update:order-by-input="(v: string) => (activeTab.orderByInput = v)"

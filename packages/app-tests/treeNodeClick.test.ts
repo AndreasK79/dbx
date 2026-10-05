@@ -99,8 +99,16 @@ test("double-click follow-up clicks do not repeat side-effecting row actions", (
 });
 
 test("plain metadata leaf rows do nothing on row clicks", () => {
-  assert.equal(treeNodeRowAction("column", false), "none");
   assert.equal(treeNodeRowAction("index", false), "none");
+});
+
+test("column rows locate column on single click and open structure editor on double click", () => {
+  assert.equal(treeNodeRowAction("column", false, "single"), "locate-column");
+  assert.equal(treeNodeRowAction("column", false, "double"), "none");
+  assert.equal(treeNodeRowDoubleClickAction("column", false, "single"), "open-structure-editor");
+  assert.equal(treeNodeRowDoubleClickAction("column", false, "double"), "open-structure-editor");
+  assert.equal(treeNodeRowDoubleClickAction("index", false, "single"), "open-structure-editor");
+  assert.equal(treeNodeRowDoubleClickAction("index", false, "double"), "open-structure-editor");
 });
 
 test("maps source-capable sidebar nodes to object source kinds", () => {
@@ -147,7 +155,7 @@ test("double click does not open object browser for non-browsable rows", () => {
   assert.equal(treeNodeRowDoubleClickAction("database", false), "none");
   assert.equal(treeNodeRowDoubleClickAction("view", true), "none");
   assert.equal(treeNodeRowDoubleClickAction("materialized_view", true), "none");
-  assert.equal(treeNodeRowDoubleClickAction("column", true), "none");
+  assert.equal(treeNodeRowDoubleClickAction("column", true), "open-structure-editor");
 });
 
 test("double click navigation mode copies the selected sidebar row name", () => {

@@ -18,6 +18,7 @@ import {
   normalizeMcpGlobalPolicy,
   type RightSidebarPanelState,
   transitionRightSidebarPanels,
+  WELCOME_PAGE_DEFAULT_VERSION,
 } from "@/stores/settingsStore";
 import type { AiConfigItem } from "@/types/ai";
 import { DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION } from "@/lib/dataGrid/dataGridCopyExtractor";
@@ -29,6 +30,25 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({}).resultTabPreferComments).toBe(true);
     expect(normalizeEditorSettings({ resultTabPreferComments: false }).resultTabPreferComments).toBe(false);
     expect(normalizeEditorSettings({ resultTabPreferComments: "false" } as any).resultTabPreferComments).toBe(true);
+  });
+
+  it("defaults webLogoPosition to left and validates positions (#11053)", () => {
+    expect(DEFAULT_EDITOR_SETTINGS.webLogoPosition).toBe("left");
+    expect(normalizeEditorSettings({}).webLogoPosition).toBe("left");
+    expect(normalizeEditorSettings({ webLogoPosition: "right" }).webLogoPosition).toBe("right");
+    expect(normalizeEditorSettings({ webLogoPosition: "hidden" }).webLogoPosition).toBe("hidden");
+    expect(normalizeEditorSettings({ webLogoPosition: "invalid" as any }).webLogoPosition).toBe("left");
+    expect(normalizeEditorSettings({ webLogoPosition: undefined }).webLogoPosition).toBe("left");
+  });
+
+  it("defaults the welcome page to the workspace overview and honors an explicitly saved intro mode", () => {
+    expect(DEFAULT_EDITOR_SETTINGS.welcomePageMode).toBe("workspace");
+    expect(normalizeEditorSettings({}).welcomePageMode).toBe("workspace");
+    expect(normalizeEditorSettings({ welcomePageMode: "bogus", welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION }).welcomePageMode).toBe("workspace");
+    // A persisted intro from the intro-default builds carries no version marker and migrates back.
+    expect(normalizeEditorSettings({ welcomePageMode: "intro" }).welcomePageMode).toBe("workspace");
+    expect(normalizeEditorSettings({ welcomePageMode: "intro", welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION }).welcomePageMode).toBe("intro");
+    expect(normalizeEditorSettings({ welcomePageMode: "workspace", welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION }).welcomePageMode).toBe("workspace");
   });
 
   it("defaults and sanitizes AI conversation typography independently", () => {
@@ -353,6 +373,13 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({ sqlServerSpaceConfirmsCompletion: "yes" as unknown as boolean }).sqlServerSpaceConfirmsCompletion).toBe(false);
   });
 
+  it("enables function completion parameter examples by default and preserves an explicit opt-out", () => {
+    expect(DEFAULT_EDITOR_SETTINGS.functionCompletionIncludeParams).toBe(true);
+    expect(normalizeEditorSettings({}).functionCompletionIncludeParams).toBe(true);
+    expect(normalizeEditorSettings({ functionCompletionIncludeParams: false }).functionCompletionIncludeParams).toBe(false);
+    expect(normalizeEditorSettings({ functionCompletionIncludeParams: "yes" as unknown as boolean }).functionCompletionIncludeParams).toBe(true);
+  });
+
   it("defaults snippetTriggerKey to tab and preserves valid options while falling back on invalid values", () => {
     expect(normalizeEditorSettings({}).snippetTriggerKey).toBe("tab");
     expect(normalizeEditorSettings({ snippetTriggerKey: "tab" }).snippetTriggerKey).toBe("tab");
@@ -594,6 +621,15 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({}).multiStatementDefaultView).toBe("result");
     expect(normalizeEditorSettings({ multiStatementDefaultView: "summary" }).multiStatementDefaultView).toBe("summary");
     expect(normalizeEditorSettings({ multiStatementDefaultView: "invalid" as any }).multiStatementDefaultView).toBe("result");
+  });
+
+  it("defaults execution plan view to canvas and preserves valid options", () => {
+    expect(normalizeEditorSettings({}).defaultExplainView).toBe("canvas");
+    expect(normalizeEditorSettings({ defaultExplainView: "table" }).defaultExplainView).toBe("table");
+    expect(normalizeEditorSettings({ defaultExplainView: "tree" }).defaultExplainView).toBe("tree");
+    expect(normalizeEditorSettings({ defaultExplainView: "summary" }).defaultExplainView).toBe("summary");
+    expect(normalizeEditorSettings({ defaultExplainView: "raw" }).defaultExplainView).toBe("raw");
+    expect(normalizeEditorSettings({ defaultExplainView: "invalid" as any }).defaultExplainView).toBe("canvas");
   });
 
   it("defaults persistent data grid view options off and preserves enabled values", () => {
@@ -1001,6 +1037,26 @@ describe("normalizeEditorSettings - tabLayout", () => {
   });
 });
 
+describe("normalizeEditorSettings - tabMaxWidth", () => {
+  it("defaults tabMaxWidth to 0", () => {
+    expect(normalizeEditorSettings({}).tabMaxWidth).toBe(0);
+  });
+
+  it("preserves valid width values", () => {
+    expect(normalizeEditorSettings({ tabMaxWidth: 160 }).tabMaxWidth).toBe(160);
+    expect(normalizeEditorSettings({ tabMaxWidth: 240 }).tabMaxWidth).toBe(240);
+    expect(normalizeEditorSettings({ tabMaxWidth: 320 }).tabMaxWidth).toBe(320);
+  });
+
+  it("falls back to 0 for invalid values", () => {
+    expect(normalizeEditorSettings({ tabMaxWidth: -10 } as any).tabMaxWidth).toBe(0);
+    expect(normalizeEditorSettings({ tabMaxWidth: 9999 } as any).tabMaxWidth).toBe(0);
+    expect(normalizeEditorSettings({ tabMaxWidth: "240" } as any).tabMaxWidth).toBe(0);
+    expect(normalizeEditorSettings({ tabMaxWidth: null } as any).tabMaxWidth).toBe(0);
+    expect(normalizeEditorSettings({ tabMaxWidth: undefined } as any).tabMaxWidth).toBe(0);
+  });
+});
+
 describe("normalizeEditorSettings - sidebarPinDefaultDatabase", () => {
   it("defaults sidebarPinDefaultDatabase to true", () => {
     expect(normalizeEditorSettings({}).sidebarPinDefaultDatabase).toBe(true);
@@ -1016,6 +1072,39 @@ describe("normalizeEditorSettings - sidebarPinDefaultDatabase", () => {
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: undefined } as any).sidebarPinDefaultDatabase).toBe(true);
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: null } as any).sidebarPinDefaultDatabase).toBe(true);
     expect(normalizeEditorSettings({ sidebarPinDefaultDatabase: 0 } as any).sidebarPinDefaultDatabase).toBe(true);
+  });
+});
+
+describe("normalizeEditorSettings - preferredExportPath", () => {
+  it("defaults preferredExportPath to empty string", () => {
+    expect(normalizeEditorSettings({}).preferredExportPath).toBe("");
+  });
+
+  it("trims and preserves valid string paths", () => {
+    expect(normalizeEditorSettings({ preferredExportPath: "  /home/user/exports  " }).preferredExportPath).toBe("/home/user/exports");
+  });
+
+  it("falls back to default for non-string values", () => {
+    expect(normalizeEditorSettings({ preferredExportPath: null } as any).preferredExportPath).toBe("");
+    expect(normalizeEditorSettings({ preferredExportPath: undefined } as any).preferredExportPath).toBe("");
+    expect(normalizeEditorSettings({ preferredExportPath: 123 } as any).preferredExportPath).toBe("");
+  });
+});
+
+describe("normalizeEditorSettings - autoOpenExportFolder", () => {
+  it("defaults autoOpenExportFolder to false", () => {
+    expect(normalizeEditorSettings({}).autoOpenExportFolder).toBe(false);
+  });
+
+  it("preserves boolean values", () => {
+    expect(normalizeEditorSettings({ autoOpenExportFolder: true }).autoOpenExportFolder).toBe(true);
+    expect(normalizeEditorSettings({ autoOpenExportFolder: false }).autoOpenExportFolder).toBe(false);
+  });
+
+  it("falls back to default for non-boolean values", () => {
+    expect(normalizeEditorSettings({ autoOpenExportFolder: "true" } as any).autoOpenExportFolder).toBe(false);
+    expect(normalizeEditorSettings({ autoOpenExportFolder: null } as any).autoOpenExportFolder).toBe(false);
+    expect(normalizeEditorSettings({ autoOpenExportFolder: 1 } as any).autoOpenExportFolder).toBe(false);
   });
 });
 
@@ -1339,6 +1428,31 @@ describe("settingsStore persisted settings initialization", () => {
     await store.updateEditorSettingsAndPersist({ dataGridAutoHideFilterBuilder: true } as any);
     expect(store.editorSettings.dataGridKeepFilterEditorExpanded).toBe(false);
     expect(saveEditorSettings).toHaveBeenLastCalledWith(expect.objectContaining({ dataGridKeepFilterEditorExpanded: false }));
+  });
+
+  it("resets a persisted intro welcome page from the intro-default builds and keeps later explicit choices", async () => {
+    const loadEditorSettings = vi.fn().mockResolvedValueOnce({
+      welcomePageMode: "intro",
+      executeModeDefaultVersion: EXECUTE_MODE_CURRENT_DEFAULT_VERSION,
+      sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION,
+      dataGridExtractorOptionsMigrationVersion: DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
+    });
+    const saveEditorSettings = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
+
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const store = useSettingsStore();
+    await store.initEditorSettings();
+
+    expect(store.editorSettings.welcomePageMode).toBe("workspace");
+    expect(store.editorSettings.welcomePageModeDefaultVersion).toBe(WELCOME_PAGE_DEFAULT_VERSION);
+    await vi.waitFor(() => expect(saveEditorSettings).toHaveBeenCalledOnce());
+    expect(saveEditorSettings).toHaveBeenLastCalledWith(expect.objectContaining({ welcomePageMode: "workspace", welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION }));
+
+    store.updateEditorSettings({ welcomePageMode: "intro" });
+    expect(store.editorSettings.welcomePageMode).toBe("intro");
+    await vi.waitFor(() => expect(saveEditorSettings).toHaveBeenCalledTimes(2));
+    expect(saveEditorSettings).toHaveBeenLastCalledWith(expect.objectContaining({ welcomePageMode: "intro", welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION }));
   });
 
   it("persists table completion schema qualification updates", async () => {
@@ -1665,6 +1779,34 @@ describe("settingsStore persisted settings initialization", () => {
     expect(saveEditorSettings).toHaveBeenCalledTimes(2);
     expect(saveEditorSettings).toHaveBeenLastCalledWith(expect.objectContaining({ sidebarShowConnectionNotes: true }));
   });
+
+  it("persists preferredExportPath update", async () => {
+    const loadEditorSettings = vi.fn().mockResolvedValue({ preferredExportPath: "" });
+    const saveEditorSettings = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
+
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const store = useSettingsStore();
+    await store.initEditorSettings();
+
+    await store.updateEditorSettingsAndPersist({ preferredExportPath: "  /custom/export/dir  " });
+    expect(store.editorSettings.preferredExportPath).toBe("/custom/export/dir");
+    expect(saveEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ preferredExportPath: "/custom/export/dir" }));
+  });
+
+  it("persists autoOpenExportFolder update", async () => {
+    const loadEditorSettings = vi.fn().mockResolvedValue({ autoOpenExportFolder: false });
+    const saveEditorSettings = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
+
+    const { useSettingsStore } = await import("@/stores/settingsStore");
+    const store = useSettingsStore();
+    await store.initEditorSettings();
+
+    await store.updateEditorSettingsAndPersist({ autoOpenExportFolder: true });
+    expect(store.editorSettings.autoOpenExportFolder).toBe(true);
+    expect(saveEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ autoOpenExportFolder: true }));
+  });
 });
 
 describe("settingsStore editor settings persistence", () => {
@@ -1710,6 +1852,7 @@ describe("settingsStore editor settings persistence", () => {
       ignoredUpdateVersion: "",
       executeModeDefaultVersion: EXECUTE_MODE_CURRENT_DEFAULT_VERSION,
       sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION,
+      welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION,
     });
     const saveEditorSettings = vi.fn().mockRejectedValueOnce(new Error("save failed")).mockResolvedValueOnce(undefined);
     vi.doMock("@/lib/backend/api", () => ({ loadEditorSettings, saveEditorSettings }));
@@ -1757,6 +1900,7 @@ describe("settingsStore editor settings persistence", () => {
       ignoredUpdateVersion: "",
       executeModeDefaultVersion: EXECUTE_MODE_CURRENT_DEFAULT_VERSION,
       sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION,
+      welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION,
     });
     const saveEditorSettings = vi.fn().mockImplementationOnce(
       () =>
@@ -1793,6 +1937,7 @@ describe("settingsStore editor settings persistence", () => {
       theme: "system",
       executeModeDefaultVersion: EXECUTE_MODE_CURRENT_DEFAULT_VERSION,
       sidebarBrowseObjectsOnDatabaseActivationMigrationVersion: SIDEBAR_BROWSE_OBJECTS_MIGRATION_VERSION,
+      welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION,
     });
     const saveEditorSettings = vi.fn().mockImplementationOnce(
       () =>

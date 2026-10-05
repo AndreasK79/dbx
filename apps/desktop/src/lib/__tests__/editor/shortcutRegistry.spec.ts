@@ -14,6 +14,7 @@ import {
   normalizeShortcutSettings,
   resolveCapturedShortcutEdit,
   selectionOccurrenceDefaultShortcut,
+  selectLineEndsDefaultShortcut,
   SHORTCUT_DEFINITIONS,
   shortcutToCodeMirrorKey,
   toggleAiPanelDefaultShortcut,
@@ -392,6 +393,14 @@ describe("shortcutRegistry editor actions", () => {
     // unbound by default so Ctrl+D belongs to occurrence selection (VS Code style).
     expect(DEFAULT_SHORTCUT_SETTINGS.duplicateLine).toBe("");
     expect(findShortcutConflict("addNextSelectionOccurrence", DEFAULT_SHORTCUT_SETTINGS.addNextSelectionOccurrence, DEFAULT_SHORTCUT_SETTINGS)).toBeNull();
+  });
+
+  it("registers the VS Code-style select-line-ends shortcut", () => {
+    const definition = SHORTCUT_DEFINITIONS.find((item) => item.id === "selectLineEnds");
+    expect(definition).toMatchObject({ scope: "editor", defaultShortcut: "Alt+Shift+I", labelKey: "settings.shortcutSelectLineEnds" });
+    expect(selectLineEndsDefaultShortcut("MacIntel")).toBe("Alt+Shift+I");
+    expect(selectLineEndsDefaultShortcut("Win32")).toBe("Alt+Shift+I");
+    expect(shortcutToCodeMirrorKey(selectLineEndsDefaultShortcut("MacIntel"))).toBe("Alt-Shift-i");
   });
 
   it("resolves occurrence selection defaults per platform", () => {

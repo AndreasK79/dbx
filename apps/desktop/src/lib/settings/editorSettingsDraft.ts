@@ -30,6 +30,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "tableCompletionSchemaQualification",
   "insertSpaceAfterCompletion",
   "sqlServerSpaceConfirmsCompletion",
+  "functionCompletionIncludeParams",
   "snippetTriggerKey",
   "sortCompletionColumnsAlphabetically",
   "selectFirstCompletionOnOpen",
@@ -47,11 +48,13 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "savedSqlOpenTargetMode",
   "welcomePageMode",
   "appLayout",
+  "webLogoPosition",
   "tabLayout",
   "tabPlacement",
   "colorizeConnectionTabs",
   "tabGroupMode",
   "tabSortMode",
+  "tabMaxWidth",
   "showColumnCommentsInHeader",
   "showColumnTypesInHeader",
   "showColumnHeaderTooltips",
@@ -71,6 +74,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "dataGridTextFilterPanelHeight",
   "defaultAutoKeepResults",
   "multiStatementDefaultView",
+  "defaultExplainView",
   "dataGridAutoTransposeSingleRow",
   "dataGridCellDetailButtonVisible",
   "dataGridCellDetailDialogDefault",
@@ -90,6 +94,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "autoCalculateTotalRows",
   "flatteningMultiLineText",
   "dataGridShowWhitespace",
+  "modelGenerationTemplates",
   "tableColumnTemplateFields",
   "shortcuts",
   "sqlFormatter",
@@ -132,6 +137,8 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "redisKeyTemplates",
   "redisDatabaseDisplayLimit",
   "exportBatchSize",
+  "preferredExportPath",
+  "autoOpenExportFolder",
   "csvQuoteMode",
   "csvNullMode",
   "exportRowLimitEnabled",
@@ -181,6 +188,7 @@ function normalizedDraftValue(key: EditorSettingsDraftKey, value: unknown): unkn
   if (key === "csvNullMode") return normalizeCsvNullMode(value);
   if (key === "backgroundImage") return normalizeBackgroundImageSettings(value);
   if (key === "snippetTriggerKey") return value === "space" || value === "both" ? value : "tab";
+  if (key === "webLogoPosition") return value === "right" || value === "hidden" ? value : "left";
   return value;
 }
 

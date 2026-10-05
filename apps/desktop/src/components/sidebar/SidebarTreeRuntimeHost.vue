@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, watch, onBeforeUnmount, onScopeDispose, inject, reactive, ref, shallowRef } from "vue";
+import { computed, defineAsyncComponent, nextTick, watch, onBeforeUnmount, onScopeDispose, inject, reactive, ref, shallowRef } from "vue";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import PluginWorkbenchHost from "@/components/plugins/PluginWorkbenchHost.vue";
 import type { PluginWorkbenchContext } from "@/lib/plugins/pluginHostBridge";
@@ -425,6 +425,11 @@ const props = defineProps<{
   highlighted?: boolean;
 }>();
 
+const ModelGenerateDialog = defineAsyncComponent(() => import("@/components/generate/ModelGenerateDialog.vue"));
+const modelGenerationTarget = shallowRef<TreeNode | null>(null);
+function openModelGeneration() {
+  modelGenerationTarget.value = { ...activeNode.value };
+}
 const activeNode = shallowRef<TreeNode>(props.node);
 let acceptedSelectionIds: readonly string[] | null = null;
 let latestNavigationRequestId = 0;
@@ -1007,7 +1012,7 @@ async function toggle(requestId = beginNavigationRequest()) {
         await connectionStore.loadMongoDatabases(node.connectionId);
       } else if (config?.db_type === "dynamodb") {
         await connectionStore.loadDynamoDbTables(node.connectionId);
-      } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch" || config?.db_type === "meilisearch" || config?.db_type === "solr") {
+      } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch" || config?.db_type === "meilisearch" || config?.db_type === "solr" || config?.db_type === "couchdb") {
         // Expand: list indices/cores (like other db types list databases).
         await connectionStore.loadElasticsearchIndices(node.connectionId);
       } else if (config?.db_type === "milvus") {
@@ -1192,6 +1197,8 @@ function runRowClickAction(clickDetail: number) {
   const requestId = beginNavigationRequest();
   if (action === "open-data") {
     scheduleOpenData(node);
+  } else if (action === "locate-column") {
+    locateColumnInDataGrid(node);
   } else if (action === "open-object-browser") {
     void openObjectBrowser(false, false, true);
   } else if (action === "open-object-browser-and-expand") {
@@ -1620,8 +1627,8 @@ function onDoubleClick(event: MouseEvent) {
     return;
   }
   const action = treeNodeRowDoubleClickAction(activeNode.value.type, canOpenObjectBrowser.value, settingsStore.editorSettings.sidebarActivation, canExpand.value, currentDatabaseType(), canOpenConnectionDatabaseBrowser.value, settingsStore.editorSettings.sidebarBrowseObjectsOnDatabaseActivation);
-  // In single-click mode the trailing dblclick normally has no action and must
-  // leave the first click's request ownership intact.
+  // Most trailing dblclick events are intentionally inert in single-click
+  // mode, but field and index rows have an explicit editor action.
   if (action === "none") return;
   const requestId = beginNavigationRequest();
   if (action === "open-database-browser") {
@@ -1635,6 +1642,10 @@ function onDoubleClick(event: MouseEvent) {
     openDataImmediately(activeNode.value);
   } else if (action === "activate-data") {
     activateDataTableFromDoubleClick();
+  } else if (action === "locate-column") {
+    locateColumnInDataGrid(activeNode.value);
+  } else if (action === "open-structure-editor") {
+    if (canOpenStructureEditor.value) openStructureEditor();
   } else if (action === "open-source") {
     openObjectSourceDialog(false);
   } else if (action === "open-extension-details") {
@@ -1675,6 +1686,57 @@ function findExistingSameTableDataTab() {
   const config = connectionStore.getConfig(node.connectionId);
   const tableSchema = connectionObjectTreeNodeSchema(config, node.database, node.schema);
   return queryStore.tabs.find((tab) => tab.mode === "data" && tab.connectionId === node.connectionId && tab.database === node.database && (tab.tableMeta?.catalog || "") === (node.catalog || "") && (tab.schema || "") === (tableSchema || "") && (tab.tableMeta?.tableName || tab.title) === node.label);
+}
+
+function extractColumnNameFromTreeNode(node: TreeNode): string {
+  if (node.meta && typeof node.meta === "object" && "name" in node.meta && typeof (node.meta as any).name === "string") {
+    return (node.meta as any).name;
+  }
+  return node.label.replace(/\s+\(.+\)$/, "").trim();
+}
+
+function findTableNodeForColumn(columnNode: TreeNode): TreeNode | undefined {
+  if (!columnNode.tableName) return undefined;
+  const match = (n: TreeNode): boolean => {
+    return (
+      (n.type === "table" || n.type === "view" || n.type === "materialized_view") &&
+      n.connectionId === columnNode.connectionId &&
+      n.database === columnNode.database &&
+      (n.schema || "") === (columnNode.schema || "") &&
+      (n.catalog || "") === (columnNode.catalog || "") &&
+      (n.label === columnNode.tableName || n.tableName === columnNode.tableName)
+    );
+  };
+  const search = (nodes: TreeNode[]): TreeNode | undefined => {
+    for (const n of nodes) {
+      if (match(n)) return n;
+      if (n.children?.length) {
+        const found = search(n.children);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  };
+  return search(connectionStore.treeNodes);
+}
+
+function locateColumnInDataGrid(columnNode: TreeNode) {
+  if (!columnNode.tableName || !hasNodeDatabaseContext(columnNode)) return;
+  const columnName = extractColumnNameFromTreeNode(columnNode);
+  if (!columnName) return;
+
+  const tableNode = findTableNodeForColumn(columnNode) ?? {
+    id: columnNode.schema ? `${columnNode.connectionId}:${columnNode.database}:${columnNode.schema}:${columnNode.tableName}` : `${columnNode.connectionId}:${columnNode.database}:${columnNode.tableName}`,
+    label: columnNode.tableName,
+    type: "table" as const,
+    connectionId: columnNode.connectionId,
+    database: columnNode.database,
+    schema: columnNode.schema,
+    catalog: columnNode.catalog,
+    tableName: columnNode.tableName,
+  };
+
+  emit("open-data", tableNode, false, "default", (target, request) => openData(target, request, "default", { revealColumn: columnName }));
 }
 
 function openMongoTreeData(node: TreeNode) {
@@ -4845,7 +4907,7 @@ const canOpenSqlFileExecution = computed(() => {
 const canExportAllDatabases = computed(() => {
   if (activeNode.value.type !== "connection" || !activeNode.value.connectionId) return false;
   const dbType = connectionStore.getConfig(activeNode.value.connectionId)?.db_type;
-  return !["redis", "mongodb", "dynamodb", "elasticsearch", "easysearch", "meilisearch", "solr", "qdrant", "milvus", "weaviate", "chromadb", "etcd", "zookeeper", "consul", "mq", "nacos", "plugin", "salesforce", "neo4j", "nebula"].includes(dbType || "");
+  return !["redis", "mongodb", "dynamodb", "elasticsearch", "easysearch", "meilisearch", "solr", "couchdb", "qdrant", "milvus", "weaviate", "chromadb", "etcd", "zookeeper", "consul", "mq", "nacos", "plugin", "salesforce", "neo4j", "nebula"].includes(dbType || "");
 });
 
 const canOpenScheduledBackups = computed(() => {
@@ -6095,7 +6157,11 @@ function buildDatabaseSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   const { node, items } = context;
 
-  if (node.type === "saved-sql-root") {
+  if (node.type === "saved-sql-root" || node.type === "saved-sql-folder") {
+    if (supportsConnectionQueryActions(currentDatabaseType())) {
+      items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+      items.push({ label: "", separator: true });
+    }
     items.push({
       label: t("savedSql.pasteFile"),
       action: () => requestPasteTreeClipboard(),
@@ -6108,6 +6174,9 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 
   if (node.type === "saved-sql-file") {
     items.push({ label: t("savedSql.open"), action: openSavedSqlFile, icon: FileCode });
+    if (supportsConnectionQueryActions(currentDatabaseType())) {
+      items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    }
     items.push({ label: "", separator: true });
     items.push({ label: t("savedSql.copyFile"), action: copySavedSqlFiles, icon: Copy, shortcut: shortcutCopyName.value });
     items.push({
@@ -6453,6 +6522,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
         variant: "destructive" as const,
       });
     }
+    if (node.type === "table") items.push({ label: t("modelGeneration.title"), action: openModelGeneration, icon: Code2 });
     items.push({
       label: t("contextMenu.generateSql"),
       icon: FilePlus,
@@ -7226,6 +7296,7 @@ defineExpose({
 </script>
 
 <template>
+  <ModelGenerateDialog v-if="modelGenerationTarget" :key="modelGenerationTarget.id" :target="modelGenerationTarget" @close="modelGenerationTarget = null" />
   <Dialog
     :open="!!pluginDialog"
     @update:open="

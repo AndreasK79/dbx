@@ -1491,6 +1491,7 @@ async fn try_export_native_table_stream(
                             spatial_values: Vec::new(),
                             rows: std::mem::take(pending_rows),
                             batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
+                            preserve_original_language: false,
                         }),
                         &sql_export_excluded_columns(request, primary_keys, col_names, column_extras),
                         request.insert_dialect,
@@ -2347,6 +2348,7 @@ async fn export_table_data_core_inner(
                         spatial_values: result.spatial_values.clone(),
                         rows: result.rows.clone(),
                         batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
+                        preserve_original_language: false,
                     }),
                     &sql_export_excluded_columns(request, &primary_keys, &col_names, &column_extras),
                     request.insert_dialect,
@@ -3500,6 +3502,7 @@ mod tests {
             spatial_values: Vec::new(),
             rows: vec![vec![json!(1), json!("Ada")]],
             batch_size: Some(100),
+            preserve_original_language: false,
         })
         .unwrap();
         assert_eq!(statements, vec!["INSERT INTO \"APP\".\"USERS\" (\"ID\", \"NAME\") VALUES (1, 'Ada');"]);
@@ -3604,6 +3607,7 @@ mod tests {
                 spatial_values: Vec::new(),
                 rows: vec![vec![json!(1)]],
                 batch_size: Some(100),
+                preserve_original_language: false,
             })
             .unwrap()
         };

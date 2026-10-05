@@ -1,4 +1,4 @@
-import type { ConnectionConfig, ObjectBrowserFilter, ObjectBrowserViewport, QueryTab, TabOutputView } from "@/types/database";
+import type { ConnectionConfig, ObjectBrowserFilter, ObjectBrowserViewport, QueryTab, TabOutputView, TableInfoTab } from "@/types/database";
 import type { NavigationTarget } from "@/composables/useNavigationTargets";
 import type { DataGridReloadIntent } from "@/lib/dataGrid/dataGridToolbar";
 import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
@@ -18,6 +18,7 @@ export interface QueryEditorSurfaceHandle {
   focusQueryEditor(): boolean;
   focusWhere(): boolean;
   openGoToColumn(): boolean;
+  openTableStructureEditor?(initialTab?: TableInfoTab): boolean;
   refreshData(target?: Element | null): boolean;
   toggleResultsPane(): boolean;
   refreshQueryEditorCompletionCache(): boolean;

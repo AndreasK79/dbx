@@ -19,7 +19,7 @@ import { firstResultCellValue } from "@/lib/query/queryResultFirstValue";
 import { useToast } from "@/composables/useToast";
 import { GROUP_TAB_BAR_PORTAL } from "./groupTabBarPortal";
 import type { ContentAreaSurfaceEmits, ContentAreaSurfaceProps, QueryEditorSurfaceHandle, StatementRange } from "./querySurfaces";
-import type { QueryTab } from "@/types/database";
+import type { QueryTab, TableInfoTab } from "@/types/database";
 import type { AiConversationBinding } from "@/lib/ai/aiConversationBinding";
 
 defineOptions({ inheritAttrs: false });
@@ -78,6 +78,7 @@ defineExpose({
   focusWhere: () => activeSurfaceRef.value?.focusWhere() ?? false,
   openGoToColumn: () => activeSurfaceRef.value?.openGoToColumn() ?? false,
   openDatabaseSelect: () => editorToolbarRef.value?.openDatabaseSelect() ?? false,
+  openTableStructureEditor: (initialTab?: TableInfoTab) => activeSurfaceRef.value?.openTableStructureEditor?.(initialTab) ?? false,
   // Same action as the toolbar's commit button (Shift+Mod+C default). Only
   // reports handled when the active tab holds a committable transaction, so
   // the shortcut stays unconsumed for everything else.

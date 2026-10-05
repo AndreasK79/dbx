@@ -2,7 +2,7 @@
 import { computed, ref, onMounted, onBeforeUnmount, h, nextTick, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronsRight, DatabaseZap, FilePlus2, Moon, Sun, SunMoon, History, Bot, ArrowLeftRight, FileCode, BookMarked, GitCompareArrows, TableProperties, Settings, LogOut, CloudDownload, Package, PlugZap, FileDown, FolderTree, Pin, PinOff, CalendarClock, Waypoints } from "@lucide/vue";
+import { ChevronsRight, DatabaseZap, FilePlus2, Moon, Sun, SunMoon, History, Bot, ArrowLeftRight, FileCode, BookMarked, GitCompareArrows, TableProperties, Settings, LogOut, CloudDownload, Package, PlugZap, FileDown, FolderTree, Pin, PinOff, CalendarClock, Waypoints, RefreshCw } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import LightDropdown, { type LightDropdownItem } from "@/components/ui/LightDropdown.vue";
@@ -55,6 +55,7 @@ const props = defineProps<{
   hasConnections: boolean;
   canNewQuery: boolean;
   hasSqlFileConnections: boolean;
+  immediateSyncing: boolean;
   showLogout?: boolean;
 }>();
 
@@ -78,6 +79,7 @@ const emit = defineEmits<{
   "open-data-compare": [];
   "open-backups": [];
   "open-mcp-settings": [];
+  "immediate-sync": [];
   logout: [];
 }>();
 
@@ -86,6 +88,7 @@ const { toast } = useToast();
 
 const settingsStore = useSettingsStore();
 const toolbarItems = computed(() => settingsStore.editorSettings.toolbarItems);
+const webLogoPosition = computed(() => settingsStore.editorSettings.webLogoPosition ?? "left");
 const showToolbarUpdateEntry = computed(() => toolbarItems.value.checkUpdates || props.hasUpdateAvailable);
 const { isMac, isDesktop, showControls, isMaximized, isFullscreen, isAlwaysOnTop, minimize, toggleMaximize, toggleAlwaysOnTop, close } = useWindowControls();
 // The always-on-top control is opt-in (外观 → 工具栏): the right side of the
@@ -214,6 +217,15 @@ const collapsibleRightItemDefs = computed(() => {
     disabled: boolean;
   }
   const items: ItemDef[] = [];
+  if (toolbarItems.value.immediateSync) {
+    items.push({
+      key: "immediateSync",
+      label: t("toolbar.immediateSync"),
+      icon: RefreshCw,
+      action: () => emit("immediate-sync"),
+      disabled: props.immediateSyncing,
+    });
+  }
   if (showToolbarUpdateEntry.value) {
     items.push({
       key: "checkUpdates",
@@ -403,6 +415,11 @@ function handleWindowResize() {
 
 watch(collapsibleRightItemDefs, () => scheduleToolbarLayout(), { flush: "post" });
 watch(
+  () => settingsStore.editorSettings.webLogoPosition,
+  () => scheduleToolbarLayout(),
+  { flush: "post" },
+);
+watch(
   () => props.showSidebarExpand,
   () => scheduleToolbarLayout(),
   { flush: "post" },
@@ -555,7 +572,7 @@ const toolbarStyle = computed(() => {
 <template>
   <div ref="toolbarEl" class="app-toolbar h-10 flex items-center gap-1 px-2 border-b bg-muted/30 shrink-0 overflow-hidden" :style="toolbarStyle" data-tauri-drag-region @dblclick="onToolbarDblClick">
     <a
-      v-if="!isDesktop"
+      v-if="!isDesktop && webLogoPosition === 'left'"
       href="https://dbxio.com"
       target="_blank"
       rel="noopener noreferrer"
@@ -671,6 +688,15 @@ const toolbarStyle = computed(() => {
           <TooltipContent>{{ updateTooltip }}</TooltipContent>
         </Tooltip>
       </template>
+
+      <Tooltip v-if="toolbarItems.immediateSync">
+        <TooltipTrigger as-child>
+          <Button v-show="isRightItemVisible('immediateSync')" variant="ghost" size="icon" class="toolbar-action-button h-8 w-8 shrink-0" :aria-label="t('toolbar.immediateSync')" :aria-busy="immediateSyncing" :disabled="immediateSyncing" @click="emit('immediate-sync')">
+            <RefreshCw class="toolbar-action-icon h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{{ t("toolbar.immediateSync") }}</TooltipContent>
+      </Tooltip>
 
       <Tooltip v-if="showAlwaysOnTopButton">
         <TooltipTrigger as-child>
@@ -795,6 +821,19 @@ const toolbarStyle = computed(() => {
       </Tooltip>
     </div>
     <!-- /rightWrapper -->
+
+    <a
+      v-if="!isDesktop && webLogoPosition === 'right'"
+      href="https://dbxio.com"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="flex items-center gap-1.5 h-8 px-2 rounded-md hover:bg-muted/60 transition-colors shrink-0 select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      title="DBX"
+      data-testid="web-brand-logo"
+    >
+      <AppLogo class="h-5 w-5 rounded shrink-0 pointer-events-none" />
+      <span class="font-bold text-xs tracking-tight text-foreground/90 translate-y-px">DBX</span>
+    </a>
 
     <Tooltip>
       <TooltipTrigger as-child>

@@ -376,6 +376,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       props.databaseType !== "easysearch" &&
       props.databaseType !== "meilisearch" &&
       props.databaseType !== "solr" &&
+      props.databaseType !== "couchdb" &&
       props.databaseType !== "victoriametrics" &&
       props.databaseType !== "salesforce"
     );
@@ -698,7 +699,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     if (props.databaseType === "mongodb") {
       return provideMongoCompletions(currentState, position, explicit);
     }
-    if (props.databaseType === "meilisearch" || props.databaseType === "solr") return null;
+    if (props.databaseType === "meilisearch" || props.databaseType === "solr" || props.databaseType === "couchdb") return null;
     if (props.databaseType === "elasticsearch" || props.databaseType === "easysearch") {
       if (!isSqlLikeCompletionStatement(fullDoc, position, sqlCompletionDialectOptions())) {
         return provideElasticsearchCompletions(currentState, position, explicit);
@@ -846,6 +847,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+          functionCompletionIncludeParams: settingsStore.editorSettings.functionCompletionIncludeParams,
         });
         return buildSqlCompletionResult(items, completionContext, fullDoc, position);
       }
@@ -909,6 +911,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+          functionCompletionIncludeParams: settingsStore.editorSettings.functionCompletionIncludeParams,
         });
         return buildSqlCompletionResult(items, completionContext, fullDoc, position);
       }
@@ -1035,7 +1038,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     if (props.databaseType === "mongodb") {
       return !!(insertedText || removedText) && shouldAutoOpenMongoCompletion(fullDoc, position);
     }
-    if (props.databaseType === "victoriametrics" || props.databaseType === "meilisearch" || props.databaseType === "solr") return false;
+    if (props.databaseType === "victoriametrics" || props.databaseType === "meilisearch" || props.databaseType === "solr" || props.databaseType === "couchdb") return false;
     if (props.databaseType === "redis" || props.databaseType === "elasticsearch" || props.databaseType === "easysearch") {
       // Preserve old character-based checks for non-SQL providers.
       if (!insertedText && removedText) {
@@ -1213,6 +1216,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+      functionCompletionIncludeParams: settingsStore.editorSettings.functionCompletionIncludeParams,
     });
 
     return buildSqlCompletionResult(items, completionContext, fullDoc, position);
@@ -1677,6 +1681,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+      functionCompletionIncludeParams: settingsStore.editorSettings.functionCompletionIncludeParams,
     });
 
     return buildSqlCompletionResult(items, completionContext, fullDoc, position);
