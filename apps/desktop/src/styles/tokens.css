@@ -105,9 +105,6 @@
 }
 
 :root {
-  /* Native form controls (select popups, scrollbars, date pickers) follow the
-   * app theme instead of the OS default — without this, dark mode renders
-   * native <select> dropdowns with a light surface and the app's light text. */
   color-scheme: light;
   --background: rgb(255 255 255);
   --foreground: rgb(10 10 10);

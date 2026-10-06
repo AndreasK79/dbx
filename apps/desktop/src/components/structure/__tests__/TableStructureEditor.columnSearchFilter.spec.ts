@@ -468,7 +468,7 @@ describe("TableStructureEditor columns tab search filter", () => {
     await typeColumnSearch("user");
     expect(renderedRowIndexes(root)).toEqual(["1"]);
 
-    const clear = root.querySelector<HTMLButtonElement>('[aria-label="structureEditor.clearColumnSearch"]');
+    const clear = root.querySelector<HTMLButtonElement>('[aria-label="structureEditor.clearColumnFilter"]');
     expect(clear).not.toBeNull();
     clear!.click();
     await settle();

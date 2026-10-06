@@ -96,7 +96,7 @@ describe("ErrorBanner centered variant (render)", () => {
 describe("ErrorBanner card variant warning tone", () => {
   it("swaps the destructive palette for the house amber warning palette", async () => {
     const host = await mountCard({ message: "0 affected rows", tone: "warning", title: "Nothing Was Written" });
-    const card = host.querySelector<HTMLElement>(".rounded-lg.border")!;
+    const card = host.querySelector<HTMLElement>(".border-t")!;
     const titleRow = host.querySelector<HTMLElement>("div.font-medium")!;
 
     expect(card.className).toContain("bg-amber-500/10");
@@ -109,7 +109,7 @@ describe("ErrorBanner card variant warning tone", () => {
 
   it("keeps the destructive palette by default and still exposes copy/dismiss in warning tone", async () => {
     const destructiveHost = await mountCard({ message: "constraint violation" });
-    expect(destructiveHost.querySelector<HTMLElement>(".rounded-lg.border")?.className).toContain("bg-destructive/10");
+    expect(destructiveHost.querySelector<HTMLElement>(".border-t")?.className).toContain("bg-destructive/10");
 
     const warningHost = await mountCard({ message: "0 affected rows", tone: "warning" });
     const labels = Array.from(warningHost.querySelectorAll("button"), (button) => button.getAttribute("aria-label"));

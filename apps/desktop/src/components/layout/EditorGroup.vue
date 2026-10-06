@@ -128,7 +128,6 @@ const { toast } = useToast();
 const connectionStore = useConnectionStore();
 const queryStore = useQueryStore();
 const settingsStore = useSettingsStore();
-const { toast } = useToast();
 const toolbar = inject(EDITOR_TOOLBAR_ACTIONS, createNoopEditorToolbarActions());
 const tabBarPortal = inject(GROUP_TAB_BAR_PORTAL, null);
 const tabBarTarget = computed(() => {

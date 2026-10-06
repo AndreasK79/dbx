@@ -59,7 +59,6 @@ import {
   WandSparkles,
   Camera,
   AlertTriangle,
-  ArrowDownAZ,
   FileSpreadsheet,
   Globe2,
 } from "@lucide/vue";
@@ -149,7 +148,6 @@ import {
   nextTransposeState,
   nextTransposeStateForRecordCount,
   restoreDataGridAfterTranspose,
-  sortTransposeRowsByColumn,
   shouldAutoTransposeSingleRow,
   transposeRecordIndexesForMode,
   transposeRecordWidthsForDensity,
@@ -708,8 +706,6 @@ if (isDebugLoggingEnabled()) {
 
 const transposeRowIndex = ref<number | null>(null);
 const showTranspose = ref(false);
-/** Alphabetical column-name ordering for the transpose view; resets when transpose closes. */
-const transposeSortAlpha = ref(false);
 const preserveTransposeOnNextResult = ref(false);
 let preservedSelectionOnNextResult: {
   selection: PersistedDataGridSelection;
@@ -10428,7 +10424,6 @@ const transposeRows = computed(() => {
     const result = left.column.localeCompare(right.column, undefined, { sensitivity: "base" });
     return transposeColumnSortDirection.value === "asc" ? result : -result;
   });
-  return transposeSortAlpha.value ? sortTransposeRowsByColumn(rows) : rows;
 });
 const transposeReserveTypeLine = computed(() => showTransposeFieldMetadata.value && showColumnTypesInHeader.value && transposeRows.value.some((row) => row.type));
 const transposeReserveCommentLine = computed(() => showTransposeFieldMetadata.value && showColumnCommentsInHeader.value && transposeRows.value.some((row) => row.comment));
@@ -10737,7 +10732,6 @@ watch(isTransposeMode, (active) => {
   // The transpose scroller is v-if-removed by isTransposeMode; drop the observer
   // before the element unmounts so it never observes a detached node.
   disconnectTransposeViewportObserver();
-  transposeSortAlpha.value = false;
   const scrollTopBeforeTranspose = restoreGridScrollTopAfterTranspose ? (gridScrollTopBeforeKeyboardTranspose ?? undefined) : undefined;
   restoreGridScrollTopAfterTranspose = false;
   gridScrollTopBeforeKeyboardTranspose = null;
@@ -13328,19 +13322,6 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 <span class="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                   {{ multiRowTranspose ? t("grid.transposeMultiRow") : t("grid.transposeSingleRow") }}
                 </span>
-                <!-- Left of the flex-1 spacer: narrow result panes push the right-side
-                     action cluster out of view, which hid the sort toggle entirely. -->
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-5 w-5"
-                  :class="{ 'text-primary': transposeSortAlpha }"
-                  :title="transposeSortAlpha ? t('grid.transposeSortColumnsOriginal') : t('grid.transposeSortColumns')"
-                  :aria-label="transposeSortAlpha ? t('grid.transposeSortColumnsOriginal') : t('grid.transposeSortColumns')"
-                  @click="transposeSortAlpha = !transposeSortAlpha"
-                >
-                  <ArrowDownAZ class="w-3 h-3" />
-                </Button>
                 <span class="flex-1" />
                 <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeRowIndex === 0" @click="transposeNav(-1)">
                   <ChevronLeft class="w-3 h-3" />

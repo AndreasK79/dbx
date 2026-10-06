@@ -5609,8 +5609,8 @@ watch(
                   v-if="columnSearchText"
                   type="button"
                   class="absolute right-1.5 top-1/2 flex h-[var(--structure-control-height)] w-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                  :aria-label="t('structureEditor.clearColumnSearch')"
-                  :title="t('structureEditor.clearColumnSearch')"
+                  :aria-label="t('structureEditor.clearColumnFilter')"
+                  :title="t('structureEditor.clearColumnFilter')"
                   @click="clearColumnSearch"
                 >
                   <X :class="structureIconClass" />
