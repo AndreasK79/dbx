@@ -1248,39 +1248,41 @@ export async function pendingOpenPluginInstallLinks(): Promise<string[]> {
 export interface ExternalSqlFileSnapshot {
   content: string;
   version: ExternalSqlFileVersion;
+  encoding?: import("@/types/database").QueryTab["externalSqlEncoding"];
 }
 
 export type ExternalSqlFileStatus = { kind: "present"; sizeBytes: number; modifiedNs: string } | { kind: "missing" };
 
 export type ExternalSqlFileWriteResult = { kind: "written"; version: ExternalSqlFileVersion } | { kind: "conflict"; currentVersion: ExternalSqlFileVersion } | { kind: "missing" };
 
-export async function readExternalSqlFileSnapshot(path: string, maxSizeBytes?: number): Promise<ExternalSqlFileSnapshot> {
-  const result = await invoke<{ kind: "content"; content: string; version: ExternalSqlFileVersion } | { kind: "tooLarge"; sizeBytes: number; maxSizeBytes: number }>("read_external_sql_file", { path, maxSizeBytes });
+export async function readExternalSqlFileSnapshot(path: string, maxSizeBytes?: number, encoding?: string): Promise<ExternalSqlFileSnapshot> {
+  const result = await invoke<{ kind: "content"; content: string; version: ExternalSqlFileVersion; encoding?: ExternalSqlFileSnapshot["encoding"] } | { kind: "tooLarge"; sizeBytes: number; maxSizeBytes: number }>("read_external_sql_file", { path, maxSizeBytes, encoding: encoding ?? null });
   if (result.kind === "tooLarge") {
     throw new ExternalSqlFileTooLargeError(result.sizeBytes, result.maxSizeBytes);
   }
-  return { content: result.content, version: result.version };
+  return { content: result.content, version: result.version, ...(result.encoding ? { encoding: result.encoding } : {}) };
 }
 
-export async function readExternalSqlFile(path: string, maxSizeBytes?: number): Promise<string> {
-  return (await readExternalSqlFileSnapshot(path, maxSizeBytes)).content;
+export async function readExternalSqlFile(path: string, maxSizeBytes?: number, encoding?: string): Promise<string> {
+  return (await readExternalSqlFileSnapshot(path, maxSizeBytes, encoding)).content;
 }
 
 export async function inspectExternalSqlFile(path: string): Promise<ExternalSqlFileStatus> {
   return invoke("inspect_external_sql_file", { path });
 }
 
-export async function writeExternalSqlFile(path: string, content: string, options: { expectedContentHash?: string; expectedMissing?: boolean } = {}): Promise<ExternalSqlFileWriteResult> {
+export async function writeExternalSqlFile(path: string, content: string, options: { expectedContentHash?: string; expectedMissing?: boolean; encoding?: string } = {}): Promise<ExternalSqlFileWriteResult> {
   return invoke("write_external_sql_file", {
     path,
     content,
     expectedContentHash: options.expectedContentHash ?? null,
     expectedMissing: options.expectedMissing ?? false,
+    encoding: options.encoding ?? "utf8",
   });
 }
 
-export async function saveExternalSqlFile(defaultFileName: string, content: string, filterExtension?: string): Promise<{ path: string; version: ExternalSqlFileVersion } | null> {
-  return invoke("save_external_sql_file", { defaultFileName, content, filterExtension });
+export async function saveExternalSqlFile(defaultFileName: string, content: string, filterExtension?: string, encoding?: string): Promise<{ path: string; version: ExternalSqlFileVersion } | null> {
+  return invoke("save_external_sql_file", { defaultFileName, content, filterExtension, encoding: encoding ?? "utf8" });
 }
 
 export interface SqlFileEntry {
@@ -1693,7 +1695,18 @@ export async function getMysqlTableAutoIncrement(connectionId: string, database:
   return invoke("get_mysql_table_auto_increment", { connectionId, database, table });
 }
 
-export async function listObjects(connectionId: string, database: string, schema: string, objectTypes?: (SidebarObjectKind | "EVENT")[], filter?: string, limit?: number, offset?: number, catalog?: string, tableNameFilter?: import("@/types/database").TableNameFilter): Promise<ObjectInfo[]> {
+export async function listObjects(
+  connectionId: string,
+  database: string,
+  schema: string,
+  objectTypes?: (SidebarObjectKind | "EVENT")[],
+  filter?: string,
+  limit?: number,
+  offset?: number,
+  catalog?: string,
+  tableNameFilter?: import("@/types/database").TableNameFilter,
+  executionId?: string,
+): Promise<ObjectInfo[]> {
   return invoke("list_objects", {
     connectionId,
     database,
@@ -1704,6 +1717,7 @@ export async function listObjects(connectionId: string, database: string, schema
     offset,
     catalog,
     tableNameFilter,
+    executionId,
   });
 }
 
@@ -1984,6 +1998,10 @@ export async function refreshConnections(): Promise<void> {
   return invoke("refresh_connections");
 }
 
+export async function cancelQueryAndWait(executionId: string): Promise<{ requested: boolean; terminal: boolean }> {
+  return invokeBackend("cancel_conditional_update", { executionId });
+}
+
 export async function cancelQuery(executionId: string): Promise<boolean> {
   return invoke("cancel_query", { executionId });
 }
@@ -2052,11 +2070,23 @@ export async function executeInTransaction(connectionId: string, database: strin
 }
 
 export async function beginManualTransaction(connectionId: string, database: string, schema?: string, catalog?: string): Promise<string> {
-  return invoke("begin_manual_transaction", { connectionId, database, schema, catalog });
+  return invokeBackend("begin_manual_transaction", { connectionId, database, schema, catalog });
 }
 
-export async function executeInManualTransaction(txnSessionId: string, sql: string, database: string, schema?: string, maxRows?: number, tableDataPreview?: boolean, pageSize?: number, resultSessionId?: string, classificationSql?: string, executionId?: string): Promise<QueryResult[]> {
-  return invoke("execute_in_manual_transaction", {
+export async function executeInManualTransaction(
+  txnSessionId: string,
+  sql: string,
+  database: string,
+  schema?: string,
+  maxRows?: number,
+  tableDataPreview?: boolean,
+  pageSize?: number,
+  resultSessionId?: string,
+  classificationSql?: string,
+  executionId?: string,
+  timeoutSecs?: number,
+): Promise<QueryResult[]> {
+  return invokeBackend("execute_in_manual_transaction", {
     txnSessionId,
     sql,
     database,
@@ -2067,15 +2097,16 @@ export async function executeInManualTransaction(txnSessionId: string, sql: stri
     resultSessionId,
     classificationSql,
     executionId,
+    timeoutSecs,
   });
 }
 
 export async function commitManualTransaction(txnSessionId: string): Promise<QueryResult> {
-  return invoke("commit_manual_transaction", { txnSessionId });
+  return invokeBackend("commit_manual_transaction", { txnSessionId });
 }
 
 export async function rollbackManualTransaction(txnSessionId: string): Promise<QueryResult> {
-  return invoke("rollback_manual_transaction", { txnSessionId });
+  return invokeBackend("rollback_manual_transaction", { txnSessionId });
 }
 
 export async function analyzeSqlReferences(sql: string, dialect?: string): Promise<SqlReferenceAnalysis> {
@@ -2452,6 +2483,10 @@ export async function listForeignKeys(connectionId: string, database: string, sc
     table,
     catalog,
   });
+}
+
+export async function listForeignKeysForDatabase(connectionId: string, database: string, schema: string, catalog?: string, executionId?: string): Promise<Record<string, ForeignKeyInfo[]>> {
+  return invoke("list_foreign_keys_for_database", { connectionId, database, schema, catalog, executionId });
 }
 
 export async function listTriggers(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<TriggerInfo[]> {

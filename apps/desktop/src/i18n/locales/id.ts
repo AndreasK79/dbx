@@ -105,6 +105,12 @@ export default withEnglishFallback({
       needsApproval: "Perlu persetujuan",
       saveFailed: "Tidak dapat menyimpan pengaturan: {message}",
     },
+    graphicsEngine: {
+      title: "Mesin grafis",
+      description: "Mengizinkan antarmuka plugin ini menjalankan mesin grafis WebGL (PixiJS dan sejenisnya). Saat nonaktif, visual yang membutuhkannya tidak dapat dimulai dan plugin melaporkan mesin grafis tidak tersedia.",
+      securityNote: "Jika aktif, skrip plugin ini dapat mengompilasi kode saat runtime (CSP unsafe-eval). Pelonggaran hanya berlaku untuk plugin ini.",
+      saveFailed: "Tidak dapat menyimpan pengaturan: {message}",
+    },
     dataAccess: {
       title: "Akses data",
       description: "Koneksi yang boleh dibaca plugin ini dengan kueri read-only. Plugin akan meminta izin saat pertama kali membutuhkan koneksi; Anda dapat mencabut akses ini kapan saja.",
@@ -327,6 +333,8 @@ export default withEnglishFallback({
     logoutConfirm: "Apakah Anda yakin ingin keluar?",
   },
   toolbar: {
+    fileEncoding: "Pengodean berkas",
+    encodingAuto: "Otomatis",
     commitOutcomeUnknown: "Hasil commit tidak diketahui dan sesi sudah tidak ada lagi. Verifikasi data sebelum menjalankan SQL ini lagi.",
     moreActions: "Tindakan lainnya",
     newConnection: "Koneksi Baru",
@@ -8286,6 +8294,10 @@ export default withEnglishFallback({
     syncSelectionCancel: "Batal",
     syncSelectionRestoreAction: "Pulihkan yang dipilih",
     syncSelectionUploadAction: "Cadangkan yang dipilih",
+    syncSelectionSelectAll: "Pilih semua",
+    syncSelectionDeselectAll: "Batalkan pilihan semua",
+    syncSelectionExpandAll: "Perluas semua",
+    syncSelectionCollapseAll: "Ciutkan semua",
     syncWebDavWebDescription: "Dalam mode Web, server DBX mengakses WebDAV tanpa batasan CORS browser. Kata sandi tersimpan tetap berada pada instans DBX saat ini.",
     syncEndpoint: "URL WebDAV",
     syncUsername: "Nama Pengguna",

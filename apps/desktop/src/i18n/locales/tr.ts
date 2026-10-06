@@ -76,6 +76,12 @@ export default withEnglishFallback({
       needsApproval: "Onay gerekir",
       saveFailed: "Ayar kaydedilemedi: {message}",
     },
+    graphicsEngine: {
+      title: "Grafik motoru",
+      description: "Bu eklentinin arayüzünün bir WebGL grafik motoru (PixiJS ve benzerleri) çalıştırmasına izin verir. Kapalıyken buna ihtiyaç duyan görseller başlamaz ve eklenti grafik motorunun kullanılamadığını bildirir.",
+      securityNote: "Açıkken bu eklentinin betikleri çalışma zamanında kod derleyebilir (CSP unsafe-eval). Gevşetme yalnızca bu eklenti için geçerlidir.",
+      saveFailed: "Ayar kaydedilemedi: {message}",
+    },
     dataAccess: {
       title: "Veri erişimi",
       description: "Bu eklentinin salt okunur sorgularla okuyabileceği bağlantılar. Eklenti bir bağlantıya ilk kez ihtiyaç duyduğunda size sorar; erişimi burada istediğiniz zaman iptal edebilirsiniz.",
@@ -207,6 +213,8 @@ export default withEnglishFallback({
     logoutConfirm: "Çıkış yapmak istediğinizden emin misiniz?",
   },
   toolbar: {
+    fileEncoding: "Dosya kodlaması",
+    encodingAuto: "Otomatik",
     commitOutcomeUnknown: "Onaylama sonucu bilinmiyor ve oturum artık mevcut değil. SQL'i yeniden çalıştırmadan önce verileri doğrulayın.",
     moreActions: "Diğer İşlemler",
     newConnection: "Yeni Bağlantı",

@@ -2620,6 +2620,7 @@ export const useQueryStore = defineStore("query", () => {
       editorSelection: t.editorSelection,
       savedSqlId: t.savedSqlId,
       externalSqlPath: t.externalSqlPath,
+      externalSqlEncoding: t.externalSqlEncoding,
       externalSqlFileVersion: t.externalSqlFileVersion,
       externalSqlIgnoredFileVersion: t.externalSqlIgnoredFileVersion,
       externalSqlFileMissing: t.externalSqlFileMissing,
@@ -2844,12 +2845,24 @@ export const useQueryStore = defineStore("query", () => {
     schema?: string,
     initialSql?: string,
     catalog?: string,
-    options: { forceNew?: boolean; activate?: boolean; forceWordWrap?: boolean; insertAfterActive?: boolean; sourceView?: boolean } = {},
+    options: { forceNew?: boolean; activate?: boolean; forceWordWrap?: boolean; insertAfterActive?: boolean; sourceView?: boolean; reuseQueryTabByScope?: boolean } = {},
   ) {
     if (title && !options.forceNew) {
       const existing = findTabByIdentity(connectionId, database, title, mode, schema, catalog);
       if (existing) {
         if (options.sourceView) existing.sourceView = true;
+        switchTab(existing.id);
+        return existing.id;
+      }
+    }
+    if (options.reuseQueryTabByScope && !options.forceNew && mode === "query") {
+      // Sidebar activation opens "the" query page for this connection scope:
+      // focus an existing plain query tab instead of stacking duplicates on
+      // repeated clicks (and on the click that precedes every dblclick).
+      // Saved SQL, external SQL files, and object-source tabs are documents
+      // in their own right and never take over the activation slot.
+      const existing = tabs.value.find((tab) => tab.mode === "query" && !tab.savedSqlId && !tab.externalSqlPath && !tab.objectSource && tab.connectionId === connectionId && tab.database === database && (tab.schema || "") === (schema || "") && (tab.catalog || "") === (catalog || ""));
+      if (existing) {
         switchTab(existing.id);
         return existing.id;
       }
@@ -3247,7 +3260,7 @@ export const useQueryStore = defineStore("query", () => {
     });
   }
 
-  function openExternalSqlFile(connectionId: string, database: string, path: string, sql: string, version?: QueryTab["externalSqlFileVersion"], catalog?: string, schema?: string, reveal?: { line: number; column?: number }) {
+  function openExternalSqlFile(connectionId: string, database: string, path: string, sql: string, version?: QueryTab["externalSqlFileVersion"], catalog?: string, schema?: string, reveal?: { line: number; column?: number }, encoding: QueryTab["externalSqlEncoding"] = "auto") {
     const normalizedPath = normalizeExternalSqlPath(path);
     const existing = tabs.value.find((tab) => tab.mode === "query" && tab.externalSqlPath && normalizeExternalSqlPath(tab.externalSqlPath) === normalizedPath);
     if (existing) {
@@ -3274,6 +3287,7 @@ export const useQueryStore = defineStore("query", () => {
       sql,
       originalSql: sql,
       externalSqlPath: path,
+      externalSqlEncoding: encoding,
       externalSqlFileVersion: version,
       editorRevealRequest: reveal ? { id: ++contentRevealSeq, line: reveal.line, column: reveal.column } : undefined,
       isExecuting: false,
@@ -4724,6 +4738,7 @@ export const useQueryStore = defineStore("query", () => {
       originalSql: "",
       savedSqlId: undefined,
       externalSqlPath: undefined,
+      externalSqlEncoding: undefined,
       lastExecutedSql: undefined,
       resultBaseSql: original.resultBaseSql,
       resultSortedSql: undefined,
@@ -5197,10 +5212,31 @@ export const useQueryStore = defineStore("query", () => {
     manualTransactionTargetEpochs.set(tab, manualTransactionTargetEpoch(tab) + 1);
   }
 
+  const pendingSqlServerTransactionEnds = new Map<string, Promise<void>>();
+
+  function isSqlServerTransactionTab(tab: QueryTab): boolean {
+    return tab.txnSessionId?.startsWith("sqlserver-txn-") === true || useConnectionStore().getConfig(tab.connectionId)?.db_type === "sqlserver";
+  }
+
+  function reportSqlServerTransactionError(tab: QueryTab, error: unknown) {
+    const backend = normalizeBackendError(error);
+    const recoverable = backend?.code === "DBX-TXN-1003" || backend?.code === "DBX-TXN-1008";
+    if (!recoverable) clearManualTransactionSession(tab);
+    tab.txnStatus = recoverable ? (tab.txnSessionId ? "active" : undefined) : backend?.code === "DBX-TXN-1007" ? "unknown" : "lost";
+    tab.txnNotice = translateBackendError(i18n.global.t, error);
+    if (backend?.transactionOutcome === "rolled_back") tab.txnNotice += " " + i18n.global.t("toolbar.txnRollbackConfirmed");
+    if (backend?.transactionOutcome === "committed") tab.txnNotice += " " + i18n.global.t("toolbar.txnCommitConfirmed");
+  }
+
   async function ensureManualTransactionSession(id: string, database: string, schema?: string, catalog?: string): Promise<string> {
     const tab = tabs.value.find((item) => item.id === id);
     if (!tab || tab.mode !== "query" || tab.autoCommit !== false || !tab.connectionId) {
       throw new Error("Manual transaction mode is no longer active for this query tab");
+    }
+    const sqlserver = isSqlServerTransactionTab(tab);
+    if (sqlserver && pendingSqlServerTransactionEnds.has(id)) {
+      await pendingSqlServerTransactionEnds.get(id);
+      return ensureManualTransactionSession(id, database, schema, catalog);
     }
     if (tab.txnSessionId) return tab.txnSessionId;
     const epoch = manualTransactionTargetEpoch(tab);
@@ -5211,6 +5247,13 @@ export const useQueryStore = defineStore("query", () => {
     const originalDatabase = tab.database;
     const originalCatalog = tab.catalog;
     const originalSchema = tab.schema;
+    if (sqlserver) {
+      tab.txnStatus = "opening";
+      if (!tab.txnIndependentConnectionExplained) {
+        tab.txnNotice = i18n.global.t("toolbar.sqlserverIndependentTransaction");
+        tab.txnIndependentConnectionExplained = true;
+      }
+    }
     const start = api
       .beginManualTransaction(connectionId, database, schema, catalog)
       .then(async (sessionId) => {
@@ -5219,7 +5262,12 @@ export const useQueryStore = defineStore("query", () => {
           throw new Error("Query tab changed while the manual transaction was starting");
         }
         tab.txnSessionId = sessionId;
+        if (sqlserver) tab.txnStatus = "active";
         return sessionId;
+      })
+      .catch((error) => {
+        if (sqlserver && tabs.value.find((item) => item.id === id) === tab && manualTransactionTargetEpoch(tab) === epoch) reportSqlServerTransactionError(tab, error);
+        throw error;
       })
       .finally(() => {
         if (pendingManualTransactionStarts.get(id)?.promise === start) pendingManualTransactionStarts.delete(id);
@@ -5233,10 +5281,18 @@ export const useQueryStore = defineStore("query", () => {
     if (tab) {
       if (tab.autoCommit !== autoCommit) invalidateManualTransactionTarget(tab);
       const wasManual = tab.autoCommit === false;
+      if (autoCommit && wasManual && isSqlServerTransactionTab(tab) && tab.txnSessionId) {
+        void rollbackTransaction(id).then(() => {
+          if (!tab.txnSessionId && tab.txnStatus !== "lost" && tab.txnStatus !== "unknown") tab.autoCommit = true;
+        });
+        return;
+      }
       tab.autoCommit = autoCommit;
       if (autoCommit && wasManual) {
         if (tab.txnSessionId) {
-          void rollbackTransaction(id);
+          void rollbackTransaction(id).catch((error) => {
+            if (isSqlServerTransactionTab(tab)) reportSqlServerTransactionError(tab, error);
+          });
         } else {
           clearManualTransactionSession(tab);
         }
@@ -5288,6 +5344,7 @@ export const useQueryStore = defineStore("query", () => {
    *  discarded. Callers must not assign these fields individually. */
   function clearManualTransactionSession(tab: QueryTab) {
     tab.txnSessionId = undefined;
+    tab.txnStatus = undefined;
     tab.txnAutoRolledBack = false;
     if (tab.txnPossiblyDirty !== undefined) tab.txnPossiblyDirty = false;
   }
@@ -5318,6 +5375,35 @@ export const useQueryStore = defineStore("query", () => {
       if (tab.autoCommitOpenTransaction) await executeCurrentSql("COMMIT", { tabId: tab.id });
       return;
     }
+    if (isSqlServerTransactionTab(tab)) {
+      if (tab.isExecuting || pendingSqlServerTransactionEnds.has(id)) return;
+      const sessionId = tab.txnSessionId;
+      const epoch = manualTransactionTargetEpoch(tab);
+      tab.txnStatus = "ending";
+      const ending = (async () => {
+        try {
+          await api.commitManualTransaction(sessionId);
+          if (tab.txnSessionId === sessionId) {
+            clearManualTransactionSession(tab);
+            if (manualTransactionTargetEpoch(tab) === epoch) tab.txnNotice = undefined;
+          }
+        } catch (error) {
+          if (tab.txnSessionId === sessionId) {
+            if (manualTransactionTargetEpoch(tab) === epoch) {
+              reportSqlServerTransactionError(tab, error);
+              if (!normalizeBackendError(error)) {
+                tab.txnStatus = "unknown";
+                tab.txnNotice = i18n.global.t("backendErrors.transaction.commitUnknown") + " " + formatError(error);
+              }
+            } else clearManualTransactionSession(tab);
+          }
+        } finally {
+          pendingSqlServerTransactionEnds.delete(id);
+        }
+      })();
+      pendingSqlServerTransactionEnds.set(id, ending);
+      return ending;
+    }
     try {
       await api.commitManualTransaction(tab.txnSessionId);
     } finally {
@@ -5331,6 +5417,43 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab.txnSessionId) {
       if (tab.autoCommitOpenTransaction) await executeCurrentSql("ROLLBACK", { tabId: tab.id });
       return;
+    }
+    if (isSqlServerTransactionTab(tab)) {
+      const pending = pendingSqlServerTransactionEnds.get(id);
+      if (pending) return pending;
+      const sessionId = tab.txnSessionId;
+      const epoch = manualTransactionTargetEpoch(tab);
+      tab.txnStatus = "ending";
+      const ending = (async () => {
+        try {
+          if (tab.isExecuting && tab.executionId) {
+            const cancellation = await api.cancelQueryAndWait(tab.executionId);
+            if (!cancellation.terminal) {
+              tab.txnStatus = "executing";
+              tab.txnNotice = i18n.global.t("backendErrors.transaction.busy");
+              return;
+            }
+          }
+          if (tab.txnSessionId !== sessionId) return;
+          await api.rollbackManualTransaction(sessionId);
+          if (tab.txnSessionId === sessionId) {
+            clearManualTransactionSession(tab);
+            if (manualTransactionTargetEpoch(tab) === epoch) tab.txnNotice = undefined;
+          }
+        } catch (error) {
+          if (tab.txnSessionId === sessionId) {
+            if (manualTransactionTargetEpoch(tab) === epoch) reportSqlServerTransactionError(tab, error);
+            else {
+              clearManualTransactionSession(tab);
+              tab.txnNotice = translateBackendError(i18n.global.t, error);
+            }
+          }
+        } finally {
+          pendingSqlServerTransactionEnds.delete(id);
+        }
+      })();
+      pendingSqlServerTransactionEnds.set(id, ending);
+      return ending;
     }
     const sessionId = tab.txnSessionId;
     // Remove the old session before the backend responds: a target switch may
@@ -5522,6 +5645,7 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab) return;
     tab.savedSqlId = savedSqlId;
     tab.externalSqlPath = undefined;
+    tab.externalSqlEncoding = undefined;
     tab.externalSqlFileVersion = undefined;
     tab.externalSqlIgnoredFileVersion = undefined;
     tab.externalSqlFileMissing = undefined;
@@ -5531,10 +5655,11 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  function linkExternalSqlPath(id: string, path: string, title?: string, version?: QueryTab["externalSqlFileVersion"]) {
+  function linkExternalSqlPath(id: string, path: string, title?: string, version?: QueryTab["externalSqlFileVersion"], encoding: QueryTab["externalSqlEncoding"] = "auto") {
     const tab = tabs.value.find((t) => t.id === id);
     if (!tab) return;
     tab.externalSqlPath = path;
+    tab.externalSqlEncoding = encoding;
     tab.externalSqlFileVersion = version;
     tab.externalSqlIgnoredFileVersion = undefined;
     tab.externalSqlFileMissing = undefined;
@@ -7823,7 +7948,7 @@ export const useQueryStore = defineStore("query", () => {
         return producedResult;
       }
 
-      const queryResultMaxRows = tab.mode === "query" ? effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows) : undefined;
+      const queryResultMaxRows = tab.mode === "query" ? (options?.appendResult ? options.appendResult.maxRows : effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows)) : undefined;
 
       if (tab.mode === "query") {
         const prepared = await prepareEditableQueryExecution(tab, sqlToExecute, conn, effectiveDbType, executionDatabase, traceId, elapsed);
@@ -8060,7 +8185,7 @@ export const useQueryStore = defineStore("query", () => {
             queryExecutionLog("info", "begin-manual-txn:done", { traceId, txnSessionId: tab.txnSessionId, elapsed: elapsed() });
           } catch (error) {
             const risk = classifySqlRisk(sqlToExecute, { dialect: effectiveDbType }).risk;
-            if (!isUnsupportedManualTransactionMethod(error) || risk !== "read") throw error;
+            if (effectiveDbType === "sqlserver" || !isUnsupportedManualTransactionMethod(error) || risk !== "read") throw error;
             tab.autoCommit = true;
             clearManualTransactionSession(tab);
             useLegacyReadFallback = true;
@@ -8090,14 +8215,31 @@ export const useQueryStore = defineStore("query", () => {
             // single-shot call: the session-consume loop only runs in the
             // auto-commit path, and opening a cursor session here would
             // strand it after returning the first page.
-            const executeInTransaction = (sessionId: string) =>
-              useAgentResultSession && !isOffsetJumpPage
-                ? api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, agentProtocolQueryResultMaxRows(queryResultMaxRows), useLargeValuePreview, pageLimit, options?.pagination?.sessionId, classificationSql, executionId)
-                : api.executeInManualTransaction(sessionId, sqlToExecute, executionDatabase, executionSchema, pageLimit ?? agentProtocolQueryResultMaxRows(queryResultMaxRows), useLargeValuePreview, undefined, undefined, classificationSql, executionId);
+            const executeInTransaction = (sessionId: string) => {
+              const cursor = useAgentResultSession && !isOffsetJumpPage;
+              const args = [
+                sessionId,
+                sqlToExecute,
+                executionDatabase,
+                executionSchema,
+                cursor ? agentProtocolQueryResultMaxRows(queryResultMaxRows) : (pageLimit ?? agentProtocolQueryResultMaxRows(queryResultMaxRows)),
+                useLargeValuePreview,
+                cursor ? pageLimit : undefined,
+                cursor ? options?.pagination?.sessionId : undefined,
+                classificationSql,
+              ] as const;
+              // executionId rides along for every database (manual-transaction
+              // statement notices); sqlserver additionally takes the frontend
+              // timeout for its 2000-compatible manual transactions.
+              return effectiveDbType === "sqlserver" ? api.executeInManualTransaction(...args, executionId, frontendTimeoutSecs) : api.executeInManualTransaction(...args, executionId);
+            };
             try {
-              return await executeInTransaction(txnSessionId);
+              if (effectiveDbType === "sqlserver") tab.txnStatus = "executing";
+              const results = await executeInTransaction(txnSessionId);
+              if (effectiveDbType === "sqlserver" && tab.txnSessionId === txnSessionId) tab.txnStatus = "active";
+              return results;
             } catch (error) {
-              if (options?.pagination?.sessionId || manualTransactionRecoveryAttempted || !isManualTransactionSessionExpired(error)) throw error;
+              if (effectiveDbType === "sqlserver" || options?.pagination?.sessionId || manualTransactionRecoveryAttempted || !isManualTransactionSessionExpired(error)) throw error;
               if (tab.executionId !== executionId || tab.autoCommit !== false || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) throw error;
               manualTransactionRecoveryAttempted = true;
               // A session that only ever ran proven read-only statements lost
@@ -8394,7 +8536,9 @@ export const useQueryStore = defineStore("query", () => {
       if (findExecutionTab(id) !== tab || tab.executionId !== executionId || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) return false;
       // Handle manual transaction auto-rollback (idle timeout only for the banner;
       // other statement failures still clear the session without the 5-minute notice).
-      if (tab.autoCommit === false) {
+      if (tab.autoCommit === false && isSqlServerTransactionTab(tab)) {
+        reportSqlServerTransactionError(tab, e);
+      } else if (tab.autoCommit === false) {
         const errMsg: string = e?.message ?? String(e);
         const idleTimeout = /5 minutes of inactivity/i.test(errMsg) || errMsg.includes("5 分钟无操作") || errMsg.includes("已自动回滚");
         if (idleTimeout) {
