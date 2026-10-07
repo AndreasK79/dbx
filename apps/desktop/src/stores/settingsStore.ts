@@ -894,6 +894,7 @@ export interface EditorSettings {
   timeoutInheritanceMigrationVersion: number;
   showExecutionTargetPicker: boolean;
   showStatementRunButtons: boolean;
+  locateCursorOnGutterExecute: boolean;
   showLineNumbers: boolean;
   showCurrentStatementFrame: boolean;
   showInsertValueHints: boolean;
@@ -1237,6 +1238,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   timeoutInheritanceMigrationVersion: 2,
   showExecutionTargetPicker: false,
   showStatementRunButtons: true,
+  locateCursorOnGutterExecute: true,
   showLineNumbers: true,
   showCurrentStatementFrame: true,
   showInsertValueHints: true,
@@ -1863,6 +1865,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
           : 0,
     showExecutionTargetPicker: settings.showExecutionTargetPicker ?? DEFAULT_EDITOR_SETTINGS.showExecutionTargetPicker,
     showStatementRunButtons: typeof settings.showStatementRunButtons === "boolean" ? settings.showStatementRunButtons : DEFAULT_EDITOR_SETTINGS.showStatementRunButtons,
+    locateCursorOnGutterExecute: typeof settings.locateCursorOnGutterExecute === "boolean" ? settings.locateCursorOnGutterExecute : DEFAULT_EDITOR_SETTINGS.locateCursorOnGutterExecute,
     showLineNumbers: typeof settings.showLineNumbers === "boolean" ? settings.showLineNumbers : DEFAULT_EDITOR_SETTINGS.showLineNumbers,
     showCurrentStatementFrame: typeof settings.showCurrentStatementFrame === "boolean" ? settings.showCurrentStatementFrame : DEFAULT_EDITOR_SETTINGS.showCurrentStatementFrame,
     showInsertValueHints: typeof settings.showInsertValueHints === "boolean" ? settings.showInsertValueHints : DEFAULT_EDITOR_SETTINGS.showInsertValueHints,
@@ -2725,6 +2728,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.timeoutInheritanceMigrationVersion !== undefined) editorSettings.value.timeoutInheritanceMigrationVersion = Math.max(0, Math.floor(partial.timeoutInheritanceMigrationVersion));
     if (partial.showExecutionTargetPicker !== undefined) editorSettings.value.showExecutionTargetPicker = partial.showExecutionTargetPicker;
     if (partial.showStatementRunButtons !== undefined) editorSettings.value.showStatementRunButtons = partial.showStatementRunButtons === true;
+    if (partial.locateCursorOnGutterExecute !== undefined) editorSettings.value.locateCursorOnGutterExecute = partial.locateCursorOnGutterExecute === true;
     if (partial.showLineNumbers !== undefined) editorSettings.value.showLineNumbers = partial.showLineNumbers === true;
     if (partial.showCurrentStatementFrame !== undefined) editorSettings.value.showCurrentStatementFrame = partial.showCurrentStatementFrame === true;
     if (partial.showInsertValueHints !== undefined) editorSettings.value.showInsertValueHints = partial.showInsertValueHints === true;
