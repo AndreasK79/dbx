@@ -194,7 +194,7 @@ describe("settings search", () => {
   it("exposes WebDAV sync in Web settings without exposing snippet sync", () => {
     const webEntries = resolveSettingsSearchEntries(SETTINGS_SEARCH_DEFINITIONS, { isWeb: true, visibleCategories: new Set<SettingsCategory>(["sync"]) }, translate, categoryLabels);
 
-    expect(webEntries.map((entry) => entry.id)).toEqual(["sync-webdav", "sync-webdav-endpoint", "sync-webdav-username", "sync-webdav-password", "sync-webdav-remote-path", "sync-webdav-auto-upload", "sync-secrets", "sync-secrets-passphrase"]);
+    expect(webEntries.map((entry) => entry.id)).toEqual(["sync-webdav", "sync-webdav-endpoint", "sync-webdav-username", "sync-webdav-password", "sync-webdav-remote-path", "sync-webdav-user-agent", "sync-webdav-auto-upload", "sync-secrets", "sync-secrets-passphrase"]);
   });
 
   it("matches Chinese text as a Unicode substring", () => {
@@ -327,7 +327,10 @@ describe("settings search", () => {
       { titleKey: "settings.sqlFormatterIndent", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterTabWidth", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterIndentStyle", category: "formatter", targetId: "formatter" },
+      { titleKey: "settings.sqlFormatterLayoutStyle", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterLogicalOperatorNewline", category: "formatter", targetId: "formatter" },
+      { titleKey: "settings.sqlFormatterCommaPosition", category: "formatter", targetId: "formatter" },
+      { titleKey: "settings.sqlFormatterFromClauseLayout", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterExpressionWidth", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterLinesBetweenQueries", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterPreserveEmptyLines", category: "formatter", targetId: "formatter" },

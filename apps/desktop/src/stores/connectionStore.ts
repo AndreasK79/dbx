@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { cancelSchemaDiffTasksForConnection } from "@/lib/schema/schemaDiffCancellation";
 import type { SqlFilePreview } from "@/lib/backend/api";
 import { uuid } from "@/lib/common/utils";
 import { containsHan, orderedSubsequenceSpan, pinyinFirstLetters } from "@/lib/common/pinyin";
@@ -317,6 +318,7 @@ function isFlatMqConnection(config: ConnectionConfig | undefined): boolean {
 type ImportSource = "dbx" | "navicat" | "dbeaver" | "datagrip";
 
 interface LocateTableTarget {
+  catalog?: string;
   connectionId: string;
   database: string;
   schema?: string;
@@ -433,6 +435,12 @@ type BeforeConnectHandler = (config: ConnectionConfig) => Promise<void>;
 export const CONNECTION_ATTEMPT_CANCELLED_MESSAGE = "Connection attempt was cancelled";
 /** Thrown when a no-save-password connection is connected without a typed password. */
 export const CONNECTION_PASSWORD_REQUIRED_MESSAGE = "Password is required for this connection";
+/**
+ * Thrown by passive wake-ups (callers passing `skipIfClosedByUser`) when the user
+ * explicitly closed the connection in this session and nothing reconnected it since.
+ * Such callers should stay in a "closed" state and let the user reconnect on purpose.
+ */
+export const CONNECTION_CLOSED_BY_USER_MESSAGE = "Connection was closed by the user";
 const PLUGIN_CONFIG_RECONNECT_PASSWORD_MESSAGE = "Plugin settings were saved, but the connection was disconnected because its password is not available. Reconnect manually to apply the new settings.";
 
 function metadataDriverProfile(config?: ConnectionConfig): string | undefined {
@@ -498,6 +506,22 @@ export const useConnectionStore = defineStore("connection", () => {
   const activePinnedTreeNodeReorderKey = ref<string | null>(null);
   let pinnedTreeNodePersistQueue: Promise<void> = Promise.resolve();
   const connectedIds = ref<Set<string>>(new Set());
+  /**
+   * 本会话内被用户**显式关闭**（侧栏「关闭连接」/「关闭选中的 N 个连接」/「关闭所有活跃
+   * 连接」/「断开并忘记本次密码」）且此后尚未重新连接的连接。
+   *
+   * 存在的理由：`ensureConnected` 只区分"已连接 / 未连接"，没有"用户主动关掉了"这一态，
+   * 于是任何被动唤醒（页签重新挂载/激活、工具栏与面板预取下拉选项、插件页签的 silent
+   * self-heal）都会把用户刚关掉的连接偷偷连回来。
+   *
+   * 语义边界（改动这里前先读）：
+   * - 只被 `skipIfClosedByUser` 的被动唤醒消费；用户主动入口——点侧栏连接节点、按 Run /
+   *   EXPLAIN、打开表数据或查询页签、「重新连接」按钮——一律照常连接，并顺手清掉标记。
+   * - 系统侧断开不写标记（插件页签关闭释放连接、改密码后的重连退役、删除连接），它们
+   *   不该让后续的用户动作变哑。
+   * - 仅内存：页面刷新或重启后自然清空，恢复流程（dbx-plugin-ssh#144 的页签自愈）照旧生效。
+   */
+  const userClosedConnectionIds = ref<Set<string>>(new Set());
   const etcdAccessCapabilities = ref<Record<string, EtcdAccessCapabilities>>({});
   const etcdAccessCapabilityGenerations = new Map<string, number>();
   const etcdAccessCapabilityLoads = new Map<string, Promise<EtcdAccessCapabilities>>();
@@ -657,6 +681,7 @@ export const useConnectionStore = defineStore("connection", () => {
   } | null>(null);
   const sidebarLayout = ref<SidebarLayout>(emptyLayout());
   const tableVGroupLayouts = ref<Record<string, TableVGroupLayout>>({});
+  const lastDataGripFallbackUsernamesCount = ref(0);
   const dirtyTableVGroupScopeKeys = new Set<string>();
   let tableVGroupPersistTimer: ReturnType<typeof setTimeout> | null = null;
   const connectionGroupPaths = computed(() => buildConnectionGroupPathMap(sidebarLayout.value));
@@ -1098,6 +1123,29 @@ export const useConnectionStore = defineStore("connection", () => {
     return disconnectInFlight.has(connectionId);
   }
 
+  /** 用户显式关闭过、且此后没有重新连上的连接（见 `userClosedConnectionIds`）。 */
+  function isConnectionClosedByUser(connectionId: string): boolean {
+    return !!connectionId && userClosedConnectionIds.value.has(connectionId);
+  }
+
+  function markConnectionClosedByUser(connectionId: string): void {
+    if (!connectionId || userClosedConnectionIds.value.has(connectionId)) return;
+    const next = new Set(userClosedConnectionIds.value);
+    next.add(connectionId);
+    userClosedConnectionIds.value = next;
+  }
+
+  /**
+   * 连接真的连上之后标记必须消失，否则页签界面会一直停在"连接已关闭"的空态：
+   * 用户点侧栏重连、按 Run、或在对话框里补上密码后，标记不能再拦后续的被动唤醒。
+   */
+  function clearConnectionClosedByUser(connectionId: string): void {
+    if (!connectionId || !userClosedConnectionIds.value.has(connectionId)) return;
+    const next = new Set(userClosedConnectionIds.value);
+    next.delete(connectionId);
+    userClosedConnectionIds.value = next;
+  }
+
   async function waitForBlockingDisconnectInFlight(connectionId: string): Promise<void> {
     const pending = getBlockingDisconnectInFlight(connectionId);
     if (pending) await pending;
@@ -1120,11 +1168,11 @@ export const useConnectionStore = defineStore("connection", () => {
     return bounded;
   }
 
-  function startDisconnectRequest(connectionId: string): Promise<void> {
+  function startDisconnectRequest(connectionId: string, metadataDrain?: Promise<void>): Promise<void> {
     const clientAttempt = activeLocalConnectionAttempts.get(connectionId) ?? successfulLocalConnectionAttempts.get(connectionId);
     let request: Promise<void>;
     try {
-      request = api.disconnectDb(connectionId, clientAttempt);
+      request = metadataDrain ? metadataDrain.then(() => api.disconnectDb(connectionId, clientAttempt)) : api.disconnectDb(connectionId, clientAttempt);
     } catch (error) {
       request = Promise.reject(error);
     }
@@ -1735,6 +1783,7 @@ export const useConnectionStore = defineStore("connection", () => {
       idle_timeout_secs: config.idle_timeout_secs ?? 60,
       keepalive_interval_secs: config.keepalive_interval_secs ?? DEFAULT_KEEPALIVE_INTERVAL_SECS,
       redis_database_aliases: normalizeRedisDatabaseAliases(config.redis_database_aliases),
+      redis_key_filter: dbType === "redis" && typeof config.redis_key_filter === "string" ? config.redis_key_filter.trim() || undefined : undefined,
       redis_key_templates: (() => {
         const templates = normalizeRedisKeyTemplates(config.redis_key_templates);
         return templates.length > 0 ? templates : undefined;
@@ -3428,10 +3477,15 @@ export const useConnectionStore = defineStore("connection", () => {
     return scopes;
   }
 
-  async function refreshSidebarTableSearchIndex(parentNodeId: string, identity?: SidebarRegexScopeIdentity): Promise<TableInfo[]> {
+  async function refreshSidebarTableSearchIndex(parentNodeId: string, identity?: SidebarRegexScopeIdentity): Promise<TableInfo[] | null> {
     const parent = identity ? findSidebarTreeNodeByIdentity(parentNodeId, identity) : findNode(treeNodes.value, parentNodeId);
     if (!parent?.connectionId || !hasTreeNodeDatabaseContext(parent)) return [];
     const connectionId = parent.connectionId;
+    // 搜索是后台投影，不得替用户建连：用户在侧栏显式关闭过的连接在这里直接放弃索引
+    // （返回 null，UI 退回"只过滤已加载的表"），而不是把它连回来。这里不能抛
+    // `skipIfClosedByUser` 那个错误——输入路径（loadLocalTableSearchResults）没有 catch，
+    // 抛出会变成未处理的 Promise 拒绝。
+    if (isConnectionClosedByUser(connectionId)) return null;
     const cacheKey = sidebarTableSearchIndexCacheKey(parent);
     if (!cacheKey) return [];
     const connectionGeneration = sidebarTableSearchIndexConnectionGeneration(connectionId);
@@ -4013,6 +4067,8 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const id of removedIds) nextLayout = removeConnectionFromSidebarLayout(nextLayout, id);
     await persistConnectionDeletion(nextConnections, nextLayout);
     applyConnectionRemoval(removedIds, nextConnections, nextLayout);
+    // 连接已不存在，"用户已关闭"标记没有意义，留着只会泄漏失效 id。
+    for (const id of removedIds) clearConnectionClosedByUser(id);
     purgeTableVGroupsForConnections(removedIds);
     // 删除已经落盘完成；页签处理失败只告警，不能让已成功的删除以异常收场。
     try {
@@ -4105,6 +4161,8 @@ export const useConnectionStore = defineStore("connection", () => {
     useQueryStore().syncTabsDatabaseForConnectionEdit(config.id, previousDatabase, config.database ?? "");
     clearPrimaryVisibleObjectNames(config.id);
     connectedIds.value.delete(config.id);
+    // 编辑连接会在保存后重新连上，不是"用户关闭"，标记不该留下。
+    clearConnectionClosedByUser(config.id);
     clearSidebarStorageCaches(config.id);
     clearConnectionIdentifierQuote(config.id);
     clearConnectionHealthCheck(config.id);
@@ -4627,6 +4685,9 @@ export const useConnectionStore = defineStore("connection", () => {
       passwordChangeReconnectRequired.delete(config.id);
       activeConnectionId.value = id;
       connectedIds.value.add(id);
+      // 显式连接成功即结束"用户已关闭"状态：页签界面随后的被动唤醒可以正常参与。
+      clearConnectionClosedByUser(config.id);
+      clearConnectionClosedByUser(id);
       if (config.db_type !== "plugin") {
         void refreshConnectedDatabaseInfo(id, { ...config, id });
         await refreshConnectionIdentifierQuote(id, { ...config, id });
@@ -4781,12 +4842,20 @@ export const useConnectionStore = defineStore("connection", () => {
    * `options.skipTabHandling` 用于「删除连接」流程：删除时页签已按
    * `deleteConnectionTabHandlingMode` 处理过，这里只做会话清理，不能再套用
    * `disconnectTabHandlingMode`，否则会把刚保留下来的 SQL 页签又关掉。
+   *
+   * `options.markClosedByUser` 默认 true：这里的调用方基本上都是用户在侧栏按下
+   * 「关闭连接」。系统侧释放（插件页签关闭后回收连接、改密码后的退役、删除连接）必须
+   * 传 false，否则后续用户重新打开那个页签时会因为标记而连不上（见 `userClosedConnectionIds`）。
    */
-  async function disconnect(connectionId: string, options: { skipTabHandling?: boolean } = {}) {
+  async function disconnect(connectionId: string, options: { skipTabHandling?: boolean; markClosedByUser?: boolean } = {}) {
+    const metadataDrain = cancelSchemaDiffTasksForConnection(connectionId, new Error(i18n.global.t("schemaDiff.connectionDisconnected")));
     const stateRevision = bumpConnectionStateRevision(connectionId);
+    // 先写标记再清理：清理过程中存活下来的页签（未保存草稿、keep-tabs 模式）一旦被
+    // 重新挂载，也不该在这一刻把连接连回来。
+    if (options.markClosedByUser !== false) markConnectionClosedByUser(connectionId);
     const shouldRemoveOneTimeConnection = getConfig(connectionId)?.one_time === true;
     if (hasSqlServerActivityTraceForConnection(connectionId)) await disposeSqlServerActivityTracesForConnection(connectionId);
-    const disconnectRequest = startDisconnectRequest(connectionId);
+    const disconnectRequest = startDisconnectRequest(connectionId, metadataDrain);
     cancelLocalConnectionAttempt(connectionId);
 
     connectedIds.value.delete(connectionId);
@@ -4862,7 +4931,9 @@ export const useConnectionStore = defineStore("connection", () => {
   async function retirePasswordAfterChange(connectionId: string) {
     passwordChangeReconnectRequired.set(connectionId, "retiring");
     connections.value = connections.value.map((config) => (config.id === connectionId ? { ...config, password: "", save_password: false } : config));
-    const results = await Promise.allSettled([disconnect(connectionId), persistConnections()]);
+    // 改密码后的退役是系统侧断开：用户随后会显式重连，写"用户已关闭"标记只会让
+    // 页签界面在重连期间多停一档空态。
+    const results = await Promise.allSettled([disconnect(connectionId, { markClosedByUser: false }), persistConnections()]);
     try {
       if (await api.sessionCredentialStatus(connectionId)) await api.forgetSessionCredential(connectionId);
       if (results.some((result) => result.status === "rejected")) throw new Error();
@@ -4912,7 +4983,17 @@ export const useConnectionStore = defineStore("connection", () => {
     invalidateConnectionMetadataLifetime(connectionId, database);
   }
 
-  async function ensureConnected(connectionId: string, options: { activate?: boolean; verifyHealth?: boolean; forceReconnect?: boolean; allowPasswordPrompt?: boolean } = {}) {
+  /**
+   * 确保连接可用。默认语义是"需要就建连"，用户主动入口（点侧栏连接、按 Run、打开表数据）
+   * 保持该语义。
+   *
+   * `options.skipIfClosedByUser` 供**被动唤醒**使用：页签重新挂载/激活、工具栏与面板预取
+   * 下拉选项、插件页签的 silent self-heal。用户刚在侧栏关掉的连接在这里直接抛
+   * `CONNECTION_CLOSED_BY_USER_MESSAGE`，让调用方停在"连接已关闭"的空态，而不是把连接
+   * 偷偷连回来（这是"关闭连接后连接又自己回来"这类报告的根因）。
+   */
+  async function ensureConnected(connectionId: string, options: { activate?: boolean; verifyHealth?: boolean; forceReconnect?: boolean; allowPasswordPrompt?: boolean; skipIfClosedByUser?: boolean } = {}) {
+    if (options.skipIfClosedByUser && isConnectionClosedByUser(connectionId)) throw new Error(CONNECTION_CLOSED_BY_USER_MESSAGE);
     if (passwordChangeReconnectRequired.has(connectionId)) throw new Error(i18n.global.t("userAdmin.passwordChangedReconnect"));
     if (!options.forceReconnect && connectedIds.value.has(connectionId)) {
       // Pure navigation can safely trust the existing connected state. Its
@@ -4989,6 +5070,8 @@ export const useConnectionStore = defineStore("connection", () => {
       await syncMongoLegacyDriverFallback(connectionId, config);
       await ensureLocalConnectionAttemptActiveAfterConnectResult(connectionId, localAttempt, id);
       connectedIds.value.add(connectionId);
+      // 任何路径真的连上之后，"用户已关闭"标记就不能再拦后续的被动唤醒。
+      clearConnectionClosedByUser(connectionId);
       if (config.db_type !== "plugin") {
         void refreshConnectedDatabaseInfo(connectionId, config);
         await refreshConnectionIdentifierQuote(connectionId, config);
@@ -7060,9 +7143,28 @@ export const useConnectionStore = defineStore("connection", () => {
         offset: 0,
         sidebarDisplayMode: useSettingsStore().editorSettings.sidebarObjectDisplay,
         driverProfile: metadataDriverProfile(config),
+        extra: target.catalog ? { catalog: target.catalog } : undefined,
       },
       async () => {
         await ensureConnected(target.connectionId);
+
+        if (target.catalog) {
+          const parent = findDatabaseTreeNode(treeNodes.value, target.connectionId, target.database, target.catalog);
+          if (!parent) return false;
+          let load = beginTreeNodeLoad(parent);
+          try {
+            load = reclaimTreeNodeLoad(load, parent);
+            const tables = await withMetadataLoadTimeout(target.connectionId, listTablesWithOptionalTableNameFilter(target.connectionId, target.database, "", target.tableName, undefined, undefined, undefined, target.catalog), "tables");
+            const current = treeNodeLoadTarget(load);
+            if (!current) return false;
+            const children = buildTableTreeNodes({ nodeId: current.id, connectionId: target.connectionId, database: target.database, catalog: target.catalog, tables });
+            setChildren(current, mergeLocatedTreeChildren(current, current.children ?? [], children, target.connectionId, target.database));
+            current.isExpanded = true;
+            return children.length > 0;
+          } finally {
+            finishTreeNodeLoad(load);
+          }
+        }
 
         const pageSize = sidebarObjectGroupPageSize();
         const simpleObjectDisplay = useSettingsStore().editorSettings.sidebarObjectDisplay === "simple";
@@ -7230,6 +7332,9 @@ export const useConnectionStore = defineStore("connection", () => {
   async function refreshSidebarTableSearch(parentNodeId: string) {
     const parent = findNode(treeNodes.value, parentNodeId);
     if (!parent?.connectionId || !hasTreeNodeDatabaseContext(parent)) return;
+    // 与 refreshSidebarTableSearchIndex 同一契约：表名搜索（本函数是远程搜索/开关切换
+    // 路径）不得把用户在侧栏显式关闭的连接连回来。
+    if (isConnectionClosedByUser(parent.connectionId)) return;
 
     const searchFilter = sidebarTableSearchQueries.value[parentNodeId]?.trim() || "";
     const options: LoadTreeOptions = {
@@ -8287,7 +8392,7 @@ export const useConnectionStore = defineStore("connection", () => {
         const candidateType = candidate.data_type?.toUpperCase();
         const type = candidate.kind === "procedure" ? "procedure" : candidate.kind === "function" ? "function" : candidate.kind === "sequence" ? "sequence" : candidate.kind === "object" && candidateType === "PACKAGE" ? "package" : null;
         if (!type) return null;
-        const dataType = candidate.data_type && !["FUNCTION", "PROCEDURE", "PACKAGE"].includes(candidateType ?? "") ? candidate.data_type : undefined;
+        const dataType = candidate.data_type && !["FUNCTION", "PROCEDURE", "PACKAGE", "SEQUENCE"].includes(candidateType ?? "") ? candidate.data_type : undefined;
         return {
           name: candidate.name,
           schema: candidate.schema ?? undefined,
@@ -9228,7 +9333,7 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function toSqlCompletionObject(object: ObjectInfo): SqlCompletionObject | null {
     const objectType = object.object_type.toUpperCase();
-    const type = objectType.includes("PROCEDURE") ? "procedure" : objectType.includes("FUNCTION") ? "function" : objectType.includes("TRIGGER") ? "trigger" : objectType.includes("PACKAGE") ? "package" : null;
+    const type = objectType.includes("PROCEDURE") ? "procedure" : objectType.includes("FUNCTION") ? "function" : objectType.includes("TRIGGER") ? "trigger" : objectType.includes("PACKAGE") ? "package" : objectType.includes("SEQUENCE") ? "sequence" : null;
     if (!type) return null;
     return {
       name: object.name,
@@ -10014,12 +10119,22 @@ export const useConnectionStore = defineStore("connection", () => {
       if (picked.local) {
         dataSourcesLocal = await readTextFile(picked.local);
       } else {
-        console.warn("[DataGrip Import] dataSources.local.xml not selected; usernames will fall back to defaults");
+        try {
+          const siblingLocal = picked.dataSources.replace(/[^\\/]+$/, "dataSources.local.xml");
+          dataSourcesLocal = await readTextFile(siblingLocal);
+        } catch {
+          console.warn("[DataGrip Import] dataSources.local.xml not selected or readable; usernames will fall back to defaults");
+        }
       }
       if (picked.forest) {
         dbForestConfig = await readTextFile(picked.forest);
       } else {
-        console.warn("[DataGrip Import] db-forest-config.xml not selected; legacy group tree skipped");
+        try {
+          const siblingForest = picked.dataSources.replace(/[^\\/]+$/, "db-forest-config.xml");
+          dbForestConfig = await readTextFile(siblingForest);
+        } catch {
+          console.warn("[DataGrip Import] db-forest-config.xml not selected or readable; legacy group tree skipped");
+        }
       }
     } else {
       const files = await new Promise<FileList>((resolve, reject) => {
@@ -10122,6 +10237,7 @@ export const useConnectionStore = defineStore("connection", () => {
         };
         pendingDataGripPayload = payload;
         const result = parseDataGripImport(payload);
+        lastDataGripFallbackUsernamesCount.value = result.fallbackUsernamesCount || 0;
         return { connections: result.connections, layout: result.layout };
       }
       if (isDbeaverImportPayload(content)) {
@@ -10309,6 +10425,8 @@ export const useConnectionStore = defineStore("connection", () => {
     refreshObjectListTreeNode,
     connectedIds,
     connectingIds,
+    isConnectionClosedByUser,
+    userClosedConnectionIds,
     connectionErrors,
     setConnectionError,
     clearConnectionError,
@@ -10481,6 +10599,7 @@ export const useConnectionStore = defineStore("connection", () => {
     applyConnectionsImport,
     importConnectionsFromFile,
     applyDataGripKeychainPasswords,
+    lastDataGripFallbackUsernamesCount,
     applySidebarLayout,
     transferSource,
     schemaDiffSource,

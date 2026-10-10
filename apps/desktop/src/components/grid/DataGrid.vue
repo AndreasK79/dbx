@@ -61,6 +61,7 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   Globe2,
+  Highlighter,
 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -68,6 +69,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from "@/components/ui/input";
 import QueryLoadingState from "@/components/common/QueryLoadingState.vue";
 import DataGridBusyOverlay from "@/components/grid/DataGridBusyOverlay.vue";
+import { DATA_GRID_CLIPBOARD_BATCH_CHARS, DataGridClipboardCapacityError, dataGridPendingRowLimit, dataGridPreparationBatchSize, type DataGridRowPreparationOptions, type DataGridRowPreparationProgress } from "@/lib/dataGrid/dataGridRowPreparation";
 import ProductionWatermark from "@/components/common/ProductionWatermark.vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import LightDropdownMenu from "@/components/ui/LightDropdownMenu.vue";
@@ -149,7 +151,6 @@ import {
   nextTransposeStateForRecordCount,
   restoreDataGridAfterTranspose,
   shouldAutoTransposeSingleRow,
-  transposeRecordIndexesForMode,
   transposeRecordWidthsForDensity,
   transposeEndAlignmentSpacerWidth,
   transposeFieldWidth,
@@ -209,6 +210,7 @@ import {
   isCancelSearchShortcut,
   isCopyCurrentRowShortcut,
   isDeleteCurrentRowShortcut,
+  isEditCellShortcut,
   isEditTableStructureShortcut,
   isFocusSearchShortcut,
   isFocusWhereShortcut,
@@ -225,6 +227,7 @@ import { dataGridHeaderContentWidth, scrollbarGutterWidth } from "@/lib/dataGrid
 import {
   canFetchNextDataGridSegment,
   canGoNextDataGridPage,
+  canStartDataGridLoadAll,
   dataGridLoadAllInitialTarget,
   dataGridLoadAllNextSegment,
   dataGridLoadAllSegment,
@@ -234,6 +237,7 @@ import {
   ELASTICSEARCH_PAGE_JUMP_WARNING_REQUESTS,
   elasticsearchCursorPageJumpRequestCount,
   hasCompleteLocalDataGridResult,
+  hasShortDataGridSqlPage,
   reconcileDataGridExactTotalWithObservedPage,
   resolveDataGridPaginationTotal,
   showDataGridRerunTotalCountAction,
@@ -305,11 +309,13 @@ import {
   createDataGridCompactColumnActionItems,
   createDataGridContextMenuItems,
   createDataGridFilterSubmenu,
+  createDataGridHighlightSubmenu,
   createDataGridRowContextMenuItems,
   createDataGridSortMenuItems,
   dataGridSelectedSortMenuValue,
   type DataGridColumnSortState,
 } from "@/lib/dataGrid/dataGridContextMenu";
+import { clearAllColumnHighlights, clearColumnHighlight, computeColumnHighlightMatchKeys, hasColumnHighlight, isColumnDuplicateHighlightActive, isColumnNullHighlightActive, setColumnDuplicateHighlight, setColumnNullHighlight, type ColumnHighlightRule } from "@/lib/dataGrid/dataGridColumnHighlight";
 import {
   buildColumnForeignKeyMap,
   combineForeignKeyConditions,
@@ -341,8 +347,8 @@ import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { useDataGridExport, type MongoCopyUpdateTarget } from "@/composables/useDataGridExport";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { eventTargetAllowsNativeClipboard, isPlainClipboardShortcut, readTextFromClipboard } from "@/lib/common/clipboard";
-import { claimDataGridPaste, claimDataGridSelectAll, clearDataGridClipboardCopy, parseDataGridClipboard, planDataGridPaste } from "@/lib/dataGrid/dataGridClipboard";
-import { parseInsertStatementPaste } from "@/lib/dataGrid/dataGridInsertPaste";
+import { claimDataGridPaste, claimDataGridSelectAll, clearDataGridClipboardCopy, parseDataGridClipboard, parseDataGridClipboardInBatches, planDataGridPaste } from "@/lib/dataGrid/dataGridClipboard";
+import { parseInsertStatementPaste, parseInsertStatementPasteInBatches } from "@/lib/dataGrid/dataGridInsertPaste";
 import { beginDataGridNativeSelectionBlock, finishDataGridNativeSelectionBlock } from "@/lib/dataGrid/dataGridNativeSelection";
 import { DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS, DATA_GRID_COPY_EXTRACTOR_IDS, DATA_GRID_DEFAULT_COPY_PREFERENCES, extractorUnavailableForDatabase, type DataGridCopyExtractorId, type DataGridCopyPreference } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { columnNamesForCopy } from "@/lib/dataGrid/dataGridColumnNameCopy";
@@ -395,7 +401,6 @@ import {
   type DataGridToolbarActionCapability,
   type DataGridToolbarAddRowCapability,
   type DataGridToolbarAutoRefreshCapability,
-  type DataGridToolbarExportCapability,
   type DataGridToolbarSaveCapability,
 } from "@/lib/dataGrid/dataGridToolbar";
 import { getTableMetadataCapabilities } from "@/lib/table/tableMetadataCapabilities";
@@ -405,7 +410,7 @@ import { filterObjectBrowserTableColumns } from "@/lib/table/objectBrowserTableI
 import { gaussdbMTypeDisplayName } from "@/lib/table/postgresDataTypeHelp";
 import { reserveDataGridHeaderLine } from "@/lib/dataGrid/dataGridHeaderLayout";
 import { buildColumnIndexMap, columnIndexColorClass, columnIndexNameKey, type ColumnIndexKind } from "@/lib/dataGrid/dataGridColumnIndexIcon";
-import { supportsTableStructureEditing } from "@/lib/database/databaseCapabilities";
+import { isSchemaAware, supportsTableStructureEditing } from "@/lib/database/databaseCapabilities";
 import { rememberDataGridConditionHistory } from "@/lib/dataGrid/dataGridConditionHistory";
 import { restoreDataGridLocalColumnFilters, type DataGridLocalFilterOption } from "@/lib/dataGrid/dataGridLocalColumnFilterState";
 import { effectiveDatabaseTypeForConnection, gaussdbCountQueryDopHint } from "@/lib/database/jdbcDialect";
@@ -509,6 +514,7 @@ interface DataGridProps {
   sourceColumns?: Array<string | undefined>;
   joinedWriteTargets?: import("@/types/database").QueryTab["queryWriteTargets"];
   queryMultiSource?: boolean;
+  hasUniqueQueryInsertTarget?: boolean;
   readonlyColumnIndexes?: number[];
   /**
    * Column comments for a multi-source query result (e.g. JOIN), indexed by
@@ -607,6 +613,7 @@ interface DataGridProps {
     exportColumnExtras?: Array<string | null | undefined>;
     insertMode?: SqlInsertMode;
   }) => Promise<api.QueryResultExportRequest | undefined>;
+  transferQueryResult?: () => void;
   allExportResults?: Array<{
     sheetName: string;
     result: QueryResult;
@@ -707,7 +714,10 @@ if (isDebugLoggingEnabled()) {
 
 const transposeRowIndex = ref<number | null>(null);
 const showTranspose = ref(false);
+// Capture the scope once: editing a cell must not collapse a multi-record view.
+const transposeSelectedRowIds = ref<Set<number> | null>(null);
 const preserveTransposeOnNextResult = ref(false);
+let preservedTransposeScopeOnNextResult: { selection: PersistedDataGridSelection | null } | null = null;
 let preservedSelectionOnNextResult: {
   selection: PersistedDataGridSelection;
   sourceResult: QueryResult;
@@ -1144,7 +1154,7 @@ const dataGridSearch = useDataGridSearch({
   caseSensitive: () => replaceOpen.value && replaceCaseSensitive.value,
   literalQuery: replaceOpen,
   includeColumnMatches: () => !replaceOpen.value,
-  isCellSearchable: (row, columnIndex) => !replaceOpen.value || (canReplaceGridCell(row, columnIndex) && replacementCellInScope(row.id, columnIndex)),
+  isCellSearchable: (row, columnIndex) => transposeIncludesRow(row.id) && (!replaceOpen.value || (canReplaceGridCell(row, columnIndex) && replacementCellInScope(row.id, columnIndex))),
   onNavigate: () => nextTick(scrollToCurrentMatch),
   // Same key as useDataGridEditor below: table data tabs use the tab id, query
   // results use resultGridInstanceKey so a re-execute starts with a clean search.
@@ -2678,6 +2688,8 @@ const gridStyle = computed(() => ({
   [EDITOR_FONT_FAMILY_CSS_VAR]: settingsStore.editorSettings.fontFamily,
   "--dbx-data-grid-font-family": tableFontFamily.value,
   "--dbx-table-font-size": `${tableFontSize.value}px`,
+  ...(settingsStore.editorSettings.dataGridCrosshairRowBg?.trim() ? { "--data-grid-cell-crosshair-row-bg": settingsStore.editorSettings.dataGridCrosshairRowBg.trim() } : {}),
+  ...(settingsStore.editorSettings.dataGridCrosshairColBg?.trim() ? { "--data-grid-cell-crosshair-col-bg": settingsStore.editorSettings.dataGridCrosshairColBg.trim() } : {}),
 }));
 const gridHorizontalScrollLeft = ref(0);
 let gridScrollLeftBeforeTranspose = 0;
@@ -3585,11 +3597,18 @@ const canFetchNextInfiniteScrollSegment = computed(() =>
     allRowsLoaded: allRowsLoaded.value,
   }),
 );
-const canJumpLastPage = computed(() => canGoNextPage.value && (hasKnownPaginationTotalRowCount.value || allRowsLoaded.value || !!props.tableMeta || !!props.countSql || !!props.countTotalRows));
+// Editable query results also carry table metadata, but their SQL predicates
+// are not the table browser's whereInput. Never count that table as a fallback.
+const canCountTableRows = computed(() => props.context !== "results" && !!props.tableMeta);
+const canJumpLastPage = computed(() => canGoNextPage.value && (hasKnownPaginationTotalRowCount.value || allRowsLoaded.value || canCalculateTotalRowCount.value));
 const totalRowCountBusy = computed(() => props.totalRowCountLoading === true || manualTotalRowCountLoading.value);
 const pageJumpBusy = computed(() => !!props.pageJumpProgress && props.pageJumpProgress.totalRequests > 1);
+const rowPreparationProgress = shallowRef<DataGridRowPreparationProgress | null>(null);
+let rowPreparationController: AbortController | null = null;
+let gridClipboardLifecycle = 0;
+let gridClipboardActive = true;
 /** Automatic background counts keep rows interactive; explicit count navigation still blocks the surface. */
-const gridSurfaceBusy = computed(() => isRefreshingData.value || props.loading === true || manualTotalRowCountLoading.value || pageJumpBusy.value);
+const gridSurfaceBusy = computed(() => isRefreshingData.value || props.loading === true || manualTotalRowCountLoading.value || pageJumpBusy.value || rowPreparationProgress.value !== null);
 const gridPaginationBusy = computed(() => gridSurfaceBusy.value || totalRowCountBusy.value);
 const dataGridNativeSelectionBlockOwner = {};
 watch(
@@ -3600,7 +3619,7 @@ watch(
   },
   { immediate: true },
 );
-const canCalculateTotalRowCount = computed(() => !!props.countTotalRows || (!!props.connectionId && (!!props.tableMeta || !!props.countSql)));
+const canCalculateTotalRowCount = computed(() => !!props.countTotalRows || (!!props.connectionId && (canCountTableRows.value || !!props.countSql)));
 const showExactTotalCountAction = computed(() => canCalculateTotalRowCount.value && (totalRowCountIsExact.value === false || typeof displayedTotalRowCount.value !== "number"));
 const showRerunTotalCountAction = computed(() =>
   showDataGridRerunTotalCountAction({
@@ -3835,7 +3854,7 @@ function selectAndRevealLastLoadedRow() {
   nextTick(() => {
     let rowIndex = displayRowRefs.value.length - 1;
     while (rowIndex >= 0 && !("sourceIndex" in displayRowRefs.value[rowIndex])) rowIndex--;
-    if (rowIndex < 0) return;
+    if (rowIndex < 0 || !transposeIncludesRow(displayRowRefs.value[rowIndex].id)) return;
     selectRow(rowIndex);
     if (showTranspose.value) {
       transposeRowIndex.value = rowIndex;
@@ -3861,23 +3880,59 @@ function selectAndRevealLastLoadedRow() {
   });
 }
 
+// SQL-page counts can come from another session. Explicit load-all must
+// observe a short tail on the original execution path, even at a cached total.
+const loadsSqlPages = computed(() => isResultsContext.value && !!props.pageSql);
+const sqlPageExhausted = computed(() =>
+  hasShortDataGridSqlPage({
+    rowCount: props.result.rows.length,
+    pageOffset: props.pageOffset,
+    pageLimit: props.pageLimit,
+    executedPageOffset: props.executedPageOffset,
+    executedPageLimit: props.executedPageLimit,
+  }),
+);
+function nextLoadAllSegment() {
+  if (loadsSqlPages.value) {
+    if (sqlPageExhausted.value) return null;
+    const segment = dataGridLoadAllSegment(props.result.rows.length, infiniteScrollMaxRows.value, true);
+    // Preserve the existing bulk load while more rows are expected; a
+    // cached end only needs a normal page to probe the actual source.
+    return segment && !canFetchNextInfiniteScrollSegment.value ? { offset: segment.offset, limit: Math.min(segment.limit, pageSize.value) } : segment;
+  }
+  const effectiveTotal = paginationTotalRowCount.value ?? displayedTotalRowCount.value;
+  // The "no more rows" marker must gate a re-request even when the total is
+  // unknown: re-fetching an exhausted result duplicated rows (#11321). The
+  // marker also gets set by the result-row cap; a capped result is not
+  // exhausted, and load-all is the only way past the cap (#10752).
+  const canFetchMore = canStartDataGridLoadAll({
+    hasMore: props.result.has_more,
+    loadedRowCount: props.result.rows.length,
+    pageSize: pageSize.value,
+    totalRowCount: hasKnownPaginationTotalRowCount.value ? paginationTotalRowCount.value : undefined,
+    exactTotal: totalRowCountIsExact.value ? effectiveTotal : undefined,
+    allRowsLoaded: infiniteScrollAllLoaded,
+    localResultComplete: allRowsLoaded.value,
+    resultRowCap: infiniteScrollMaxRows.value,
+  });
+  const targetMaxRows = dataGridLoadAllInitialTarget(props.result.rows.length, infiniteScrollMaxRows.value, totalRowCountIsExact.value ? effectiveTotal : undefined);
+  return dataGridLoadAllSegment(props.result.rows.length, targetMaxRows, canFetchMore);
+}
+
 function loadAllRowsAndGoToLast() {
   if (!props.loadAllRowsEnabled || gridSurfaceBusy.value || infiniteScrollLoading.value || props.result.rows.length === 0) return;
   // search_after cursor paging fetches page by page; a single giant append
   // against those cursors is untested, so ES/Easysearch grids keep the
   // reveal-only shortcut instead of loading everything.
   if (isResultsContext.value && (resolvedDatabaseType.value === "elasticsearch" || resolvedDatabaseType.value === "easysearch")) return;
-  const effectiveTotal = paginationTotalRowCount.value ?? displayedTotalRowCount.value;
-  const canFetchMore = canFetchNextInfiniteScrollSegment.value && (!totalRowCountIsExact.value || effectiveTotal === undefined || props.result.rows.length < effectiveTotal);
-  const targetMaxRows = dataGridLoadAllInitialTarget(props.result.rows.length, infiniteScrollMaxRows.value, totalRowCountIsExact.value ? effectiveTotal : undefined);
-  const segment = dataGridLoadAllSegment(props.result.rows.length, targetMaxRows, canFetchMore);
+  const segment = nextLoadAllSegment();
   if (!segment) {
     loadAllRowsActive.value = true;
     infiniteScrollAllLoaded = true;
     selectAndRevealLastLoadedRow();
     return;
   }
-  const knownTotal = effectiveTotal;
+  const knownTotal = paginationTotalRowCount.value ?? displayedTotalRowCount.value;
   const remaining = typeof knownTotal === "number" && Number.isFinite(knownTotal) && knownTotal >= props.result.rows.length ? knownTotal - props.result.rows.length : segment.limit;
   if (remaining > LOAD_ALL_ROWS_CONFIRM_ROW_THRESHOLD) {
     pendingLoadAllRows.value = { remaining };
@@ -3907,15 +3962,28 @@ function startLoadAllRows(segment: { offset: number; limit: number }) {
 function finishOrContinueLoadAllRun(requestedOffset: number | undefined, requestedLimit: number | undefined): boolean {
   if (!loadAllRowsLoopActive) return false;
   const effectiveTotal = paginationTotalRowCount.value ?? displayedTotalRowCount.value;
-  const canFetchMore = canFetchNextInfiniteScrollSegment.value && (!totalRowCountIsExact.value || effectiveTotal === undefined || props.result.rows.length < effectiveTotal);
-  const nextSegment = canFetchMore
-    ? dataGridLoadAllNextSegment({
-        loadedRowCount: props.result.rows.length,
-        requestedOffset: requestedOffset ?? props.result.rows.length,
-        requestedLimit: requestedLimit ?? pageSize.value,
-        totalRowCount: totalRowCountIsExact.value ? effectiveTotal : undefined,
-      })
-    : null;
+  const canFetchMore = canStartDataGridLoadAll({
+    hasMore: props.result.has_more,
+    loadedRowCount: props.result.rows.length,
+    pageSize: pageSize.value,
+    totalRowCount: hasKnownPaginationTotalRowCount.value ? paginationTotalRowCount.value : undefined,
+    exactTotal: totalRowCountIsExact.value ? effectiveTotal : undefined,
+    allRowsLoaded: infiniteScrollAllLoaded,
+    localResultComplete: allRowsLoaded.value,
+    // The marker also gets set by the result-row cap; a capped result is not
+    // exhausted, and load-all is the only way past the cap (#10752).
+    resultRowCap: infiniteScrollMaxRows.value,
+  });
+  const nextSegment = loadsSqlPages.value
+    ? nextLoadAllSegment()
+    : canFetchMore
+      ? dataGridLoadAllNextSegment({
+          loadedRowCount: props.result.rows.length,
+          requestedOffset: requestedOffset ?? props.result.rows.length,
+          requestedLimit: requestedLimit ?? pageSize.value,
+          totalRowCount: totalRowCountIsExact.value ? effectiveTotal : undefined,
+        })
+      : null;
   if (!nextSegment) {
     loadAllRowsLoopActive = false;
     infiniteScrollAllLoaded = true;
@@ -3931,10 +3999,7 @@ function confirmLoadAllRows() {
   if (!pending) return;
   pendingLoadAllRows.value = undefined;
   loadAllRowsConfirmOpen.value = false;
-  const effectiveTotal = paginationTotalRowCount.value ?? displayedTotalRowCount.value;
-  const canFetchMore = canFetchNextInfiniteScrollSegment.value && (!totalRowCountIsExact.value || effectiveTotal === undefined || props.result.rows.length < effectiveTotal);
-  const targetMaxRows = dataGridLoadAllInitialTarget(props.result.rows.length, infiniteScrollMaxRows.value, totalRowCountIsExact.value ? effectiveTotal : undefined);
-  const segment = dataGridLoadAllSegment(props.result.rows.length, targetMaxRows, canFetchMore);
+  const segment = nextLoadAllSegment();
   if (segment) startLoadAllRows(segment);
 }
 function checkInfiniteScroll(scroller: HTMLElement) {
@@ -4037,7 +4102,7 @@ async function lastPage() {
     }
     return;
   }
-  if (props.connectionId && (props.countSql || props.tableMeta)) {
+  if (props.connectionId && (props.countSql || canCountTableRows.value)) {
     const generation = await beginManualTotalRowCount();
     if (generation === undefined) return;
     try {
@@ -4081,7 +4146,7 @@ function handleGridPaginationShortcut(event: KeyboardEvent): boolean {
 
 async function buildCurrentCountTarget(): Promise<{ sql: string; schema?: string } | undefined> {
   if (props.countSql) return { sql: props.countSql, schema: props.schema };
-  if (props.tableMeta) {
+  if (canCountTableRows.value && props.tableMeta) {
     const countHint = resolvedDatabaseType.value === "gaussdb" && props.connectionId ? gaussdbCountQueryDopHint(connectionStore.getConfig(props.connectionId)) : undefined;
     const sql = await buildDataGridCountSql({
       databaseType: props.databaseType,
@@ -4325,6 +4390,7 @@ const editor = useDataGridEditor({
   manualTransactionSessionId: computed(() => props.manualTransactionSessionId),
   ensureManualTransactionSession: computed(() => props.ensureManualTransactionSession),
   onManualTransactionMutation: () => props.onManualTransactionMutation?.(),
+  onSaveConflict: (message) => toast(message, 5000),
   sql: computed(() => props.sql),
   searchText,
   whereFilterInput,
@@ -4379,9 +4445,11 @@ const {
   restoreCellValue,
   cancelEdit,
   onEditKeydown,
-  addRows: addEditorRows,
+  addRowsInBatches: addEditorRowsInBatches,
+  availableInsertRows,
   appendPastedRowsToNewRow,
-  appendPastedRowsAsNewRows,
+  appendPastedRowsToNewRowInBatches,
+  appendPastedRowsAsNewRowsInBatches,
   cloneRow: cloneEditorRow,
   showDeleteRowConfirm,
   requestDeleteRow,
@@ -4870,7 +4938,7 @@ function prepareFullReload() {
   preservedSelectionOnNextResult = selection ? { selection, sourceResult: props.result } : null;
   preservedViewportAnchorOnNextResult = viewportAnchor ? { anchor: viewportAnchor, sourceResult: props.result } : null;
   preservedDetailsOnNextResult = captureDetailsForRefresh();
-  preserveTransposeOnNextResult.value = showTranspose.value;
+  preserveTransposeForRefresh();
   isRefreshingData.value = true;
   beginDataGridNativeSelectionBlock(dataGridNativeSelectionBlockOwner);
 }
@@ -4958,9 +5026,37 @@ function selectedRowPlacement(position: "above" | "below"): GridNewRowPlacement 
   return null;
 }
 
-function insertRows(count: number, position: "above" | "below" | "end") {
+async function prepareGridRows<T>(prepare: (options: DataGridRowPreparationOptions) => Promise<T>): Promise<T | undefined> {
+  if (rowPreparationController || isSaving.value || !gridClipboardActive) return undefined;
+  const controller = new AbortController();
+  rowPreparationController = controller;
+  const operation = dataGridResultLifecycle.beginOperation();
+  const pendingVersion = pendingChangesVersion.value;
+  try {
+    return await prepare({
+      signal: controller.signal,
+      isCurrent: () => gridClipboardActive && dataGridResultLifecycle.isCurrent(operation) && pendingChangesVersion.value === pendingVersion,
+      onProgress: (progress) => {
+        rowPreparationProgress.value = progress;
+      },
+    });
+  } finally {
+    rowPreparationController = null;
+    rowPreparationProgress.value = null;
+  }
+}
+
+function cancelRowPreparation() {
+  rowPreparationController?.abort();
+}
+
+function onRowPreparationOpenChange(open: boolean) {
+  if (!open) cancelRowPreparation();
+}
+
+async function insertRows(count: number, position: "above" | "below" | "end") {
   const placement: GridNewRowPlacement | null = position === "end" ? null : selectedRowPlacement(position);
-  const firstNewRowId = addEditorRows(count, placement);
+  const firstNewRowId = await prepareGridRows((options) => addEditorRowsInBatches(count, placement, options));
   if (firstNewRowId !== undefined) {
     nextTick(() => {
       const displayIndex = displayRowIndexById(firstNewRowId);
@@ -5362,6 +5458,50 @@ function transposeHeaderIsCurrentMatch(fieldIndex: number): boolean {
   return m.kind === "column" && m.col === fieldIndex;
 }
 
+const columnHighlightRules = ref<Map<number, ColumnHighlightRule>>(new Map());
+
+watch(
+  () => props.result,
+  () => {
+    clearAllColumnHighlights(columnHighlightRules.value);
+  },
+);
+
+function columnHighlightMatchesFor(rules: ReadonlyMap<number, ColumnHighlightRule>) {
+  return computeColumnHighlightMatchKeys({
+    rows: displayItems.value,
+    rules,
+    isNullValue: (value) => value === null || (usesMongoDocumentGridValues.value && value === MONGO_DOCUMENT_GRID_NULL),
+  });
+}
+
+const columnHighlightMatches = computed(() => {
+  // Empty rules must short-circuit before displayItems: the derived key sets are
+  // read on every canvas draw, and row materialization is paid per invalidation
+  // (#8524 precedent).
+  if (columnHighlightRules.value.size === 0) {
+    return { duplicateKeys: new Set<number>(), nullKeys: new Set<number>() };
+  }
+  return columnHighlightMatchesFor(columnHighlightRules.value);
+});
+
+const duplicateHighlightKeys = computed(() => columnHighlightMatches.value.duplicateKeys);
+const nullHighlightKeys = computed(() => columnHighlightMatches.value.nullKeys);
+
+function columnHasHighlight(colIdx: number): boolean {
+  return hasColumnHighlight(columnHighlightRules.value, colIdx);
+}
+
+function cellIsDuplicateHighlight(displayRow: number, col: number): boolean {
+  if (isScrolling.value) return false;
+  return duplicateHighlightKeys.value.has(dataGridSearchMatchKey(displayRow, col));
+}
+
+function cellIsNullHighlight(displayRow: number, col: number): boolean {
+  if (isScrolling.value) return false;
+  return nullHighlightKeys.value.has(dataGridSearchMatchKey(displayRow, col));
+}
+
 function navigateMatch(delta: number) {
   dataGridSearch.navigateMatch(delta);
 }
@@ -5617,6 +5757,43 @@ function captureCurrentSelectionForRefresh(): PersistedDataGridSelection | null 
     selectingAll: isSelectingAll.value,
     lastClickedRowIndex: selection.lastClickedRowIndex.value,
   });
+}
+
+function preserveTransposeForRefresh() {
+  preserveTransposeOnNextResult.value = showTranspose.value;
+  preservedTransposeScopeOnNextResult =
+    showTranspose.value && transposeSelectedRowIds.value
+      ? {
+          selection: captureDataGridSelection({
+            ...selectionCaptureBase(),
+            selectedRowIds: transposeSelectedRowIds.value,
+            selectedColumnIndexes: new Set(),
+            selectedCellKeys: new Set(),
+            selectionAnchor: null,
+            selectionFocus: null,
+            selectingAll: false,
+          }),
+        }
+      : null;
+}
+
+function restoreTransposeScopeAfterRefresh(snapshot: { selection: PersistedDataGridSelection | null } | null) {
+  if (!snapshot) {
+    transposeSelectedRowIds.value = null;
+    return;
+  }
+  const restored = snapshot.selection
+    ? restoreDataGridSelection({
+        snapshot: snapshot.selection,
+        columns: props.result.columns,
+        sourceColumns: props.sourceColumns,
+        rows: props.result.rows,
+        visibleColumnIndexes: visibleColumnIndexes.value,
+        displayItems: displayItems.value,
+      })
+    : null;
+  // Missing records must not silently expand a restricted view to all records.
+  transposeSelectedRowIds.value = new Set(restored?.kind === "rows" ? restored.rowIds : []);
 }
 
 function captureCellTargetForRefresh(target: { rowIndex: number; col: number } | null): PersistedDataGridSelection | undefined {
@@ -6250,15 +6427,54 @@ function affectedRowIds(): number[] {
   if (hasRowSelection.value && selectedRowCount.value > 0) {
     return [...selectedRowIds.value].filter((rowId) => !getRowItem(rowId)?.isDraft);
   }
+  if (contextCell.value?.col === -1 && contextCell.value.rowId !== undefined) {
+    const item = getRowItem(contextCell.value.rowId);
+    return item && !item.isDraft ? [item.id] : [];
+  }
   const range = selectedRange.value;
   if (range && range.startRow !== range.endRow) {
     return displayRowRefs.value
       .slice(range.startRow, range.endRow + 1)
-      .filter((ref) => !("isDraft" in ref && ref.isDraft))
+      .filter((ref) => !("isDraft" in ref && ref.isDraft) && transposeIncludesRow(ref.id))
       .map((ref) => ref.id);
   }
   return [];
 }
+
+function targetColumnIndexes(): number[] {
+  if (hasColumnSelection.value && selectedColumnIndexes.value.size > 0) {
+    return [...selectedColumnIndexes.value].sort((a, b) => a - b);
+  }
+  if (contextHeaderVisibleColIdx.value !== null && contextHeaderVisibleColIdx.value !== undefined) {
+    return [contextHeaderVisibleColIdx.value];
+  }
+  if (contextHeaderColumnIndex.value !== null) {
+    const idx = visibleColumnIndexes.value.indexOf(contextHeaderColumnIndex.value);
+    if (idx >= 0) return [idx];
+  }
+  return [];
+}
+
+const hasSelectedRows = computed(() => affectedRowIds().length > 0);
+const hasSelectedColumns = computed(() => targetColumnIndexes().length > 0);
+
+function activeCellSelectionTarget(): { rowIds: number[]; columnIndexes: number[] } | null {
+  if (selectedCellMatrix.value && selectedCellMatrix.value.rowIndexes.length > 0 && selectedCellMatrix.value.columnIndexes.length > 0) {
+    const rowIds = selectedCellMatrix.value.rowIndexes
+      .map((rowIndex) => displayItemAt(rowIndex))
+      .filter((item): item is RowItem => !!item && !item.isDraft)
+      .map((item) => item.id);
+    if (rowIds.length > 0) {
+      return {
+        rowIds,
+        columnIndexes: selectedCellMatrix.value.columnIndexes.slice(),
+      };
+    }
+  }
+  return null;
+}
+
+const hasSelectedCells = computed(() => !hasRowSelection.value && !hasColumnSelection.value && hasCellSelection.value && !!activeCellSelectionTarget());
 
 function deletableRowIds(rowIds: number[]): number[] {
   const eligible = rowIds.filter((rowId) => canDeleteRowItem(getRowItem(rowId)));
@@ -6271,55 +6487,170 @@ function deletableRowIds(rowIds: number[]): number[] {
 function exportSelectedRowsCsv() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportCsv(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportCsv({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsXlsx() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportXlsx(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportXlsx({ rowIds, columnIndexes });
 }
 
 function openSelectedRowsXlsx() {
+  const cellTarget = activeCellSelectionTarget();
+  if (cellTarget) return openXlsx(cellTarget);
   const rowIds = affectedRowIds();
-  if (rowIds.length === 0) return openXlsx();
-  return openXlsx(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  if (rowIds.length === 0 && columnIndexes === undefined) return openXlsx();
+  return openXlsx({ rowIds: rowIds.length > 0 ? rowIds : undefined, columnIndexes });
 }
 
 function exportSelectedRowsXlsxWithSql() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportXlsxWithSql(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportXlsxWithSql({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsJson() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportJson(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportJson({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsMarkdown() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportMarkdown(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportMarkdown({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsHtml() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportHtml(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportHtml({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsSql() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportSql(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportSql({ rowIds, columnIndexes });
 }
 
 function exportSelectedRowsTxt() {
   const rowIds = affectedRowIds();
   if (rowIds.length === 0) return;
-  return exportTxt(rowIds);
+  const columnIndexes = hasSelectedColumns.value ? targetColumnIndexes() : undefined;
+  return exportTxt({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsCsv() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportCsv({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsXlsx() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportXlsx({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsXlsxWithSql() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportXlsxWithSql({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsJson() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportJson({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsMarkdown() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportMarkdown({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsHtml() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportHtml({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsSql() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportSql({ rowIds, columnIndexes });
+}
+
+function exportSelectedColumnsTxt() {
+  const columnIndexes = targetColumnIndexes();
+  if (columnIndexes.length === 0) return;
+  const rowIds = hasSelectedRows.value ? affectedRowIds() : undefined;
+  return exportTxt({ rowIds, columnIndexes });
+}
+
+function exportSelectedCellsCsv() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportCsv(target);
+}
+
+function exportSelectedCellsXlsx() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportXlsx(target);
+}
+
+function exportSelectedCellsXlsxWithSql() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportXlsxWithSql(target);
+}
+
+function exportSelectedCellsJson() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportJson(target);
+}
+
+function exportSelectedCellsMarkdown() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportMarkdown(target);
+}
+
+function exportSelectedCellsHtml() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportHtml(target);
+}
+
+function exportSelectedCellsSql() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportSql(target);
+}
+
+function exportSelectedCellsTxt() {
+  const target = activeCellSelectionTarget();
+  if (!target) return;
+  return exportTxt(target);
 }
 
 function executePreviewAction(action: PreviewAction) {
@@ -6694,6 +7025,8 @@ watch(valueEditorContainer, async (el) => {
       fontSize: editorFontSize,
       fontFamily: detailEditorFontFamily,
       lineWrapping: () => settingsStore.editorSettings.wordWrap,
+      lineNumbers: true,
+      folding: true,
     });
     const editor = valueDetailEditor;
     await editor.create(el, detailEditValue.value, activeCellDetail.value?.type);
@@ -6831,7 +7164,7 @@ function applyColumnSort(column: string, columnIndex: number, direction: "asc" |
     const activeRecord = transposeRowIndex.value === null ? undefined : displayItemAt(transposeRowIndex.value);
     const activeRecordSelection = captureRowTargetForRefresh(activeRecord?.id ?? null);
     preservedTransposeRecordOnNextResult = activeRecordSelection ? { selection: activeRecordSelection, sourceResult: props.result } : null;
-    preserveTransposeOnNextResult.value = true;
+    preserveTransposeForRefresh();
   }
   if (mode === "database" && (infiniteScrollEnabled.value || loadAllRowsActive.value)) {
     resetInfiniteScrollState();
@@ -7278,7 +7611,7 @@ const dataGridTypeColorKey = computed(() => {
 });
 const canvasRenderStyleKey = computed(
   () =>
-    `${settingsStore.editorSettings.theme}:${settingsStore.editorSettings.uiScale}:${canvasBackingPixelRatio.value}:${isDark.value}:${themePalette.value}:${tableFontFamily.value}:${tableFontSize.value}:${!!saveError.value}:${!!saveWarning.value}:${dataGridTypeColorKey.value}:${dataGridStripedRows.value}:${settingsStore.editorSettings.dataGridZebraRowBg}`,
+    `${settingsStore.editorSettings.theme}:${settingsStore.editorSettings.uiScale}:${canvasBackingPixelRatio.value}:${isDark.value}:${themePalette.value}:${tableFontFamily.value}:${tableFontSize.value}:${!!saveError.value}:${!!saveWarning.value}:${dataGridTypeColorKey.value}:${dataGridStripedRows.value}:${settingsStore.editorSettings.dataGridZebraRowBg}:${settingsStore.editorSettings.dataGridCrosshairRowBg}:${settingsStore.editorSettings.dataGridCrosshairColBg}`,
 );
 const CANVAS_MOUSE_WHEEL_SCROLL_MULTIPLIER = 1.5;
 const CANVAS_TRACKPAD_DELTA_THRESHOLD = 40;
@@ -8036,6 +8369,8 @@ function drawCanvasGrid() {
     editingCell: editingCell.value,
     searchMatchKeys: searchMatchSet.value,
     currentSearchMatch: currentSearchMatch.value,
+    duplicateHighlightKeys: duplicateHighlightKeys.value,
+    nullHighlightKeys: nullHighlightKeys.value,
     formatCell: (value, columnIndex, row) => formatCellCached(visibleLargeValuePreviewValue(row, columnIndex, value), columnIndex, largeValueOriginalBytes(row, columnIndex)),
     isNullValue: (value) => value === null || (usesMongoDocumentGridValues.value && value === MONGO_DOCUMENT_GRID_NULL),
     newRowCellPlaceholder,
@@ -8058,6 +8393,8 @@ function drawCanvasGrid() {
     showWhitespace: showWhitespaceEnabled.value,
     stripedRows: dataGridStripedRows.value,
     zebraRowBg: settingsStore.editorSettings.dataGridZebraRowBg,
+    crosshairRowBg: settingsStore.editorSettings.dataGridCrosshairRowBg,
+    crosshairColBg: settingsStore.editorSettings.dataGridCrosshairColBg,
     rowNumberMode: dataGridRowNumberMode.value,
   });
   if (!drawn) return;
@@ -8375,6 +8712,7 @@ const {
   pageSql: computed(() => props.pageSql),
   tableMeta: computed(() => (props.tableMeta ? { ...props.tableMeta } : undefined)),
   includeDatabaseName: computed(() => settingsStore.editorSettings.generateSqlIncludeDatabaseName),
+  hasUniqueQueryInsertTarget: computed(() => props.hasUniqueQueryInsertTarget === true),
   copyInsertTargetLabel: computed(() => props.tableMeta?.tableName ?? props.customSaveHandler?.targetLabel),
   mongoUpdateTarget: computed(() => props.mongoUpdateTarget),
   databaseType: computed(() => props.databaseType),
@@ -8523,7 +8861,7 @@ const exportMenuItems = computed(() => {
             : []),
         ]
       : [];
-  const selectedItems = isMultiRow.value
+  const selectedRowsItems = hasSelectedRows.value
     ? [
         {
           value: "selected-csv",
@@ -8552,9 +8890,68 @@ const exportMenuItems = computed(() => {
         { value: "selected-txt", label: t("grid.exportSelectedRowsTxt") },
       ]
     : [];
+  const selectedColumnsItems = hasSelectedColumns.value
+    ? [
+        {
+          value: "selected-columns-csv",
+          label: t("grid.exportSelectedColumnsCsv"),
+          separatorBefore: true,
+        },
+        { value: "selected-columns-xlsx", label: t("grid.exportSelectedColumnsXlsx") },
+        ...(canIncludeSql
+          ? [
+              {
+                value: "selected-columns-xlsx-with-sql",
+                label: t("grid.exportSelectedColumnsXlsxWithSql"),
+              },
+            ]
+          : []),
+        { value: "selected-columns-json", label: t("grid.exportSelectedColumnsJson") },
+        {
+          value: "selected-columns-markdown",
+          label: t("grid.exportSelectedColumnsMarkdown"),
+        },
+        {
+          value: "selected-columns-html",
+          label: t("grid.exportSelectedColumnsHtml"),
+        },
+        { value: "selected-columns-sql", label: t("grid.exportSelectedColumnsSql") },
+        { value: "selected-columns-txt", label: t("grid.exportSelectedColumnsTxt") },
+      ]
+    : [];
+  const selectedCellsItems = hasSelectedCells.value
+    ? [
+        {
+          value: "selected-cells-csv",
+          label: t("grid.exportSelectedCellsCsv"),
+          separatorBefore: true,
+        },
+        { value: "selected-cells-xlsx", label: t("grid.exportSelectedCellsXlsx") },
+        ...(canIncludeSql
+          ? [
+              {
+                value: "selected-cells-xlsx-with-sql",
+                label: t("grid.exportSelectedCellsXlsxWithSql"),
+              },
+            ]
+          : []),
+        { value: "selected-cells-json", label: t("grid.exportSelectedCellsJson") },
+        {
+          value: "selected-cells-markdown",
+          label: t("grid.exportSelectedCellsMarkdown"),
+        },
+        {
+          value: "selected-cells-html",
+          label: t("grid.exportSelectedCellsHtml"),
+        },
+        { value: "selected-cells-sql", label: t("grid.exportSelectedCellsSql") },
+        { value: "selected-cells-txt", label: t("grid.exportSelectedCellsTxt") },
+      ]
+    : [];
 
   if (!hasFullResultExport) {
     return [
+      ...(props.context === "results" && props.transferQueryResult ? [{ value: "database", label: t("grid.exportDatabase") }] : []),
       { value: "csv", label: t("grid.exportCsv") },
       { value: "xlsx", label: t("grid.exportXlsx") },
       ...(canIncludeSql ? [{ value: "xlsx-with-sql", label: t("grid.exportXlsxWithSql") }] : []),
@@ -8564,11 +8961,14 @@ const exportMenuItems = computed(() => {
       { value: "sql", label: t("grid.exportSql") },
       { value: "txt", label: t("grid.exportTxt") },
       ...allResultItems,
-      ...selectedItems,
+      ...selectedRowsItems,
+      ...selectedColumnsItems,
+      ...selectedCellsItems,
     ];
   }
 
   return [
+    ...(props.context === "results" && props.transferQueryResult ? [{ value: "database", label: t("grid.exportDatabase"), separatorBefore: true }] : []),
     { value: "page-csv", label: t("grid.exportCurrentPageCsv") },
     { value: "page-xlsx", label: t("grid.exportCurrentPageXlsx") },
     ...(canIncludeSql
@@ -8604,7 +9004,9 @@ const exportMenuItems = computed(() => {
     { value: "sql", label: t("grid.exportCurrentResultSql") },
     { value: "txt", label: t("grid.exportCurrentResultTxt") },
     ...allResultItems,
-    ...selectedItems,
+    ...selectedRowsItems,
+    ...selectedColumnsItems,
+    ...selectedCellsItems,
   ];
 });
 
@@ -8614,6 +9016,7 @@ function selectPageSizeMenuItem(value: string) {
 
 function selectExportMenuItem(value: string) {
   const actions: Record<string, () => void> = {
+    database: () => props.transferQueryResult?.(),
     "page-csv": exportCurrentPageCsv,
     "page-xlsx": exportCurrentPageXlsx,
     "page-xlsx-with-sql": exportCurrentPageXlsxWithSql,
@@ -8640,16 +9043,25 @@ function selectExportMenuItem(value: string) {
     "selected-html": exportSelectedRowsHtml,
     "selected-sql": exportSelectedRowsSql,
     "selected-txt": exportSelectedRowsTxt,
+    "selected-columns-csv": exportSelectedColumnsCsv,
+    "selected-columns-xlsx": exportSelectedColumnsXlsx,
+    "selected-columns-xlsx-with-sql": exportSelectedColumnsXlsxWithSql,
+    "selected-columns-json": exportSelectedColumnsJson,
+    "selected-columns-markdown": exportSelectedColumnsMarkdown,
+    "selected-columns-html": exportSelectedColumnsHtml,
+    "selected-columns-sql": exportSelectedColumnsSql,
+    "selected-columns-txt": exportSelectedColumnsTxt,
+    "selected-cells-csv": exportSelectedCellsCsv,
+    "selected-cells-xlsx": exportSelectedCellsXlsx,
+    "selected-cells-xlsx-with-sql": exportSelectedCellsXlsxWithSql,
+    "selected-cells-json": exportSelectedCellsJson,
+    "selected-cells-markdown": exportSelectedCellsMarkdown,
+    "selected-cells-html": exportSelectedCellsHtml,
+    "selected-cells-sql": exportSelectedCellsSql,
+    "selected-cells-txt": exportSelectedCellsTxt,
   };
   actions[value]?.();
 }
-
-const exportToolbarCapability = computed<DataGridToolbarExportCapability>(() => ({
-  label: t("grid.export"),
-  visible: props.result.columns.length > 0,
-  items: exportMenuItems.value,
-  onSelect: selectExportMenuItem,
-}));
 
 // --- Cell selection and detail ---
 function hydrateCellDetailTarget(target: { rowIndex: number; col: number }) {
@@ -8788,11 +9200,7 @@ function selectTransposeCell(rowIndex: number, actualColIdx: number, event: Mous
   if (visibleColIdx < 0) return;
   clearRowSelection();
   invalidateContextMenuTarget();
-  if (event.shiftKey || event.metaKey || event.ctrlKey) {
-    extendCellSelectionTo(rowIndex, visibleColIdx);
-  } else {
-    selectSingleCell(rowIndex, visibleColIdx);
-  }
+  applyCellNavigation({ rowIndex, colIndex: visibleColIdx }, event.shiftKey || event.metaKey || event.ctrlKey);
   transposeRowIndex.value = rowIndex;
   gridRef.value?.focus({ preventScroll: true });
 }
@@ -8869,22 +9277,32 @@ function clipboardShortcut(event: KeyboardEvent, key: string): boolean {
 async function pasteClipboardIntoSelection() {
   if (!props.editable) return;
   const operation = dataGridResultLifecycle.beginOperation();
+  const lifecycle = gridClipboardLifecycle;
   const text = await readTextFromClipboard();
-  if (!dataGridResultLifecycle.isCurrent(operation)) return;
-  pasteTextIntoGrid(text);
+  if (!gridClipboardActive || lifecycle !== gridClipboardLifecycle || !dataGridResultLifecycle.isCurrent(operation)) return;
+  await pasteTextIntoGrid(text);
 }
 
 async function pasteClipboardAsNewRows() {
   if (!canInsertRows.value || isSaving.value || isConditionalUpdateActive.value) return;
   const operation = dataGridResultLifecycle.beginOperation();
+  const lifecycle = gridClipboardLifecycle;
   // Capture the column mapping with the result, before the asynchronous read.
   const columnIndexes = [...visibleColumnIndexes.value];
   try {
     const text = await readTextFromClipboard();
-    if (!dataGridResultLifecycle.isCurrent(operation) || !canInsertRows.value || isSaving.value || isConditionalUpdateActive.value) return;
-    const insertPaste = parseInsertStatementPaste(text);
+    if (!gridClipboardActive || lifecycle !== gridClipboardLifecycle || !dataGridResultLifecycle.isCurrent(operation) || !canInsertRows.value || isSaving.value || isConditionalUpdateActive.value) return;
+    if (!clipboardWithinGridCapacity(text)) return;
     const firstNewRowId = -(newRows.value.length + 1);
-    const result = appendPastedRowsAsNewRows(insertPaste?.rows ?? parseDataGridClipboard(text), columnIndexes, insertPaste?.columnNames);
+    const limits = { maxRows: availableInsertRows.value };
+    const result = await prepareGridRows(async (options) => {
+      const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
+      if (options.signal?.aborted || options.isCurrent?.() === false) return undefined;
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      if (!rows) return undefined;
+      return appendPastedRowsAsNewRowsInBatches(rows, columnIndexes, insertPaste?.columnNames, options);
+    });
+    if (!result || (!result.ok && result.reason === "cancelled")) return;
     if (!result.ok) {
       toast(batchAppendPasteError(result.reason), 5000);
       return;
@@ -8896,7 +9314,7 @@ async function pasteClipboardAsNewRows() {
     });
     focusInsertedTransposeRecord(firstNewRowId);
   } catch (error) {
-    if (dataGridResultLifecycle.isCurrent(operation)) toast(t("grid.copyFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+    if (gridClipboardActive && lifecycle === gridClipboardLifecycle && dataGridResultLifecycle.isCurrent(operation)) reportGridPasteError(error);
   }
 }
 
@@ -8923,14 +9341,27 @@ function batchAppendPasteError(reason: string): string {
     "empty-paste": "grid.batchAppendPasteEmpty",
     "readonly-column": "grid.batchAppendPasteReadonlyColumn",
     "no-matching-columns": "grid.batchAppendPasteNoMatchingColumns",
+    "capacity-exceeded": "grid.insertRowsCapacityExceeded",
   };
-  return t(messages[reason] ?? "grid.batchAppendPasteInvalidTarget");
+  return t(messages[reason] ?? "grid.batchAppendPasteInvalidTarget", { max: availableInsertRows.value });
 }
 
-function blankSelectionBatchAppendPasteTarget(pastedRows: readonly (readonly (string | null)[])[]): { rowId: number; columnIndexes: number[] } | null {
-  if (pastedRows.length <= 1) return null;
+function clipboardWithinGridCapacity(text: string): boolean {
+  if (text.length > 16 * 1024 * 1024) {
+    toast(t("grid.insertRowsClipboardTooLarge"), 5000);
+    return false;
+  }
+  return true;
+}
+
+function reportGridPasteError(error: unknown) {
+  toast(error instanceof DataGridClipboardCapacityError ? t("grid.insertRowsClipboardTooLarge") : t("grid.copyFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+}
+
+function blankSelectionBatchAppendPasteTarget(pastedRowCount: number): { rowId: number; columnIndexes: number[] } | null {
+  if (pastedRowCount <= 1) return null;
   const range = selectedRange.value;
-  if (!range || (range.startRow === range.endRow && range.startCol !== range.endCol)) return null;
+  if (!range) return null;
   const selectedItems = Array.from({ length: range.endRow - range.startRow + 1 }, (_, offset) => displayItemAt(range.startRow + offset));
   if (selectedItems.some((item) => (!item?.isNew && !item?.isDraft) || item.isDeleted || item.data.some((value) => value !== null && (typeof value !== "string" || value.trim() !== "")))) return null;
   const item = selectedItems[0];
@@ -8939,9 +9370,17 @@ function blankSelectionBatchAppendPasteTarget(pastedRows: readonly (readonly (st
   return { rowId: item.id, columnIndexes: visibleColumnIndexes.value.slice(range.startCol) };
 }
 
-function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (readonly (string | null)[])[], columnIndexes: readonly number[], columnNames?: readonly string[] | null): boolean {
-  const result = appendPastedRowsToNewRow(targetRowId, rows, columnIndexes, columnNames);
+function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (readonly (string | null)[])[], columnIndexes: readonly number[], columnNames?: readonly string[] | null, preparation?: DataGridRowPreparationOptions): boolean | Promise<boolean> {
+  if (preparation) return appendPastedRowsToNewRowInBatches(targetRowId, rows, columnIndexes, columnNames, preparation).then(finishParsedRowsAppend);
+  if (rows.length > dataGridPreparationBatchSize(props.result.columns.length) || newRows.value.length > dataGridPreparationBatchSize(props.result.columns.length)) {
+    return prepareGridRows((options) => appendPastedRowsToNewRowInBatches(targetRowId, rows, columnIndexes, columnNames, options)).then((result) => (result ? finishParsedRowsAppend(result) : false));
+  }
+  return finishParsedRowsAppend(appendPastedRowsToNewRow(targetRowId, rows, columnIndexes, columnNames));
+}
+
+function finishParsedRowsAppend(result: ReturnType<typeof appendPastedRowsToNewRow>): boolean {
   if (!result.ok) {
+    if (result.reason === "cancelled") return false;
     if (result.reason === "invalid-target" || result.reason === "target-not-empty") {
       batchAppendPasteRowId.value = null;
     }
@@ -8953,28 +9392,44 @@ function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (read
   return true;
 }
 
-function pasteTextIntoGrid(text: string): boolean {
+function pasteTextIntoGrid(text: string): boolean | Promise<boolean> {
+  if (rowPreparationController || !gridClipboardActive || !clipboardWithinGridCapacity(text)) return false;
+  const insertionTarget = batchAppendPasteTargetRowId() !== null || blankSelectionBatchAppendPasteTarget(2) !== null;
+  const limits = insertionTarget ? { maxRows: dataGridPendingRowLimit(props.result.columns.length) } : {};
+  if (text.length > DATA_GRID_CLIPBOARD_BATCH_CHARS) {
+    return prepareGridRows(async (options) => {
+      const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
+      if (options.signal?.aborted || options.isCurrent?.() === false) return false;
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      if (!rows || options.signal?.aborted || options.isCurrent?.() === false) return false;
+      return applyParsedGridPaste(rows, insertPaste?.columnNames, options);
+    })
+      .then((result) => result ?? false)
+      .catch((error) => {
+        reportGridPasteError(error);
+        return false;
+      });
+  }
+  try {
+    const insertPaste = parseInsertStatementPaste(text, limits);
+    return applyParsedGridPaste(insertPaste?.rows ?? parseDataGridClipboard(text, limits), insertPaste?.columnNames);
+  } catch (error) {
+    reportGridPasteError(error);
+    return false;
+  }
+}
+
+function applyParsedGridPaste(rows: readonly (readonly (string | null)[])[], columnNames?: readonly string[] | null, preparation?: DataGridRowPreparationOptions): boolean | Promise<boolean> {
   // SQL INSERT statements are only meaningful as new rows, so they are honored
   // on the blank-new-row targets below; any other target pastes the parsed
   // values through the regular cell path instead of treating the whole
   // statement as literal text.
-  const insertPaste = parseInsertStatementPaste(text);
-  if (insertPaste) {
-    const insertTargetRowId = batchAppendPasteTargetRowId();
-    if (insertTargetRowId !== null) {
-      return appendParsedRowsToBlankTarget(insertTargetRowId, insertPaste.rows, visibleColumnIndexes.value, insertPaste.columnNames);
-    }
-    const insertCellTarget = blankSelectionBatchAppendPasteTarget(insertPaste.rows);
-    if (insertCellTarget) return appendParsedRowsToBlankTarget(insertCellTarget.rowId, insertPaste.rows, insertCellTarget.columnIndexes, insertPaste.columnNames);
-    return pasteRowsIntoSelection(insertPaste.rows);
-  }
-  const rows = parseDataGridClipboard(text);
   const targetRowId = batchAppendPasteTargetRowId();
   if (targetRowId !== null) {
-    return appendParsedRowsToBlankTarget(targetRowId, rows, visibleColumnIndexes.value);
+    return appendParsedRowsToBlankTarget(targetRowId, rows, visibleColumnIndexes.value, columnNames, preparation);
   }
-  const cellTarget = blankSelectionBatchAppendPasteTarget(rows);
-  if (cellTarget) return appendParsedRowsToBlankTarget(cellTarget.rowId, rows, cellTarget.columnIndexes);
+  const cellTarget = blankSelectionBatchAppendPasteTarget(rows.length);
+  if (cellTarget) return appendParsedRowsToBlankTarget(cellTarget.rowId, rows, cellTarget.columnIndexes, columnNames, preparation);
   return pasteRowsIntoSelection(rows);
 }
 
@@ -8988,12 +9443,21 @@ function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): 
 
   const start = pasteStartCell();
   if (!start) return false;
+  const recordIndexes = isTransposeMode.value ? transposeScopeRecordIndexes.value : null;
+  const startPosition = recordIndexes ? recordIndexes.indexOf(start.rowIndex) : start.rowIndex;
+  if (startPosition < 0) return false;
   let applied = false;
-  for (const cell of planDataGridPaste(rows, displayRowCount.value - start.rowIndex, visibleColumns.value.length - start.colIndex)) {
-    const item = displayItemAt(start.rowIndex + cell.rowOffset);
-    if (!item) continue;
-    const visibleCol = start.colIndex + cell.columnOffset;
-    applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue) || applied;
+  beginBatch();
+  try {
+    for (const cell of planDataGridPaste(rows, (recordIndexes?.length ?? displayRowCount.value) - startPosition, visibleColumns.value.length - start.colIndex)) {
+      const rowIndex = recordIndexes ? recordIndexes[startPosition + cell.rowOffset] : start.rowIndex + cell.rowOffset;
+      const item = displayItemAt(rowIndex);
+      if (!item) continue;
+      const visibleCol = start.colIndex + cell.columnOffset;
+      applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue) || applied;
+    }
+  } finally {
+    commitBatch();
   }
   if (applied) toast(t("grid.pasted"));
   return applied;
@@ -9028,7 +9492,7 @@ function applyVisibleCellValue(item: RowItem, visibleCol: number, value: string 
 }
 
 function applyVisibleSelectedCellValue(item: RowItem, visibleCol: number, value: string | null, allowDraft = selectedRangeTargetsOnlyDraftRow(), options: { preserveEmptyString?: boolean; emptyStringAsNull?: boolean } = {}): boolean {
-  if (!canApplyGridSelectionValue({ isDraft: !!item.isDraft, allowDraft })) return false;
+  if (!transposeIncludesRow(item.id) || !canApplyGridSelectionValue({ isDraft: !!item.isDraft, allowDraft })) return false;
   return applyVisibleCellValue(item, visibleCol, value, options);
 }
 
@@ -9056,6 +9520,7 @@ function canReplaceGridCell(item: RowItem | undefined, col: number): boolean {
 }
 
 function replacementCellInScope(rowId: number, col: number): boolean {
+  if (!transposeIncludesRow(rowId)) return false;
   if (replaceScope.value === "loaded") return true;
   if (replaceScope.value === "column") return col === replaceColumn.value;
   const rowIndex = displayRowIndexById(rowId);
@@ -9139,7 +9604,7 @@ function fillSelectionWithValue(value: string | null, options: { preserveEmptySt
         const item = displayItemAt(rowIndex);
         if (!item) continue;
         for (let visibleCol = range.startCol; visibleCol <= range.endCol; visibleCol++) {
-          applied = applyVisibleSelectedCellValue(item, visibleCol, value, allowDraftSelectionValue, options) || applied;
+          if (cellIsSelected(rowIndex, visibleCol)) applied = applyVisibleSelectedCellValue(item, visibleCol, value, allowDraftSelectionValue, options) || applied;
         }
       }
       return applied;
@@ -9168,7 +9633,7 @@ function selectionHasEditableCells(): boolean {
       const item = displayItemAt(rowIndex);
       if (!item) continue;
       for (let visibleCol = range.startCol; visibleCol <= range.endCol; visibleCol++) {
-        if (canEditCellItem(item, actualColumnIndex(visibleCol))) return true;
+        if (transposeIncludesRow(item.id) && cellIsSelected(rowIndex, visibleCol) && canEditCellItem(item, actualColumnIndex(visibleCol))) return true;
       }
     }
     return false;
@@ -9359,9 +9824,9 @@ function editableSelectionCells(): EditableSelectionCell[] {
   if (range) {
     for (let rowIndex = range.startRow; rowIndex <= range.endRow; rowIndex++) {
       const item = displayItemAt(rowIndex);
-      if (!item) continue;
+      if (!item || !transposeIncludesRow(item.id)) continue;
       for (let visibleCol = range.startCol; visibleCol <= range.endCol; visibleCol++) {
-        if (canEditCellItem(item, actualColumnIndex(visibleCol))) cells.push({ item, visibleCol });
+        if (cellIsSelected(rowIndex, visibleCol) && canEditCellItem(item, actualColumnIndex(visibleCol))) cells.push({ item, visibleCol });
       }
     }
     return cells;
@@ -9370,9 +9835,9 @@ function editableSelectionCells(): EditableSelectionCell[] {
   const visibleColumnIndexes = selectedVisibleColumnIndexes();
   for (let rowIndex = 0; rowIndex < displayRowCount.value; rowIndex++) {
     const item = displayItemAt(rowIndex);
-    if (!item) continue;
+    if (!item || !transposeIncludesRow(item.id)) continue;
     for (const visibleCol of visibleColumnIndexes) {
-      if (canEditCellItem(item, actualColumnIndex(visibleCol))) cells.push({ item, visibleCol });
+      if (cellIsSelected(rowIndex, visibleCol) && canEditCellItem(item, actualColumnIndex(visibleCol))) cells.push({ item, visibleCol });
     }
   }
   return cells;
@@ -9692,7 +10157,15 @@ function toggleKeyboardTranspose(): boolean {
 // Used by both moveSelectedCell (relative steps) and navigateSelectedCell (absolute/page jumps).
 function applyCellNavigation(nextPosition: CellPosition, extend = false, block: DataGridScrollAlignment = "nearest", previousPageRowIndex?: number): boolean {
   invalidateContextMenuTarget();
-  if (extend) extendCellSelectionTo(nextPosition.rowIndex, nextPosition.colIndex);
+  if (extend && isTransposeMode.value && !multiRowTranspose.value && transposeSelectedRowIds.value && selectionAnchor.value) {
+    const anchor = selectionAnchor.value;
+    const keys = new Set<string>();
+    for (const row of transposeScopeRecordIndexes.value) {
+      if (row < Math.min(anchor.rowIndex, nextPosition.rowIndex) || row > Math.max(anchor.rowIndex, nextPosition.rowIndex)) continue;
+      for (let col = Math.min(anchor.colIndex, nextPosition.colIndex); col <= Math.max(anchor.colIndex, nextPosition.colIndex); col++) keys.add(`${row}:${col}`);
+    }
+    restoreCellSelectionState({ anchor, focus: nextPosition, cellKeys: keys });
+  } else if (extend) extendCellSelectionTo(nextPosition.rowIndex, nextPosition.colIndex);
   else selectSingleCell(nextPosition.rowIndex, nextPosition.colIndex);
   clearRowSelection();
   if (showTranspose.value) transposeRowIndex.value = nextPosition.rowIndex;
@@ -9703,11 +10176,15 @@ function applyCellNavigation(nextPosition: CellPosition, extend = false, block: 
 function moveSelectedCell(rowDelta: number, colDelta: number, extend = false): boolean {
   const position = dataGridNavigationOrigin(currentSelectedCellPosition(), selectionFocus.value, extend);
   if (!position || editingCell.value || displayRowCount.value === 0 || visibleColumnIndexes.value.length === 0) return false;
-  const nextPosition = moveDataGridCell(position, rowDelta, colDelta, {
-    rowCount: displayRowCount.value,
+  const indexes = isTransposeMode.value ? transposeScopeRecordIndexes.value : null;
+  const origin = indexes ? { ...position, rowIndex: indexes.indexOf(position.rowIndex) } : position;
+  if (origin.rowIndex < 0) return false;
+  const nextPosition = moveDataGridCell(origin, rowDelta, colDelta, {
+    rowCount: indexes?.length ?? displayRowCount.value,
     visibleColumnCount: visibleColumnIndexes.value.length,
   });
   if (!nextPosition) return false;
+  if (indexes) nextPosition.rowIndex = indexes[nextPosition.rowIndex];
   return applyCellNavigation(nextPosition, extend);
 }
 
@@ -10028,6 +10505,10 @@ async function onGridKeydown(event: KeyboardEvent) {
       event.preventDefault();
       return;
     }
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      event.preventDefault();
+      return;
+    }
   }
   if (event.key === "ArrowUp" && moveSelectedCell(-1, 0, event.shiftKey)) {
     event.preventDefault();
@@ -10069,7 +10550,7 @@ async function onGridKeydown(event: KeyboardEvent) {
     event.stopPropagation();
     return;
   }
-  if (event.key === "Enter" && editSelectedCell()) {
+  if ((isEditCellShortcut(event, settingsStore.editorSettings.shortcuts) || (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Enter")) && editSelectedCell()) {
     event.preventDefault();
     return;
   }
@@ -10218,8 +10699,10 @@ function downloadCellBinaryValue(rowIndex: number, columnIndex: number, mode: Bi
 async function downloadDetailBinaryValue(detail: DataGridCellDetail | null, mode: BinaryCellDownloadMode) {
   if (!detail || !canDownloadDetailBinaryValue(detail)) return;
   try {
+    const sourceResult = props.result;
     if (!(await hydrateLargeValueCell(detail.rowId, detail.colIndex))) return;
-    const resolvedDetail = cellDetailFor(detail.rowNumber - 1, detail.colIndex);
+    if (props.result !== sourceResult) return;
+    const resolvedDetail = cellDetailFor(displayRowIndexById(detail.rowId), detail.colIndex);
     if (!resolvedDetail) return;
     const payload = binaryCellDownloadPayload(resolvedDetail.value, mode, resolvedDetail.type, resolvedDatabaseType.value);
     const fileName = binaryCellDownloadFileName({
@@ -10387,12 +10870,64 @@ async function copyColumnDetailFieldValue(field: DataGridCellDetail) {
   if (resolved) copyText(detailClipboardText(resolved));
 }
 
+function captureTransposeSelection() {
+  const ids = new Set<number>();
+  const addIndex = (index: number) => {
+    const row = displayRowRefs.value[index];
+    if (row) ids.add(row.id);
+  };
+  if (hasRowSelection.value) {
+    for (const id of selectedRowIds.value) {
+      if (displayRowIndexById(id) >= 0) ids.add(id);
+    }
+  } else if (hasColumnSelection.value || isSelectingAll.value) {
+    // A column selection covers every displayed record.
+    transposeSelectedRowIds.value = null;
+    return;
+  } else if (selectedCellKeys.value.size) {
+    for (const key of selectedCellKeys.value) addIndex(Number(key.split(":")[0]));
+  } else if (selectedRange.value) {
+    for (let index = selectedRange.value.startRow; index <= selectedRange.value.endRow; index++) addIndex(index);
+  }
+  transposeSelectedRowIds.value = ids.size ? ids : null;
+}
+
+function transposeIncludesRow(rowId: number): boolean {
+  return !showTranspose.value || multiRowTranspose.value || !transposeSelectedRowIds.value || transposeSelectedRowIds.value.has(rowId);
+}
+
+watch(
+  showTranspose,
+  (open) => {
+    if (open) captureTransposeSelection();
+    else transposeSelectedRowIds.value = null;
+  },
+  { flush: "sync" },
+);
+
+// Layout positions are dense, while cell operations retain original display indexes.
+const transposeScopeRecordIndexes = computed(() => {
+  if (multiRowTranspose.value || !transposeSelectedRowIds.value) return Array.from({ length: displayRowCount.value }, (_, index) => index);
+  return selectedRowIdsAsDisplayIndexes(transposeSelectedRowIds.value).sort((a, b) => a - b);
+});
+const transposeActivePosition = computed(() => transposeScopeRecordIndexes.value.indexOf(transposeRowIndex.value ?? -1));
+
+watch(transposeScopeRecordIndexes, (indexes) => {
+  if (!showTranspose.value) return;
+  if (!indexes.length) {
+    closeTranspose(false);
+    return;
+  }
+  if (!indexes.includes(transposeRowIndex.value ?? -1)) transposeRowIndex.value = indexes[0];
+  scrollTransposeRecordIntoView(transposeRowIndex.value!, "nearest");
+});
+
 const transposeRecordWidths = ref<number[]>([]);
 const transposeManualRecordWidthIndexes = ref(new Set<number>());
 const transposeRecordOffsets = computed(() => {
   const offsets = [0];
-  for (let index = 0; index < displayRowCount.value; index += 1) {
-    offsets.push(offsets[index] + getTransposeRecordWidth(index));
+  for (const index of transposeScopeRecordIndexes.value) {
+    offsets.push(offsets[offsets.length - 1] + getTransposeRecordWidth(index));
   }
   return offsets;
 });
@@ -10445,17 +10980,17 @@ const transposePinnedWidth = computed(
     }),
 );
 const transposeEndSpacerWidth = computed(() => {
-  if (!multiRowTranspose.value || displayRowCount.value <= 0) return 0;
+  if (!transposeScopeRecordIndexes.value.length) return 0;
   return transposeEndAlignmentSpacerWidth({
     viewportWidth: transposeViewportWidth.value,
     pinnedWidth: transposePinnedWidth.value,
-    lastRecordWidth: getTransposeRecordWidth(displayRowCount.value - 1),
+    lastRecordWidth: getTransposeRecordWidth(transposeScopeRecordIndexes.value[transposeScopeRecordIndexes.value.length - 1]),
   });
 });
 
 const transposeRecordWindow = computed(() =>
   visibleTransposeRecordWindow({
-    totalRecords: displayRowCount.value,
+    totalRecords: transposeScopeRecordIndexes.value.length,
     scrollLeft: transposeScrollLeft.value,
     viewportWidth: transposeViewportWidth.value,
     pinnedWidth: transposePinnedWidth.value,
@@ -10464,20 +10999,12 @@ const transposeRecordWindow = computed(() =>
     overscan: 2,
   }),
 );
-const visibleTransposeRecordIndexes = computed(() => {
+const activeTransposeRecordIndexes = computed(() => {
   const window = transposeRecordWindow.value;
-  return Array.from({ length: window.end - window.start }, (_, offset) => window.start + offset);
+  return transposeScopeRecordIndexes.value.slice(window.start, window.end);
 });
-const activeTransposeRecordIndexes = computed(() =>
-  transposeRecordIndexesForMode({
-    multiRow: multiRowTranspose.value,
-    activeRecordIndex: transposeRowIndex.value,
-    totalRecords: displayRowCount.value,
-    visibleRecordIndexes: visibleTransposeRecordIndexes.value,
-  }),
-);
-const transposeBeforeSpacerWidth = computed(() => (multiRowTranspose.value ? transposeRecordWindow.value.beforeWidth : 0));
-const transposeAfterSpacerWidth = computed(() => (multiRowTranspose.value ? transposeRecordWindow.value.afterWidth + transposeEndSpacerWidth.value : 0));
+const transposeBeforeSpacerWidth = computed(() => transposeRecordWindow.value.beforeWidth);
+const transposeAfterSpacerWidth = computed(() => transposeRecordWindow.value.afterWidth + transposeEndSpacerWidth.value);
 const transposeColumnSortDirection = ref<"asc" | "desc" | null>(null);
 const transposeRows = computed(() => {
   const rows = buildVisibleTransposeRows({
@@ -10499,10 +11026,7 @@ const transposeReserveTypeLine = computed(() => showTransposeFieldMetadata.value
 const transposeReserveCommentLine = computed(() => showTransposeFieldMetadata.value && showColumnCommentsInHeader.value && transposeRows.value.some((row) => row.comment));
 const transposeRowHeight = computed(() => 30 + (transposeReserveTypeLine.value ? 14 : 0) + (transposeReserveCommentLine.value ? 14 : 0));
 const isTransposeMode = computed(() => showTranspose.value && transposeRows.value.length > 0);
-const transposeTotalWidth = computed(() => {
-  const recordIndexes = multiRowTranspose.value ? Array.from({ length: displayRowCount.value }, (_, i) => i) : activeTransposeRecordIndexes.value;
-  return transposePinnedWidth.value + recordIndexes.reduce((sum, i) => sum + getTransposeRecordWidth(i), 0) + (multiRowTranspose.value ? transposeEndSpacerWidth.value : 0);
-});
+const transposeTotalWidth = computed(() => transposePinnedWidth.value + transposeRecordOffsets.value[transposeRecordOffsets.value.length - 1] + transposeEndSpacerWidth.value);
 
 function transposeScrollElement(): HTMLElement | undefined {
   const raw = transposeScrollRef.value;
@@ -10518,7 +11042,13 @@ function transposeFieldTitle(item: { column: string; type: string; comment?: str
 }
 
 function toggleTransposeColumnSort() {
-  transposeColumnSortDirection.value = transposeColumnSortDirection.value === "asc" ? "desc" : "asc";
+  if (transposeColumnSortDirection.value === null) {
+    transposeColumnSortDirection.value = "asc";
+  } else if (transposeColumnSortDirection.value === "asc") {
+    transposeColumnSortDirection.value = "desc";
+  } else {
+    transposeColumnSortDirection.value = null;
+  }
 }
 
 function transposeColumnIndexKind(column: string): ColumnIndexKind | undefined {
@@ -10577,24 +11107,18 @@ function scrollTransposeRecordIntoView(rowIndex: number, alignment: TransposeScr
     nextTick(() => {
       const measuredEl = transposeScrollElement();
       if (!measuredEl || displayRowCount.value <= 0) return;
-      if (alignment === "start" && !multiRowTranspose.value) {
-        measuredEl.scrollLeft = 0;
-        updateTransposeViewport();
-        return;
-      }
-      const activeRecordIndex = Math.max(0, Math.min(displayRowCount.value - 1, rowIndex));
-      const multiRow = multiRowTranspose.value;
-      const recordOffsets = multiRow ? transposeRecordOffsets.value : [0, getTransposeRecordWidth(activeRecordIndex)];
+      const recordPosition = transposeScopeRecordIndexes.value.indexOf(rowIndex);
+      if (recordPosition < 0) return;
       measuredEl.scrollLeft = transposeScrollLeftForRecord({
-        recordIndex: multiRow ? activeRecordIndex : 0,
-        totalRecords: multiRow ? displayRowCount.value : 1,
+        recordIndex: recordPosition,
+        totalRecords: transposeScopeRecordIndexes.value.length,
         viewportWidth: measuredEl.clientWidth,
         pinnedWidth: transposePinnedWidth.value,
-        recordWidth: multiRow ? estimatedTransposeRecordWidth() : getTransposeRecordWidth(activeRecordIndex),
-        recordOffsets,
+        recordWidth: estimatedTransposeRecordWidth(),
+        recordOffsets: transposeRecordOffsets.value,
         currentScrollLeft: measuredEl.scrollLeft,
         alignment,
-        endSpacerWidth: multiRow ? transposeEndSpacerWidth.value : 0,
+        endSpacerWidth: transposeEndSpacerWidth.value,
       });
       updateTransposeViewport();
     });
@@ -10603,6 +11127,7 @@ function scrollTransposeRecordIntoView(rowIndex: number, alignment: TransposeScr
 
 function setMultiRowTranspose(value: boolean) {
   if (multiRowTranspose.value === value) return;
+  if (!value && showTranspose.value) captureTransposeSelection();
   settingsStore.updateEditorSettings({ dataGridMultiRowTranspose: value });
   if (!showTranspose.value) return;
   nextTick(updateTransposeViewport);
@@ -10636,6 +11161,7 @@ function focusInsertedTransposeRecord(rowId: number) {
   nextTick(() => {
     const displayIndex = displayRowIndexById(rowId);
     if (displayIndex >= 0) {
+      if (transposeSelectedRowIds.value) transposeSelectedRowIds.value = new Set([...transposeSelectedRowIds.value, rowId]);
       applyTransposeState(nextTransposeStateForRecordCount(true, displayIndex, displayRowCount.value));
     }
   });
@@ -10689,7 +11215,7 @@ function autoFitTransposeRecord(recordIndex: number) {
 
 function currentTransposeViewportRowIndex(): number {
   if (displayRowCount.value === 0) return 0;
-  const rowIndex = transposeRowIndex.value ?? transposeRecordWindow.value.start;
+  const rowIndex = transposeRowIndex.value ?? transposeScopeRecordIndexes.value[transposeRecordWindow.value.start] ?? 0;
   return Math.max(0, Math.min(displayRowCount.value - 1, rowIndex));
 }
 
@@ -10749,6 +11275,9 @@ function selectTransposeRecord(rowIndex: number, event?: MouseEvent) {
   if (item) {
     if (event) {
       handleRowClick(rowIndex, item.id, event);
+      if (!multiRowTranspose.value && transposeSelectedRowIds.value) {
+        selectedRowIds.value = new Set([...selectedRowIds.value].filter((id) => transposeIncludesRow(id)));
+      }
     } else {
       selectedRowIds.value = new Set([item.id]);
       selection.lastClickedRowIndex.value = rowIndex;
@@ -10778,8 +11307,10 @@ function transposeRecordUsesFramedHeader(rowIndex: number): boolean {
 
 function moveTransposeRecordSelection(delta: number): boolean {
   if (!isTransposeMode.value || displayRowCount.value === 0) return false;
-  const current = transposeRowIndex.value ?? 0;
-  const next = Math.max(0, Math.min(displayRowCount.value - 1, current + delta));
+  const indexes = transposeScopeRecordIndexes.value;
+  const current = Math.max(0, transposeActivePosition.value);
+  const next = indexes[Math.max(0, Math.min(indexes.length - 1, current + delta))];
+  if (next === undefined) return false;
   transposeRowIndex.value = next;
   scrollTransposeRecordIntoView(next);
   return true;
@@ -10833,6 +11364,8 @@ watch(
     const detailsSnapshot = preservedDetailsOnNextResult;
     preservedDetailsOnNextResult = null;
     const shouldPreserveTranspose = preserveTransposeOnNextResult.value;
+    const transposeScopeSnapshot = preservedTransposeScopeOnNextResult;
+    preservedTransposeScopeOnNextResult = null;
     preserveTransposeOnNextResult.value = false;
     const appendRequestedOffset = infiniteScrollRequestedOffset;
     const appendRequestedLimit = infiniteScrollRequestedLimit;
@@ -10842,7 +11375,7 @@ watch(
       // While a "load all" run is active the per-request row cap must not be
       // read as the end of data — only the requested-vs-appended count and an
       // exact known total end the run (#10752).
-      ...(loadAllRowsLoopActive && appendRequestedLimit ? { loadAll: { requestedLimit: appendRequestedLimit, totalRowCount: totalRowCountIsExact.value ? (paginationTotalRowCount.value ?? displayedTotalRowCount.value) : undefined } } : {}),
+      ...(loadAllRowsLoopActive && appendRequestedLimit ? { loadAll: { requestedLimit: appendRequestedLimit, totalRowCount: !loadsSqlPages.value && totalRowCountIsExact.value ? (paginationTotalRowCount.value ?? displayedTotalRowCount.value) : undefined } } : {}),
     });
     if (appendCompletion) {
       if (infiniteScrollEnabled.value || loadAllRowsLoopActive) {
@@ -10856,15 +11389,21 @@ watch(
       }
       // The append completion above already reset `infiniteScrollLoading`, so the
       // post-flush loading watcher cannot observe this append; a "load all" run
-      // must still continue or reveal its last row from here.
+      // must still continue or reveal its last row from here after the current
+      // post-flush cycle finishes, so dispatching the next chunk does not arm
+      // `infiniteScrollLoading` while the post-flush watcher is evaluating this result.
       if (infiniteScrollLoadAllPending) {
         infiniteScrollLoadAllPending = false;
-        if (!finishOrContinueLoadAllRun(appendRequestedOffset, appendRequestedLimit)) {
-          selectAndRevealLastLoadedRow();
-        }
+        nextTick(() => {
+          if (!loadAllRowsLoopActive) return;
+          if (!finishOrContinueLoadAllRun(appendRequestedOffset, appendRequestedLimit)) {
+            selectAndRevealLastLoadedRow();
+          }
+        });
       }
       return;
     }
+    transposeSelectedRowIds.value = null;
     resetDistinctValueCache();
     filterValueSuggestionLoader.reset({ clearCache: true });
     // A non-append result replaces the whole data set, so a running "load all" is over.
@@ -10900,6 +11439,7 @@ watch(
     }
     exitTransaction();
     if (selectionSnapshot) restoreSelectionAfterRefresh(selectionSnapshot);
+    if (shouldPreserveTranspose) restoreTransposeScopeAfterRefresh(transposeScopeSnapshot);
     if (transposeRecordSnapshot) restoreTransposeRecordAfterRefresh(transposeRecordSnapshot);
     if (detailsSnapshot) restoreDetailsAfterRefresh(detailsSnapshot);
     if (viewportAnchorSnapshot) restoreViewportAnchorAfterRefresh(viewportAnchorSnapshot);
@@ -11504,7 +12044,7 @@ const canShowTableIndexes = computed(() => tableMetadataCapabilities.value.index
 async function probeTablePartitionStatus() {
   const connectionId = props.connectionId;
   const database = props.database;
-  const schema = props.tableMeta?.schema || props.database || "";
+  const schema = props.tableMeta?.schema || props.schema || (isSchemaAware(resolvedDatabaseType.value) ? "" : props.database) || "";
   const tableName = props.tableMeta?.tableName;
   const identity = currentIndexTableIdentity.value;
   if (!tableMetadataCapabilities.value.partitions || !connectionId || !database || !tableName || !identity) {
@@ -11873,7 +12413,7 @@ async function loadForeignKeyDisplayLabels() {
     configuredColumns.map(async (columnIndex) => {
       const config = savedForeignKeyDisplayConfig(columnIndex);
       if (!config) return;
-      const schema = config.refSchema || props.tableMeta?.schema || props.schema || props.database || "";
+      const schema = config.refSchema || props.tableMeta?.schema || props.schema || (isSchemaAware(resolvedDatabaseType.value) ? "" : props.database) || "";
       try {
         const columns = await foreignKeyDisplayRequests.request(requestGeneration, JSON.stringify(["columns", props.connectionId, props.database || "", props.tableMeta?.catalog || "", schema, config.refTable]), () =>
           api.getColumns(props.connectionId!, props.database || "", schema, config.refTable, props.tableMeta?.catalog),
@@ -12274,13 +12814,20 @@ watch(gridSurfaceBusy, (isLoading) => {
 });
 
 onActivated(() => {
+  gridClipboardActive = true;
   autoRefresh.start();
 });
 onDeactivated(() => {
+  gridClipboardActive = false;
+  gridClipboardLifecycle++;
+  rowPreparationController?.abort();
   autoRefresh.stop();
 });
 
 onUnmounted(() => {
+  gridClipboardActive = false;
+  gridClipboardLifecycle++;
+  rowPreparationController?.abort();
   syncPendingDataEditorDraft(false);
   cleanupFrames();
   autoRefresh.stop();
@@ -12288,6 +12835,7 @@ onUnmounted(() => {
   onDetailResizeEnd();
   onMongoJsonPreviewResizeEnd();
   finishCellSelection();
+  loadAllRowsLoopActive = false;
   clearTimeout(highlightedColumnTimer);
   stopLoadingElapsedTimer();
 });
@@ -12530,7 +13078,6 @@ watch(
 defineExpose({
   tableInfoToolbarCapability,
   goToColumnToolbarCapability,
-  exportToolbarCapability,
   useTransaction,
   transactionActive,
   isSaving,
@@ -12549,6 +13096,8 @@ defineExpose({
   toggleMultiRowTranspose,
   focusSearch,
   focusWhere,
+  editSelectedCell,
+  selectSingleCell,
   openGoToColumn,
   visibleColumnCount,
   displayableColumnCount,
@@ -12610,6 +13159,106 @@ function filterSubmenu(): ContextMenuItem {
     },
     apply: applyContextFilter,
     clear: clearContextFilter,
+  });
+}
+
+function targetHighlightColumnIndexes(): number[] {
+  if (contextHeaderColumnIndex.value !== null) {
+    const visibleIdx = contextHeaderVisibleColIdx.value;
+    if (visibleIdx !== null && selectedColumnIndexes.value.has(visibleIdx) && selectedColumnIndexes.value.size > 1) {
+      return [...selectedColumnIndexes.value].map(actualColumnIndex);
+    }
+    return [contextHeaderColumnIndex.value];
+  }
+  if (contextCell.value && contextCell.value.col >= 0) {
+    const visibleIdx = visibleColumnIndexes.value.indexOf(contextCell.value.col);
+    if (visibleIdx >= 0 && selectedColumnIndexes.value.has(visibleIdx) && selectedColumnIndexes.value.size > 1) {
+      return [...selectedColumnIndexes.value].map(actualColumnIndex);
+    }
+    return [contextCell.value.col];
+  }
+  return [];
+}
+
+function toggleTargetColumnDuplicateHighlight() {
+  const indexes = targetHighlightColumnIndexes();
+  if (indexes.length === 0) return;
+  const anyActive = indexes.some((idx) => isColumnDuplicateHighlightActive(columnHighlightRules.value, idx));
+  const newRules = new Map(columnHighlightRules.value);
+  for (const idx of indexes) {
+    setColumnDuplicateHighlight(newRules, idx, !anyActive);
+  }
+  columnHighlightRules.value = newRules;
+  if (!anyActive) {
+    // Count only the toggled columns so a toast does not report matches that
+    // belong to other columns' active highlight rules.
+    const targetRules = new Map<number, ColumnHighlightRule>();
+    for (const idx of indexes) {
+      const rule = newRules.get(idx);
+      if (rule) targetRules.set(idx, rule);
+    }
+    const count = columnHighlightMatchesFor(targetRules).duplicateKeys.size;
+    if (count > 0) {
+      toast(t("grid.highlightDuplicatesFound", { count }));
+    } else {
+      toast(t("grid.highlightDuplicatesNoneFound"));
+    }
+  }
+}
+
+function toggleTargetColumnNullHighlight() {
+  const indexes = targetHighlightColumnIndexes();
+  if (indexes.length === 0) return;
+  const anyActive = indexes.some((idx) => isColumnNullHighlightActive(columnHighlightRules.value, idx));
+  const newRules = new Map(columnHighlightRules.value);
+  for (const idx of indexes) {
+    setColumnNullHighlight(newRules, idx, !anyActive);
+  }
+  columnHighlightRules.value = newRules;
+  if (!anyActive) {
+    // Scope the toast count to the toggled columns, mirroring the duplicates toast.
+    const targetRules = new Map<number, ColumnHighlightRule>();
+    for (const idx of indexes) {
+      const rule = newRules.get(idx);
+      if (rule) targetRules.set(idx, rule);
+    }
+    const count = columnHighlightMatchesFor(targetRules).nullKeys.size;
+    if (count > 0) {
+      toast(t("grid.highlightNullsFound", { count }));
+    } else {
+      toast(t("grid.highlightNullsNoneFound"));
+    }
+  }
+}
+
+function clearTargetColumnHighlight() {
+  const indexes = targetHighlightColumnIndexes();
+  if (indexes.length === 0) return;
+  const newRules = new Map(columnHighlightRules.value);
+  for (const idx of indexes) {
+    clearColumnHighlight(newRules, idx);
+  }
+  columnHighlightRules.value = newRules;
+}
+
+function highlightSubmenu(): ContextMenuItem {
+  const indexes = targetHighlightColumnIndexes();
+  const hasDup = indexes.some((idx) => isColumnDuplicateHighlightActive(columnHighlightRules.value, idx));
+  const hasNull = indexes.some((idx) => isColumnNullHighlightActive(columnHighlightRules.value, idx));
+  return createDataGridHighlightSubmenu({
+    label: t("grid.highlight"),
+    icon: Highlighter,
+    labels: {
+      duplicates: t("grid.highlightDuplicates"),
+      nulls: t("grid.highlightNulls"),
+      clear: t("grid.clearHighlight"),
+    },
+    hasDuplicatesActive: hasDup,
+    hasNullsActive: hasNull,
+    canClear: hasDup || hasNull,
+    toggleDuplicates: toggleTargetColumnDuplicateHighlight,
+    toggleNulls: toggleTargetColumnNullHighlight,
+    clear: clearTargetColumnHighlight,
   });
 }
 
@@ -12698,6 +13347,7 @@ function copySubmenu(): ContextMenuItem {
 
 function exportSubmenu(): ContextMenuItem {
   const items: ContextMenuItem[] = [
+    ...(props.context === "results" && props.transferQueryResult ? [{ label: t("grid.exportDatabase"), action: props.transferQueryResult }] : []),
     { label: t("grid.exportCsv"), action: exportCsv },
     { label: t("grid.exportXlsx"), action: exportXlsx },
     { label: t("grid.exportJson"), action: exportJson },
@@ -12712,7 +13362,7 @@ function exportSubmenu(): ContextMenuItem {
       action: exportXlsxWithSql,
     });
   }
-  if (isMultiRow.value) {
+  if (hasSelectedRows.value) {
     items.push(
       { label: "", separator: true },
       { label: t("grid.exportSelectedRowsCsv"), action: exportSelectedRowsCsv },
@@ -12742,6 +13392,70 @@ function exportSubmenu(): ContextMenuItem {
       },
       { label: t("grid.exportSelectedRowsSql"), action: exportSelectedRowsSql },
       { label: t("grid.exportSelectedRowsTxt"), action: exportSelectedRowsTxt },
+    );
+  }
+  if (hasSelectedColumns.value) {
+    items.push(
+      { label: "", separator: true },
+      { label: t("grid.exportSelectedColumnsCsv"), action: exportSelectedColumnsCsv },
+      {
+        label: t("grid.exportSelectedColumnsXlsx"),
+        action: exportSelectedColumnsXlsx,
+      },
+      ...(props.context === "results" && !!(props.exportSql || props.sql)?.trim()
+        ? [
+            {
+              label: t("grid.exportSelectedColumnsXlsxWithSql"),
+              action: exportSelectedColumnsXlsxWithSql,
+            },
+          ]
+        : []),
+      {
+        label: t("grid.exportSelectedColumnsJson"),
+        action: exportSelectedColumnsJson,
+      },
+      {
+        label: t("grid.exportSelectedColumnsMarkdown"),
+        action: exportSelectedColumnsMarkdown,
+      },
+      {
+        label: t("grid.exportSelectedColumnsHtml"),
+        action: exportSelectedColumnsHtml,
+      },
+      { label: t("grid.exportSelectedColumnsSql"), action: exportSelectedColumnsSql },
+      { label: t("grid.exportSelectedColumnsTxt"), action: exportSelectedColumnsTxt },
+    );
+  }
+  if (hasSelectedCells.value) {
+    items.push(
+      { label: "", separator: true },
+      { label: t("grid.exportSelectedCellsCsv"), action: exportSelectedCellsCsv },
+      {
+        label: t("grid.exportSelectedCellsXlsx"),
+        action: exportSelectedCellsXlsx,
+      },
+      ...(props.context === "results" && !!(props.exportSql || props.sql)?.trim()
+        ? [
+            {
+              label: t("grid.exportSelectedCellsXlsxWithSql"),
+              action: exportSelectedCellsXlsxWithSql,
+            },
+          ]
+        : []),
+      {
+        label: t("grid.exportSelectedCellsJson"),
+        action: exportSelectedCellsJson,
+      },
+      {
+        label: t("grid.exportSelectedCellsMarkdown"),
+        action: exportSelectedCellsMarkdown,
+      },
+      {
+        label: t("grid.exportSelectedCellsHtml"),
+        action: exportSelectedCellsHtml,
+      },
+      { label: t("grid.exportSelectedCellsSql"), action: exportSelectedCellsSql },
+      { label: t("grid.exportSelectedCellsTxt"), action: exportSelectedCellsTxt },
     );
   }
   const extractorItems = buildExtractorContextItems("export");
@@ -12870,6 +13584,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         showAllColumnsMenu: showAllColumns,
       },
       filterSubmenu: filterSubmenu(),
+      highlightSubmenu: highlightSubmenu(),
     }),
     createDataGridCellContextMenuItems({
       hasCell: !!contextCell.value,
@@ -13085,6 +13800,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   :comment-by-column="columnCommentMap"
                   :condition-columns="conditionColumns"
                   :identifier-quote="conditionIdentifierQuote"
+                  :database-type="resolvedDatabaseType"
                   :history-scope="conditionHistoryScope"
                   :can-use-where-search="canUseWhereSearch"
                   :compact="compactDataGridToolbar"
@@ -13150,7 +13866,6 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             :auto-refresh="autoRefreshToolbarCapability"
             :add-row="addRowToolbarCapability"
             :delete-row="deleteRowToolbarCapability"
-            :export-data="exportToolbarCapability"
             :layer-preview="layerPreviewToolbarCapability"
             :preview="previewToolbarCapability"
             :save="saveToolbarCapability"
@@ -13366,10 +14081,10 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   {{ multiRowTranspose ? t("grid.transposeMultiRow") : t("grid.transposeSingleRow") }}
                 </span>
                 <span class="flex-1" />
-                <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeRowIndex === 0" @click="transposeNav(-1)">
+                <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeActivePosition <= 0" @click="transposeNav(-1)">
                   <ChevronLeft class="w-3 h-3" />
                 </Button>
-                <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeRowIndex === displayItems.length - 1" @click="transposeNav(1)">
+                <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="transposeActivePosition >= transposeScopeRecordIndexes.length - 1" @click="transposeNav(1)">
                   <ChevronRight class="w-3 h-3" />
                 </Button>
                 <Button variant="ghost" size="icon" class="h-5 w-5" @click="closeTranspose">
@@ -13517,6 +14232,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                               !transposeCellIsSelected(cell.recordIndex, cell.valueIndex),
                             'bg-primary/15': transposeRecordUsesActiveHighlight(cell.recordIndex) && !transposeRecordUsesSelectionVisual(cell.recordIndex) && !displayItems[cell.recordIndex]?.isDirtyCol[cell.valueIndex] && !transposeCellIsSelected(cell.recordIndex, cell.valueIndex),
                             'bg-yellow-500/10 cell-dirty': displayItems[cell.recordIndex]?.isDirtyCol[cell.valueIndex],
+                            'bg-amber-200/60 dark:bg-amber-500/25': cellIsDuplicateHighlight(cell.recordIndex, cell.valueIndex),
+                            'bg-sky-200/60 dark:bg-sky-500/25': cellIsNullHighlight(cell.recordIndex, cell.valueIndex),
                             'bg-yellow-200/60 dark:bg-yellow-500/20': cellIsSearchMatch(cell.recordIndex, cell.valueIndex),
                             'ring-2 ring-inset ring-yellow-500 bg-yellow-300/60 dark:bg-yellow-500/40': cellIsCurrentMatch(cell.recordIndex, cell.valueIndex),
                             'cursor-text': !isScrolling,
@@ -13705,6 +14422,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                     :column-index-kind="showIndexIndicatorsInHeader ? columnIndexMap.get(columnIndexNameKey(col.name)) : undefined"
                     :formatter-active="columnHasFormatter(col.actualColIdx)"
                     :formatter-label="t('grid.columnFormatterActive')"
+                    :highlight-active="columnHasHighlight(col.actualColIdx)"
+                    :highlight-label="t('grid.highlightActive')"
                     @pointerdown="startColumnHeaderDrag(col.visibleColIdx, $event)"
                     @click-capture="onHeaderClickCapture"
                     @click="onHeaderClick(col.visibleColIdx, $event)"
@@ -14431,6 +15150,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                               'crosshair-column': !!crosshairTarget?.columnCrosshair && crosshairTarget.visibleColIdx === col.visibleColIdx && !item.isDeleted,
                               'cell-search-match': cellIsSearchMatch(item.displayIndex, col.actualColIdx),
                               'cell-current-search-match': cellIsCurrentMatch(item.displayIndex, col.actualColIdx),
+                              'bg-amber-200/60 dark:bg-amber-500/25': cellIsDuplicateHighlight(item.displayIndex, col.actualColIdx),
+                              'bg-sky-200/60 dark:bg-sky-500/25': cellIsNullHighlight(item.displayIndex, col.actualColIdx),
                               'bg-yellow-200/60 dark:bg-yellow-500/20': cellIsSearchMatch(item.displayIndex, col.actualColIdx),
                               'ring-2 ring-inset ring-yellow-500 bg-yellow-300/60 dark:bg-yellow-500/40': cellIsCurrentMatch(item.displayIndex, col.actualColIdx),
                               'tabular-nums': typeof item.data[col.actualColIdx] === 'number',
@@ -14610,7 +15331,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 <div v-if="hasGridVerticalOverflow" ref="gridVerticalScrollbarTrackRef" class="data-grid-vertical-scrollbar" @pointerdown="startGridVerticalScrollbarDrag">
                   <div ref="gridVerticalScrollbarThumbRef" class="data-grid-vertical-scrollbar__thumb" />
                 </div>
-                <div v-if="gridSurfaceBusy" class="absolute inset-0 z-20 flex items-center justify-center" :class="pageJumpProgress ? 'bg-background/35 backdrop-blur-[1px]' : 'bg-background/50'">
+                <div v-if="gridSurfaceBusy && !rowPreparationProgress" class="absolute inset-0 z-20 flex items-center justify-center" :class="pageJumpProgress ? 'bg-background/35 backdrop-blur-[1px]' : 'bg-background/50'">
                   <DataGridBusyOverlay :elapsed-ms="loadingElapsed" :page-jump-progress="pageJumpProgress" :show-cancel="showCancel" :cancelling="cancelling" :cancel-disabled="cancelDisabled" @cancel="emit('cancel')" />
                 </div>
               </div>
@@ -15026,12 +15747,14 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         :selection-summary="selectionSummary"
         :selection-summary-sum-text="selectionSummarySumText"
         :selection-summary-average-text="selectionSummaryAverageText"
+        :selection-summary-pending="isSelectingCells"
         :loading="gridPaginationBusy || infiniteScrollLoading"
         :infinite-scroll-enabled="infiniteScrollEnabled"
         :infinite-scroll-all-loaded="infiniteScrollAllLoaded"
         :load-all-rows-active="loadAllRowsActive"
         :load-all-rows-enabled="loadAllRowsEnabled"
         :can-load-all-rows="result.rows.length > 0"
+        :can-export="result.columns.length > 0"
         :page-size="pageSize"
         :default-page-size="defaultPageSize"
         :page-size-menu-items="pageSizeMenuItems"
@@ -15050,6 +15773,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         @last-page="lastPage"
         @load-all-rows="loadAllRowsAndGoToLast"
         @select-export="selectExportMenuItem"
+        @copy-selection-summary="copyText"
       />
     </div>
 
@@ -15128,7 +15852,32 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         </div>
       </template>
     </DataGridBulkEditDialog>
-    <DataGridInsertRowsDialog v-if="insertRowsDialogMounted" v-model:open="insertRowsDialogOpen" :can-place-at-selection="canPlaceInsertAtSelection" :initial-position="insertPosition" @insert="insertRows" />
+    <DataGridInsertRowsDialog v-if="insertRowsDialogMounted" v-model:open="insertRowsDialogOpen" :can-place-at-selection="canPlaceInsertAtSelection" :initial-position="insertPosition" :max-rows="availableInsertRows" @insert="insertRows" />
+    <Dialog :open="rowPreparationProgress !== null" @update:open="onRowPreparationOpenChange">
+      <DialogContent data-grid-row-preparation class="sm:max-w-[420px]" :show-close-button="false" @interact-outside.prevent>
+        <DialogHeader>
+          <DialogTitle>{{ t(rowPreparationProgress?.phase === "parsing" ? "grid.insertRowsParsing" : "grid.insertRowsPreparing") }}</DialogTitle>
+        </DialogHeader>
+        <div v-if="rowPreparationProgress" class="space-y-2">
+          <p class="text-sm tabular-nums" aria-live="polite">
+            {{ rowPreparationProgress.phase === "parsing" ? `${Math.floor((rowPreparationProgress.completed / Math.max(1, rowPreparationProgress.total)) * 100)}%` : t("grid.insertRowsProgress", { current: rowPreparationProgress.completed, total: rowPreparationProgress.total }) }}
+          </p>
+          <div
+            class="h-1.5 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            :aria-label="t(rowPreparationProgress.phase === 'parsing' ? 'grid.insertRowsParsing' : 'grid.insertRowsPreparing')"
+            :aria-valuemin="0"
+            :aria-valuemax="rowPreparationProgress.total"
+            :aria-valuenow="rowPreparationProgress.completed"
+          >
+            <div class="h-full bg-primary" :style="{ width: `${(rowPreparationProgress.completed / rowPreparationProgress.total) * 100}%` }" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="cancelRowPreparation"><X class="h-4 w-4" />{{ t("dangerDialog.cancel") }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <DataGridExtractorDialog v-model:open="extractorConfigOpen" :preference="selectedCopyPreference" :options="settingsStore.editorSettings.dataGridExtractorOptions" :items="copyPreferenceMenuItems" :preview="previewWithPreference" @save="saveExtractorConfiguration" />
     <DataGridCopyColumnNamesDialog v-if="copyColumnNamesDialogMounted" v-model:open="copyColumnNamesDialogOpen" :column-names="copyColumnNamesDialogColumns" :database-type="resolvedDatabaseType" :column-comments="columnCommentMap" @copy="copyText" />

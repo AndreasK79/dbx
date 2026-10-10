@@ -10,7 +10,7 @@ use crate::sql_dialect::{
     TablePaginationStrategy,
 };
 use sqlparser::ast::{
-    visit_expressions, Expr, GroupByExpr, LimitClause, ObjectNamePart, OrderByKind, Select, SelectItem,
+    visit_expressions, Expr, ForClause, GroupByExpr, LimitClause, ObjectNamePart, OrderByKind, Select, SelectItem,
     SelectModifiers, SetExpr, Statement, TableFactor, Value, ValueWithSpan,
 };
 use sqlparser::dialect::{ClickHouseDialect, GenericDialect, MsSqlDialect, MySqlDialect};
@@ -555,6 +555,19 @@ pub fn build_sorted_query_sql(options: SortedQuerySqlOptions) -> QuerySqlBuildRe
     } else {
         quote_table_identifier(options.database_type, &sort_alias)
     };
+    if options.database_type == Some(DatabaseType::SqlServer)
+        && find_top_level_trailing_order_by(statement).is_none()
+        && sql_server_ast_has_order_by(statement)
+        && !has_top_level_select_top(statement)
+        && !sql_server_ast_has_offset_or_fetch(statement)
+    {
+        // 词法定位不到结尾 ORDER BY（`#` 临时表/反斜杠字符串）时无法把它从
+        // 派生表包装里剥掉，SQL Server 会拒绝包装后的语句。
+        // 例外：带 TOP 或 OFFSET/FETCH 的语句在派生表里允许保留 ORDER BY
+        // （T-SQL Msg 1033 的豁免条件），`sql_server_statement_for_derived_table`
+        // 对这类语句本就原样包装，无需剥除。
+        return err("unsupported");
+    }
     let wrapped_statement = if options.database_type == Some(DatabaseType::SqlServer) {
         sql_server_statement_for_derived_table(statement)
     } else {
@@ -742,8 +755,9 @@ fn has_top_level_select_into(sql: &str) -> bool {
 
 fn add_sql_server_offset_fetch(statement: &str, limit: usize, offset: usize) -> Option<String> {
     // FOR JSON/XML produces an unnamed result value and cannot be projected
-    // from a derived table used by DBX pagination.
-    if has_top_level_for_output_clause(statement) {
+    // from a derived table used by DBX pagination. 词法扫描在 `#` 临时表、
+    // 反斜杠字符串后会漏检顶层 FOR JSON/XML，AST 检测补位。
+    if has_top_level_for_output_clause(statement) || sql_server_ast_has_for_output_clause(statement) {
         return None;
     }
     // 用户已写 OFFSET/FETCH 时必须原样保留，不能再注入 TOP（两者同块会被 SQL Server 拒绝）。
@@ -762,8 +776,9 @@ fn add_sql_server_offset_fetch(statement: &str, limit: usize, offset: usize) -> 
 
     // TOP injected into the first SELECT only bounds that branch of a UNION /
     // INTERSECT / EXCEPT, so the combined result comes out wrong. Bound the
-    // whole statement instead.
-    if has_top_level_set_operator(statement) {
+    // whole statement instead. 词法扫描在 `#` 临时表、反斜杠字符串后会漏检
+    // set 操作符，AST 检测补位。
+    if has_top_level_set_operator(statement) || sql_server_ast_has_set_operator(statement) {
         return Some(add_sql_server_rowcount_pagination(statement, limit, offset));
     }
 
@@ -774,6 +789,13 @@ fn add_sql_server_offset_fetch(statement: &str, limit: usize, offset: usize) -> 
 
     if offset == 0 {
         return Some(inject_sql_server_top(statement, limit));
+    }
+
+    // 词法扫描对 `#` 临时表、反斜杠字符串等会漏掉结尾 ORDER BY；此时 ROW_NUMBER
+    // 包装会把 ORDER BY 留在派生表里并被 SQL Server 拒绝，也不应按 (SELECT NULL)
+    // 排序。退回 ROWCOUNT 封顶执行，保留原语句和用户排序。
+    if order_by_index.is_none() && sql_server_ast_has_order_by(statement) {
+        return Some(add_sql_server_rowcount_pagination(statement, limit, offset));
     }
 
     // The inner query may end with a line comment after removing ORDER BY.
@@ -1572,16 +1594,26 @@ fn sql_server_count_sql(statement: &str) -> Option<String> {
     }
     let dialect = MsSqlDialect {};
     let mut statements = Parser::parse_sql(&dialect, statement).ok()?;
-    let derived_table_projection_safe = {
+    let (derived_table_projection_safe, ast_has_order_by) = {
         let [Statement::Query(query)] = statements.as_slice() else {
             return None;
         };
         let SetExpr::Select(select) = query.body.as_ref() else {
             return None;
         };
-        sql_server_derived_table_select_projection_safe(select)
+        (sql_server_derived_table_select_projection_safe(select), query.order_by.is_some())
     };
-    if derived_table_projection_safe {
+    // 词法扫描在 `#` 临时表、反斜杠字符串后会漏掉结尾 ORDER BY（见
+    // sql_server_ast_has_order_by）。定位不到就不能原样塞进派生表：SQL Server
+    // 拒绝派生表里的 ORDER BY。改走下面的 AST 重写分支，由它剥掉 ORDER BY。
+    // 例外：带 TOP 或 OFFSET/FETCH 的语句在派生表里允许保留 ORDER BY
+    // （T-SQL Msg 1033 的豁免条件），而且 AST 重写分支遇 TOP 会放弃精确计数，
+    // 因此这类语句仍走原样包装，保住精确行数。
+    let hidden_order_by = ast_has_order_by
+        && find_top_level_trailing_order_by(statement).is_none()
+        && !has_top_level_select_top(statement)
+        && !sql_server_ast_has_offset_or_fetch(statement);
+    if derived_table_projection_safe && !hidden_order_by {
         let alias = quote_table_identifier(Some(DatabaseType::SqlServer), "dbx_count");
         let wrapped_sql = sql_server_statement_for_derived_table(statement);
         return Some(derived_table_sql("SELECT COUNT(*) AS dbx_total_rows FROM", &wrapped_sql, &format!("{alias};")));
@@ -1616,10 +1648,13 @@ fn sql_server_count_sql(statement: &str) -> Option<String> {
             || select.from.is_empty()
             || !group_by_is_empty
             || select.having.is_some()
-            || !select
-                .projection
-                .iter()
-                .all(|item| matches!(item, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _)))
+            || !select.projection.iter().all(|item| match item {
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => true,
+                SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                    matches!(expr, Expr::Identifier(_) | Expr::CompoundIdentifier(_))
+                }
+                _ => false,
+            })
         {
             return None;
         }
@@ -1920,6 +1955,42 @@ fn sql_server_ast_has_offset_or_fetch(statement: &str) -> bool {
     has_offset || query.fetch.is_some()
 }
 
+/// 词法扫描器对 `#` 临时表、反斜杠字符串等会漏掉结尾 ORDER BY，AST 解析不受影响。
+/// 用于判断这类语句是否带有无法定位的顶层 ORDER BY：定位不到就不能安全地包派生表。
+fn sql_server_ast_has_order_by(statement: &str) -> bool {
+    let Ok(statements) = Parser::parse_sql(&MsSqlDialect {}, statement) else {
+        return false;
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return false;
+    };
+    query.order_by.is_some()
+}
+
+/// 词法扫描器对 `#` 临时表、反斜杠字符串等会漏掉顶层 set 操作符（UNION 等）；
+/// 此时给第一个分支注入 TOP 会返回错误的合并结果，AST 解析补位。
+fn sql_server_ast_has_set_operator(statement: &str) -> bool {
+    let Ok(statements) = Parser::parse_sql(&MsSqlDialect {}, statement) else {
+        return false;
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return false;
+    };
+    matches!(query.body.as_ref(), SetExpr::SetOperation { .. })
+}
+
+/// 词法扫描器对 `#` 临时表、反斜杠字符串等会漏掉顶层 FOR JSON/XML；
+/// 这类语句与词法可见时一样不支持分页，AST 解析补位。
+fn sql_server_ast_has_for_output_clause(statement: &str) -> bool {
+    let Ok(statements) = Parser::parse_sql(&MsSqlDialect {}, statement) else {
+        return false;
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return false;
+    };
+    matches!(query.for_clause, Some(ForClause::Json { .. } | ForClause::Xml { .. }))
+}
+
 fn add_fetch_first_limit(statement: &str, limit: usize, offset: usize) -> String {
     if has_top_level_fetch_first(statement) {
         if offset > 0 {
@@ -1951,10 +2022,10 @@ fn rownum_wrapper_projection_is_safe(statement: &str) -> bool {
     let [Statement::Query(query)] = statements.as_slice() else {
         return false;
     };
-    fn safe_projection(body: &SetExpr, allow_wildcard: bool) -> bool {
+    fn safe_projection(body: &SetExpr) -> bool {
         match body {
-            SetExpr::Query(query) => safe_projection(&query.body, allow_wildcard && query.with.is_none()),
-            SetExpr::SetOperation { left, .. } => safe_projection(left, allow_wildcard),
+            SetExpr::Query(query) => safe_projection(&query.body),
+            SetExpr::SetOperation { left, .. } => safe_projection(left),
             SetExpr::Select(select) => {
                 let mut names = HashSet::new();
                 select.projection.iter().all(|item| {
@@ -1968,15 +2039,19 @@ fn rownum_wrapper_projection_is_safe(statement: &str) -> bool {
                             name
                         }
                         SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
-                            return allow_wildcard
-                                && select.projection.len() == 1
-                                && select.from.len() == 1
-                                && select.from[0].joins.is_empty()
-                                && matches!(&select.from[0].relation, TableFactor::Table { args: None, alias, .. }
-                                    if alias.as_ref().is_none_or(|alias| alias.columns.is_empty()));
+                            // SQL text cannot reveal wildcard columns, including a real
+                            // quoted __dbx_row_num column. Keep one Agent cursor rather
+                            // than adding a potentially ambiguous pagination helper.
+                            return false;
                         }
                         _ => return select.projection.len() == 1,
                     };
+                    // OceanBase resolves a derived-table ROWID output as its physical
+                    // locator even when the user projected a quoted business alias.
+                    // Keep that legal projection on the original Agent cursor.
+                    if name.value.eq_ignore_ascii_case("ROWID") {
+                        return false;
+                    }
                     names.insert(if name.quote_style.is_some() {
                         name.value.clone()
                     } else {
@@ -1987,7 +2062,7 @@ fn rownum_wrapper_projection_is_safe(statement: &str) -> bool {
             _ => false,
         }
     }
-    safe_projection(&query.body, query.with.is_none())
+    safe_projection(&query.body)
 }
 
 fn add_rownum_limit(statement: &str, limit: usize, offset: usize) -> String {
@@ -2603,8 +2678,6 @@ mod tests {
     #[test]
     fn oceanbase_safe_projections_keep_bounded_sql_at_every_offset() {
         for sql in [
-            "SELECT * FROM people",
-            "SELECT a.* FROM people a",
             "SELECT a.id, a.name FROM people a",
             "SELECT a.id AS left_id, b.id AS right_id FROM people a JOIN people b ON a.id=b.id",
             "SELECT a.id AS label, a.name AS \"label\" FROM people a",
@@ -2621,6 +2694,44 @@ mod tests {
                         assert!(plan.sql_to_execute.contains(&format!("ROWNUM <= {}", offset + limit.max(1))));
                         assert_eq!(plan.pagination_row_number_column.is_some(), offset > 0);
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn oceanbase_wildcard_keeps_one_cursor_when_real_columns_are_unknown() {
+        // Either table can contain a quoted "__dbx_row_num" column, invisible
+        // in the SQL text. UI paging and streaming export share this plan.
+        for sql in ["SELECT * FROM events", "SELECT t.* FROM events t"] {
+            for offset in [0, 2, 4] {
+                let mut options = QueryPaginationExecutionPlanOptions {
+                    sql: sql.into(),
+                    query_base_sql: sql.into(),
+                    database_type: Some(DatabaseType::OceanbaseOracle),
+                    pagination: QueryPagination {
+                        limit: 2,
+                        offset,
+                        session_id: (offset > 0).then(|| "same-cursor".into()),
+                    },
+                    use_agent_cursor: true,
+                    first_page_uses_actual_sql: true,
+                };
+                let plan = build_query_pagination_execution_plan(options.clone());
+                assert_eq!(plan.sql_to_execute, sql);
+                assert!(plan.use_agent_result_session);
+                assert_eq!(plan.page_limit, Some(2));
+                assert_eq!(plan.page_offset, Some(offset));
+                assert!(plan.page_sql.is_none());
+                assert!(plan.pagination_row_number_column.is_none());
+                assert!(!plan.single_execution);
+                assert!(plan.pagination_error.is_none());
+
+                // Existing sessions remain usable even if cursor availability
+                // changes after the first page.
+                if offset > 0 {
+                    options.use_agent_cursor = false;
+                    assert_eq!(build_query_pagination_execution_plan(options), plan);
                 }
             }
         }
@@ -2692,6 +2803,12 @@ mod tests {
     #[test]
     fn oceanbase_unsafe_projection_uses_cursor_at_every_offset() {
         for sql in [
+            "SELECT * FROM people",
+            "SELECT a.* FROM people a",
+            "SELECT ID, BUSINESS_ROWID AS \"rowid\" FROM DBX_LOB_NOPK ORDER BY ID",
+            "SELECT BUSINESS_ROWID AS ROWID FROM DBX_LOB_NOPK",
+            "SELECT BUSINESS_ROWID AS \"RoWiD\", ROWIDTOCHAR(ROWID) AS \"__DBX_PK_0\" FROM DBX_LOB_NOPK",
+            "SELECT t.\"rowid\" FROM DBX_LOB_NOPK t",
             "SELECT a.name, a.* FROM people a ORDER BY a.id",
             "SELECT a.name, a.name FROM people a",
             "SELECT a.id, b.id FROM people a JOIN people b ON a.id = b.id",
@@ -2946,6 +3063,31 @@ mod tests {
             let sql = later_page.sql.expect("build set operation later page");
             assert!(sql.starts_with("EXEC sys.sp_executesql N'SET ROWCOUNT 200; "), "{operator}: {sql}");
             assert_eq!(sqlserver_result_offset(&sql), 100);
+        }
+    }
+
+    // 词法扫描漏检的 set 操作符同样不能被 TOP 只盖住第一个分支。
+    #[test]
+    fn sqlserver_hidden_set_operations_use_rowcount_instead_of_limiting_first_branch() {
+        for (original, expected) in [
+            (
+                "SELECT id FROM #t UNION SELECT id FROM u",
+                "EXEC sys.sp_executesql N'SET ROWCOUNT 500; SELECT id FROM #t UNION SELECT id FROM u'; /*__dbx_result_offset=0__*/",
+            ),
+            (
+                "SELECT id FROM t WHERE p = 'C:\\' UNION SELECT id FROM u",
+                "EXEC sys.sp_executesql N'SET ROWCOUNT 500; SELECT id FROM t WHERE p = ''C:\\'' UNION SELECT id FROM u'; /*__dbx_result_offset=0__*/",
+            ),
+        ] {
+            let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                limit: 500,
+                offset: 0,
+            });
+
+            assert!(result.ok, "must stay paginatable: {original}");
+            assert_eq!(result.sql.unwrap(), expected);
         }
     }
 
@@ -3264,6 +3406,45 @@ mod tests {
     }
 
     #[test]
+    fn sqlserver_mixed_wildcard_count_preserves_query_predicates() {
+        for projection in
+            ["x_JtRoomCode, RoomInfo, *", "sr.x_JtRoomCode, sr.RoomInfo, sr.*", "sr.RoomInfo AS info, sr.*"]
+        {
+            let sql = format!("SELECT {projection} FROM s_room sr WHERE sr.RoomInfo LIKE N'%合肥天珺一期%' AND sr.x_JtRoomCode IS NULL ORDER BY sr.RoomInfo");
+            let plan = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+                sql: sql.clone(),
+                query_base_sql: sql,
+                database_type: Some(DatabaseType::SqlServer),
+                pagination: QueryPagination { limit: 1000, offset: 0, session_id: None },
+                use_agent_cursor: false,
+                first_page_uses_actual_sql: false,
+            });
+            assert_eq!(plan.count_sql.as_deref(), Some("SELECT COUNT(*) AS dbx_total_rows FROM s_room sr WHERE sr.RoomInfo LIKE N'%合肥天珺一期%' AND sr.x_JtRoomCode IS NULL;"));
+            assert!(plan.sql_to_execute.starts_with("SELECT TOP (1000)"));
+        }
+    }
+
+    #[test]
+    fn sqlserver_mixed_wildcard_count_rejects_semantic_modifiers_and_expressions() {
+        for sql in [
+            "SELECT DISTINCT id, * FROM rooms",
+            "SELECT TOP 10 id, * FROM rooms",
+            "SELECT COUNT(*), * FROM rooms",
+            "SELECT id + 1, * FROM rooms",
+            "SELECT id, * FROM rooms GROUP BY id",
+        ] {
+            assert!(
+                !build_count_query_sql(CountQuerySqlOptions {
+                    original_sql: sql.to_string(),
+                    database_type: Some(DatabaseType::SqlServer),
+                })
+                .ok,
+                "must not rewrite {sql}"
+            );
+        }
+    }
+
+    #[test]
     fn sqlserver_join_wildcard_count_removes_top_level_order_by() {
         let result = build_count_query_sql(CountQuerySqlOptions {
             original_sql: "SELECT * FROM AAA a JOIN BBB b ON a.id = b.id ORDER BY a.id".to_string(),
@@ -3315,6 +3496,47 @@ mod tests {
             });
 
             assert!(!result.ok, "must not rewrite {sql}");
+        }
+    }
+
+    // 词法扫描漏检的结尾 ORDER BY 不能原样塞进 COUNT 派生表（SQL Server 拒绝），
+    // 走 AST 重写分支剥离后再计数。
+    #[test]
+    fn sqlserver_count_strips_lexically_hidden_order_by() {
+        for (original, expected) in [
+            (
+                "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id",
+                "SELECT COUNT(*) AS dbx_total_rows FROM t WHERE p = 'C:\\';",
+            ),
+            ("SELECT id FROM #t ORDER BY id", "SELECT COUNT(*) AS dbx_total_rows FROM #t;"),
+        ] {
+            let result = build_count_query_sql(CountQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+            });
+
+            assert!(result.ok, "must stay countable: {original}");
+            assert_eq!(result.sql.unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn sqlserver_count_wraps_top_with_lexically_hidden_order_by() {
+        // T-SQL 允许派生表在带 TOP / OFFSET-FETCH 时保留 ORDER BY（Msg 1033 豁免），
+        // 这类语句即使词法定位不到 ORDER BY 也应原样包装，保住精确行数。
+        for original in [
+            "SELECT TOP (100) * FROM #Orders ORDER BY id",
+            "SELECT * FROM #Orders ORDER BY id OFFSET 10 ROWS FETCH NEXT 20 ROWS ONLY",
+        ] {
+            let result = build_count_query_sql(CountQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+            });
+
+            assert!(result.ok, "must stay countable: {original}");
+            let sql = result.sql.unwrap();
+            assert!(sql.contains("COUNT(*)"), "{original} -> {sql}");
+            assert!(sql.contains("ORDER BY"), "derived table must keep ORDER BY: {original} -> {sql}");
         }
     }
 
@@ -3429,6 +3651,23 @@ mod tests {
         assert!(plan.page_sql.is_none());
         assert!(plan.count_sql.is_none());
         assert_eq!(plan.exact_query_row_bound, None);
+    }
+
+    // 词法扫描漏检的顶层 FOR JSON/XML 与可见时一致：不包装、不分页（否则首页被 TOP 静默截断、后续页生成非法 SQL）。
+    #[test]
+    fn sqlserver_hidden_json_output_also_skips_wrappers() {
+        for original in ["SELECT * FROM #t FOR JSON PATH", "SELECT * FROM t WHERE p = 'C:\\' FOR JSON PATH"] {
+            for offset in [0, 500] {
+                let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+                    original_sql: original.to_string(),
+                    database_type: Some(DatabaseType::SqlServer),
+                    limit: 500,
+                    offset,
+                });
+
+                assert!(!result.ok, "must not wrap FOR JSON output (offset {offset}): {original}");
+            }
+        }
     }
 
     #[test]
@@ -4114,6 +4353,32 @@ WHERE u.id = picked.id;
             result.sql.unwrap(),
             "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"
         );
+    }
+
+    // `#` 临时表/反斜杠字符串让词法扫描漏掉结尾 ORDER BY 时，offset > 0 不能走
+    // ROW_NUMBER 派生表包装（SQL Server 拒绝派生表里的 ORDER BY），退回 ROWCOUNT 封顶。
+    #[test]
+    fn sqlserver_hidden_order_by_uses_bounded_rowcount_pagination() {
+        for (original, expected) in [
+            (
+                "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id",
+                "EXEC sys.sp_executesql N'SET ROWCOUNT 1000; SELECT * FROM t WHERE p = ''C:\\'' ORDER BY id'; /*__dbx_result_offset=500__*/",
+            ),
+            (
+                "SELECT * FROM #t ORDER BY id",
+                "EXEC sys.sp_executesql N'SET ROWCOUNT 1000; SELECT * FROM #t ORDER BY id'; /*__dbx_result_offset=500__*/",
+            ),
+        ] {
+            let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                limit: 500,
+                offset: 500,
+            });
+
+            assert!(result.ok, "must stay paginatable: {original}");
+            assert_eq!(result.sql.unwrap(), expected);
+        }
     }
 
     // UNION 顶层的 OFFSET/FETCH 也不能被注入 TOP。
@@ -5270,7 +5535,7 @@ WHERE u.id = picked.id;
 
     #[test]
     fn oceanbase_oracle_prefers_bounded_first_page_and_keeps_cursor_fallback() {
-        let sql = "SELECT * FROM events";
+        let sql = "SELECT id FROM events";
         let first_page = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
             sql: sql.to_string(),
             query_base_sql: sql.to_string(),
@@ -5279,7 +5544,7 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
         });
-        assert_eq!(first_page.sql_to_execute, "SELECT * FROM (SELECT * FROM events) WHERE ROWNUM <= 500;");
+        assert_eq!(first_page.sql_to_execute, "SELECT * FROM (SELECT id FROM events) WHERE ROWNUM <= 500;");
         assert_eq!(first_page.page_sql.as_deref(), Some(first_page.sql_to_execute.as_str()));
         assert_eq!(first_page.page_limit, Some(500));
         assert_eq!(first_page.page_offset, Some(0));
@@ -6005,6 +6270,47 @@ WHERE u.id = picked.id;
             result.sql.unwrap(),
             "SELECT * FROM (SELECT id, name FROM users) t([id], [name]) ORDER BY [name] ASC;"
         );
+    }
+
+    // 词法扫描漏检的结尾 ORDER BY 无法从排序包装里剥离，直接拒绝而不是生成非法 SQL。
+    #[test]
+    fn sqlserver_sort_rejects_lexically_hidden_order_by() {
+        for original in ["SELECT * FROM t WHERE p = 'C:\\' ORDER BY id", "SELECT id FROM #t ORDER BY id"] {
+            let result = build_sorted_query_sql(SortedQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                result_columns: vec!["id".to_string()],
+                column_index: 0,
+                column: "id".to_string(),
+                direction: QuerySortDirection::Asc,
+            });
+
+            assert!(!result.ok, "must refuse the unsafe wrap: {original}");
+            assert_eq!(result.reason.as_deref(), Some("unsupported"), "{original}");
+        }
+    }
+
+    #[test]
+    fn sqlserver_sort_wraps_top_with_lexically_hidden_order_by() {
+        // T-SQL 允许派生表在带 TOP / OFFSET-FETCH 时保留 ORDER BY（Msg 1033 豁免），
+        // 排序包装应照常生成而不是拒绝。
+        for original in [
+            "SELECT TOP (100) * FROM #Orders ORDER BY id",
+            "SELECT * FROM #Orders ORDER BY id OFFSET 10 ROWS FETCH NEXT 20 ROWS ONLY",
+        ] {
+            let result = build_sorted_query_sql(SortedQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                result_columns: vec!["id".to_string()],
+                column_index: 0,
+                column: "id".to_string(),
+                direction: QuerySortDirection::Asc,
+            });
+
+            assert!(result.ok, "must keep the wrap legal: {original}");
+            let sql = result.sql.unwrap();
+            assert!(sql.contains("ORDER BY"), "{original} -> {sql}");
+        }
     }
 
     #[test]

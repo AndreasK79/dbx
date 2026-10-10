@@ -304,12 +304,18 @@ const COMMON_SQL_KEYWORDS = [
   "RIGHT",
   "INNER",
   "OUTER",
+  "CROSS",
+  "FULL",
+  "NATURAL",
   "ON",
+  "USING",
   "GROUP",
   "ORDER",
   "BY",
   "GROUP BY",
   "ORDER BY",
+  "PARTITION",
+  "PARTITION BY",
   "ASC",
   "DESC",
   "HAVING",
@@ -673,9 +679,14 @@ const ORACLE_SQL_TYPES = [
 const ORACLE_SYSTEM_VALUE_NAMES = ["SYSDATE", "SYSTIMESTAMP", "CURRENT_DATE", "CURRENT_TIMESTAMP", "LOCALTIMESTAMP", "SESSIONTIMEZONE", "DBTIMEZONE", "USER", "UID"] as const;
 
 const ORACLE_SYSTEM_VALUE_NAME_SET = new Set<string>(ORACLE_SYSTEM_VALUE_NAMES);
+const ORACLE_PSEUDO_COLUMN_NAMES = new Set(["CONNECT_BY_ISCYCLE", "CONNECT_BY_ISLEAF", "LEVEL", "ORA_ROWSCN", "ROWID", "ROWNUM"]);
 
 export function isOracleSystemValueName(name: string, databaseType?: DatabaseType): boolean {
   return isOracleLikeDatabase(databaseType) && ORACLE_SYSTEM_VALUE_NAME_SET.has(name.toUpperCase());
+}
+
+export function isOraclePseudoColumnName(name: string, databaseType?: DatabaseType): boolean {
+  return isOracleLikeDatabase(databaseType) && ORACLE_PSEUDO_COLUMN_NAMES.has(name.toUpperCase());
 }
 
 const NON_ORACLE_COMPLETION_WORDS = new Set(["BIGSERIAL", "BOOLEAN", "ELSEIF", "LIMIT", "LOCALTIME", "SERIAL", "STRING", "TEXT", "TIME", "USE"]);
@@ -746,6 +757,8 @@ const HIGH_FREQUENCY_KEYWORDS = new Set([
   "RIGHT",
   "INNER",
   "OUTER",
+  "CROSS",
+  "FULL",
   "INSERT",
   "INTO",
   "VALUES",
@@ -777,6 +790,19 @@ const TABLE_TRIGGER_KEYWORDS = new Set(["from", "join", "update", "into", "table
 const EXCLUSIVE_TABLE_TRIGGER_KEYWORDS = new Set(["from", "join", "update", "into", "apply"]);
 const JOIN_MODIFIERS = new Set(["left", "right", "inner", "outer", "cross", "full", "natural"]);
 const JOIN_MODIFIER_KEYWORD_PHRASES = ["LEFT JOIN", "RIGHT JOIN", "INNER JOIN", "FULL JOIN", "CROSS JOIN", "NATURAL JOIN", "LEFT OUTER JOIN", "RIGHT OUTER JOIN", "FULL OUTER JOIN"];
+const PAIRED_KEYWORD_PREFIXES_BY_FOLLOWING: Readonly<Record<string, ReadonlySet<string>>> = {
+  JOIN: new Set(["CROSS", "INNER", "LEFT", "RIGHT", "OUTER", "FULL", "NATURAL"]),
+  BY: new Set(["ORDER", "GROUP", "PARTITION"]),
+  APPLY: new Set(["CROSS", "OUTER"]),
+  KEY: new Set(["PRIMARY", "FOREIGN", "UNIQUE", "DUPLICATE"]),
+  INTO: new Set(["INSERT"]),
+  VIEW: new Set(["MATERIALIZED"]),
+};
+
+function isPairPrefixKeywordForFollowing(keyword: string, followingKeyword: string): boolean {
+  return PAIRED_KEYWORD_PREFIXES_BY_FOLLOWING[followingKeyword.toUpperCase()]?.has(keyword.toUpperCase()) ?? false;
+}
+
 const MAX_TABLE_COMPLETION_ITEMS = 200;
 const EXACT_LABEL_MATCH_BOOST = 10000;
 const EXACT_CUSTOM_SNIPPET_TRIGGER_BOOST = 40000;
@@ -1475,8 +1501,12 @@ export interface SqlCompletionItem {
   replaceSelectWildcard?: true;
   /** Enables the query editor's checkbox-based batch insertion for this column. */
   batchSelectionMode?: "select" | "insert";
+  /** Batch insertion can quote columns without changing single-column completion. */
+  batchSelectionApply?: string;
   /** Qualifier to prepend to every batch-selected column after the first one. */
   batchSelectionQualifier?: string;
+  /** Optional column comment for batch insertion documentation. */
+  comment?: string;
 }
 
 export function shouldChainSqlCompletionAfterAccept(item: { type?: string; apply?: string }): boolean {
@@ -1507,6 +1537,8 @@ function sqlCompletionApplyDialect(databaseType: DatabaseType | undefined, fallb
 
 export interface SqlCompletionReferencedTable {
   name: string;
+  /** Set when the reference is a WITH CTE rather than a physical table. */
+  kind?: "cte";
   nameQuoted?: boolean;
   database?: string;
   schema?: string;
@@ -1560,6 +1592,7 @@ export interface SqlCompletionContext {
   tableCompletionTargetAliasUnsafe?: boolean;
   tableAliasAfterCursor?: boolean;
   openingParenAfterCursor: boolean;
+  followingKeyword?: string;
   contextKind: SqlCompletionContextKind;
   dataTypeContext: boolean;
 }
@@ -1609,6 +1642,8 @@ export function prepareSqlCompletionReplacement(sql: string, cursor: number, con
       if (closingQuote && item.type === "column" && !(apply.startsWith(sql[from] ?? "") && apply.endsWith(closingQuote)) && (context.qualifier || !apply.includes("."))) {
         const escaped = apply.replaceAll(closingQuote, closingQuote + closingQuote);
         prepared = { ...prepared, apply: `${sql[from]}${escaped}${closingQuote}` };
+        // An explicitly typed quote takes precedence over generated batch quoting.
+        if (item.batchSelectionApply !== undefined) prepared.batchSelectionApply = prepared.apply;
       }
       if (replaceClosingQuote && !prepared.replaceClosingQuote) prepared = { ...prepared, replaceClosingQuote };
       return replaceSelectWildcard && !prepared.replaceSelectWildcard ? { ...prepared, replaceSelectWildcard: true } : prepared;
@@ -1668,6 +1703,7 @@ export interface SqlCompletionProviderInput {
   currentSchema?: string;
   keywordCase?: SqlKeywordCase;
   functionCase?: SqlKeywordCase;
+  identifierCase?: SqlKeywordCase;
   autoAliasTables?: boolean;
   tableCompletionSchemaQualification?: SqlTableCompletionSchemaQualification;
   quoteIdentifiers?: boolean;
@@ -1690,6 +1726,7 @@ export function buildSqlCompletionItems(
     currentSchema?: string;
     keywordCase?: SqlKeywordCase;
     functionCase?: SqlKeywordCase;
+    identifierCase?: SqlKeywordCase;
     autoAliasTables?: boolean;
     tableCompletionSchemaQualification?: SqlTableCompletionSchemaQualification;
     quoteIdentifiers?: boolean;
@@ -1809,16 +1846,24 @@ class SqlCompletionProvider {
     }
 
     if (context.suggestKeywords && !context.exclusiveRoutineSuggestions && !pendingJoinKeyword) {
-      this.items.push(...buildJoinModifierKeywordItems(context.prefix, this.input.keywordCase));
+      this.items.push(...buildJoinModifierKeywordItems(context.prefix, this.input.keywordCase, context.followingKeyword));
       this.items.push(...buildKeywordItems(context.prefix, context, this.databaseType, this.input.keywordCase));
     } else if (shouldOfferKeywordPrefixContinuations(context, pendingJoinKeyword)) {
       this.items.push(...buildKeywordPrefixContinuationItems(context.prefix, context, this.databaseType, this.input.keywordCase));
     }
 
     if (!context.exclusiveTableSuggestions && context.suggestColumns) {
-      this.items.push(...buildColumnItems(context, this.input.columnsByTable, this.dialect));
+      this.items.push(...buildColumnItems(context, this.input.columnsByTable, this.dialect, this.databaseType, this.input.quoteIdentifiers));
       this.items.push(...buildSelectAllColumnItems(context, this.input.columnsByTable, this.t, this.dialect, this.databaseType));
       this.items.push(...buildInsertAllColumnItems(context, this.input.columnsByTable, this.t, this.dialect, this.input.keywordCase));
+      if (isOracleLikeDatabase(this.databaseType) && context.qualifier && !completionQualifierIsReferencedTable(context)) {
+        const profileObjects = driverProfileCompletionObjects(this.input.driverProfile, context);
+        const allObjects = [...(this.input.objects ?? []), ...profileObjects];
+        const hasKnownSequence = allObjects.some((object) => sequenceMatchesQualifier(object, context));
+        if (hasKnownSequence || (!completionQualifierIsKnownTableOrSchema(context, completionTables, this.input.schemas) && (matchesPrefix("NEXTVAL", context.prefix) || matchesPrefix("CURRVAL", context.prefix)))) {
+          this.items.push(...buildOracleSequencePseudoColumnItems(context.prefix, this.input.keywordCase, hasKnownSequence));
+        }
+      }
     }
 
     const emptyTableNameCompletion = !context.prefix && (context.suggestTables || context.exclusiveTableSuggestions);
@@ -1829,8 +1874,9 @@ class SqlCompletionProvider {
     if (!context.exclusiveColumnSuggestions && context.suggestTables) {
       const autoAliasTables = !!this.input.autoAliasTables && context.autoAliasTableCompletions && !context.tableCompletionTargetAliasUnsafe && supportsTableAliases(this.databaseType);
       const schemaQualification = normalizeSqlTableCompletionSchemaQualification(this.input.tableCompletionSchemaQualification);
-      this.items.push(...buildForeignKeyRelatedTableItems(context, completionTables, this.input.foreignKeysByTable, this.dialect, autoAliasTables, this.databaseType, this.input.currentSchema, schemaQualification));
-      this.items.push(...buildTableItems(context, completionTables, this.dialect, autoAliasTables, context.referencedTables, this.databaseType, this.input.currentSchema, schemaQualification));
+      this.items.push(...buildForeignKeyRelatedTableItems(context, completionTables, this.input.foreignKeysByTable, this.dialect, autoAliasTables, this.databaseType, this.input.currentSchema, schemaQualification, this.input.identifierCase));
+      this.items.push(...buildReferencedTableItems(context, completionTables, this.dialect, this.input.identifierCase));
+      this.items.push(...buildTableItems(context, completionTables, this.dialect, autoAliasTables, context.referencedTables, this.databaseType, this.input.currentSchema, schemaQualification, this.input.identifierCase));
       if (this.databaseType === "clickhouse") {
         this.items.push(...buildClickHouseFunctionItems(context.prefix, context.openingParenAfterCursor, "table", this.input.functionCompletionIncludeParams));
       }
@@ -2574,6 +2620,22 @@ function skipSqlWhitespaceAndComments(sql: string, pos: number): number {
   }
 }
 
+function getFollowingKeywordAfterCursor(sql: string, cursor: number, maxPos?: number): string | undefined {
+  let pos = cursor;
+  const bound = maxPos !== undefined ? Math.min(sql.length, maxPos) : sql.length;
+  while (pos < bound) {
+    const codePoint = sql.codePointAt(pos);
+    if (codePoint === undefined) break;
+    const char = String.fromCodePoint(codePoint);
+    if (!SQL_IDENTIFIER_CONTINUE_CHAR.test(char)) break;
+    pos += char.length;
+  }
+  const nextPos = skipSqlWhitespaceAndComments(sql, pos);
+  if (nextPos >= bound) return undefined;
+  const match = /^([A-Za-z_][\w$]*)/.exec(sql.slice(nextPos, bound));
+  return match ? match[1].toUpperCase() : undefined;
+}
+
 export function getSqlCompletionContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): SqlCompletionContext {
   const statementSpan = sqlCompletionStatementSpan(sql, cursor, options);
   // Extract the full statement at cursor position for referenced tables
@@ -2598,7 +2660,7 @@ export function getSqlCompletionContext(sql: string, cursor: number, options: Sq
   let referencedTables = extractReferencedTables(maskResolvedCteBodies(fullStatement, cursorInStatement, cteDefs), options.databaseType);
   for (const cte of cteDefs) {
     if (!referencedTables.some((rt) => rt.name.toLowerCase() === cte.name.toLowerCase())) {
-      referencedTables.push({ name: cte.name, columns: cte.columns });
+      referencedTables.push({ name: cte.name, columns: cte.columns, kind: "cte" });
     } else {
       const existing = referencedTables.find((rt) => rt.name.toLowerCase() === cte.name.toLowerCase());
       if (existing && !existing.columns) {
@@ -2703,6 +2765,7 @@ export function getSqlCompletionContext(sql: string, cursor: number, options: Sq
     autoAliasTableCompletions,
     tableAliasAfterCursor,
     openingParenAfterCursor: /^\s*\(/.test(sql.slice(cursor)),
+    followingKeyword: getFollowingKeywordAfterCursor(sql, cursor, statementSpan.end),
     contextKind,
     dataTypeContext,
   };
@@ -4176,12 +4239,49 @@ function quoteCompletionRoutineName(applyName: string, dialect?: SqlCompletionAp
 }
 
 function quoteSelectStarColumnIdentifier(identifier: string, dialect?: SqlCompletionApplyDialect, databaseType?: DatabaseType): string {
-  if (databaseType === "oracle" || (databaseType === undefined && dialect === "oracle")) return quoteTableIdentifierIfNeeded("oracle", identifier);
+  if (databaseType === "oracle" || databaseType === "oceanbase-oracle" || (databaseType === undefined && dialect === "oracle")) return quoteTableIdentifierIfNeeded("oracle", identifier);
   if (!requiresPostgresIdentifierQuote(identifier, POSTGRES_IDENTIFIER_KEYWORDS)) return identifier;
   if (databaseType) return quoteTableIdentifier(databaseType, identifier);
   if (dialect === "mysql") return `\`${identifier.replaceAll("`", "``")}\``;
   if (dialect === "sqlserver") return `[${identifier.replaceAll("]", "]]")}]`;
   return quoteSqlIdentifier(identifier, dialect);
+}
+
+function applySqlIdentifierCase(value: string, identifierCase?: SqlKeywordCase): string {
+  if (!identifierCase || identifierCase === "preserve" || isQuotedIdentifier(value.trim())) return value;
+  if (identifierCase === "lower") return value.toLowerCase();
+  if (identifierCase === "upper") return value.toUpperCase();
+  return value;
+}
+
+function quoteCasedIdentifier(originalName: string, casedName: string, dialect?: SqlCompletionApplyDialect): string {
+  if (isQuotedIdentifier(originalName.trim())) return originalName;
+  const originalQuoted = quoteCompletionApplyIdentifier(originalName, dialect);
+  if (originalQuoted === originalName) {
+    if (dialect === "oracle" || dialect === "upper") {
+      if (/^[A-Za-z][A-Za-z0-9_$#]*$/.test(casedName) && !POSTGRES_IDENTIFIER_KEYWORDS.has(casedName.toLowerCase())) {
+        return casedName;
+      }
+    } else if (dialect === "postgres") {
+      if (/^[A-Za-z_][A-Za-z0-9_$]*$/.test(casedName) && !POSTGRES_IDENTIFIER_KEYWORDS.has(casedName.toLowerCase())) {
+        return casedName;
+      }
+    }
+  }
+  return quoteCompletionApplyIdentifier(casedName, dialect);
+}
+
+function applySqlIdentifierCaseToName(name: string, identifierCase?: SqlKeywordCase, dialect?: SqlCompletionApplyDialect): string {
+  if (!identifierCase || identifierCase === "preserve") return name;
+  const parts = splitQualifiedNameRawParts(name);
+  if (parts.length === 0) return name;
+  return parts
+    .map((part) => {
+      if (isQuotedIdentifier(part.trim())) return part;
+      const cased = applySqlIdentifierCase(part, identifierCase);
+      return quoteCasedIdentifier(part, cased, dialect);
+    })
+    .join(".");
 }
 
 /**
@@ -4218,6 +4318,7 @@ function resolveTableSchemaQualification(
   currentSchema: string | undefined,
   schemasByTableName: Map<string, Set<string>>,
   schemaQualificationMode: SqlTableCompletionSchemaQualification,
+  identifierCase?: SqlKeywordCase,
 ): { ambiguousTableName: boolean; schemaQualification: boolean; defaultApplyName: string } {
   const oracleSchemaQualification = isOracleCompletionDatabase(databaseType) && table.schema && table.schema.toUpperCase() !== "PUBLIC" && (!currentSchema || normalizeIdentifierPart(table.schema) !== normalizeIdentifierPart(currentSchema));
   // A bare table name is ambiguous when metadata contains the same name in multiple schemas.
@@ -4225,8 +4326,49 @@ function resolveTableSchemaQualification(
   // generic/PostgreSQL/SQL Server paths only when metadata is ambiguous.
   const ambiguousTableName = !isOracleCompletionDatabase(databaseType) && (schemasByTableName.get(normalizeIdentifierPart(table.name))?.size ?? 0) > 1;
   const schemaQualification = !!table.schema && (schemaQualificationMode === "always" || (schemaQualificationMode === "collision" && (oracleSchemaQualification || ambiguousTableName)));
-  const defaultApplyName = schemaQualification ? `${quoteCompletionApplyIdentifier(table.schema!, dialect)}.${quoteCompletionApplyIdentifier(table.name, dialect)}` : quoteCompletionApplyIdentifier(table.name, dialect);
+  const tableName = applySqlIdentifierCase(table.name, identifierCase);
+  const quotedTable = quoteCasedIdentifier(table.name, tableName, dialect);
+  const defaultApplyName = schemaQualification && table.schema ? `${quoteCasedIdentifier(table.schema, applySqlIdentifierCase(table.schema, identifierCase), dialect)}.${quotedTable}` : quotedTable;
   return { ambiguousTableName, schemaQualification, defaultApplyName };
+}
+
+/**
+ * In-scope relations that are not in the catalog — `WITH` CTEs and resolved
+ * subquery aliases — never reached the table-name candidates, so a CTE could
+ * complete its columns but not its own name (#8381).
+ *
+ * The parser records columns for the references it resolved, which is what
+ * separates a real in-scope relation from the half-typed name the cursor
+ * currently sits in (that one has no columns and stays out of the list).
+ *
+ * In-scope relations outrank catalog matches: a CTE is what the statement
+ * actually selects from, while a catalog table is only a name that matched
+ * (the catalog path scores initials and subsequence matches up to 2400).
+ */
+function buildReferencedTableItems(context: SqlCompletionContext, completionTables: SqlCompletionTable[], dialect?: SqlCompletionApplyDialect, identifierCase?: SqlKeywordCase): SqlCompletionItem[] {
+  const knownTables = new Set(completionTables.map((table) => normalizeIdentifierPart(table.name)));
+  const seen = new Set<string>();
+  const items: SqlCompletionItem[] = [];
+  for (const reference of context.referencedTables) {
+    // CTE definitions cannot be the half-finished identifier under the cursor,
+    // so they stay table candidates even when their projection is a bare `*`
+    // (column extraction drops `*`, leaving the columns list empty).
+    if ((!reference.columns || reference.columns.length === 0) && reference.kind !== "cte") continue;
+    if (!matchesPrefix(reference.name, context.prefix)) continue;
+    const key = normalizeIdentifierPart(reference.name);
+    if (!key || knownTables.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    const tableName = applySqlIdentifierCase(reference.name, identifierCase);
+    const applyName = quoteCasedIdentifier(reference.name, tableName, dialect);
+    items.push({
+      label: tableName,
+      type: "table",
+      detail: reference.schema ? `${reference.schema}.${tableName}` : undefined,
+      apply: applyName,
+      boost: computeBoost(reference.name, context.prefix) + 5_000,
+    });
+  }
+  return items;
 }
 
 function buildTableItems(
@@ -4238,6 +4380,7 @@ function buildTableItems(
   databaseType?: DatabaseType,
   currentSchema?: string,
   schemaQualificationMode: SqlTableCompletionSchemaQualification = "collision",
+  identifierCase?: SqlKeywordCase,
 ): SqlCompletionItem[] {
   const { prefix } = context;
   const qualifierSchema = context.qualifierParts?.[context.qualifierParts.length - 1] ?? context.qualifier?.split(".").filter(Boolean).pop();
@@ -4248,10 +4391,12 @@ function buildTableItems(
   return matchingTables
     .map((table) => {
       const qualifiedByContext = !!qualifierSchema && !!table.schema && normalizeIdentifierPart(qualifierSchema) === normalizeIdentifierPart(table.schema);
-      const { ambiguousTableName, defaultApplyName } = resolveTableSchemaQualification(table, dialect, databaseType, currentSchema, schemasByTableName, schemaQualificationMode);
-      const unqualifiedApplyName = quoteCompletionApplyIdentifier(table.name, dialect);
+      const { ambiguousTableName, defaultApplyName } = resolveTableSchemaQualification(table, dialect, databaseType, currentSchema, schemasByTableName, schemaQualificationMode, identifierCase);
+      const tableName = applySqlIdentifierCase(table.name, identifierCase);
+      const unqualifiedApplyName = quoteCasedIdentifier(table.name, tableName, dialect);
       const rawSuppliedApplyName = table.applyName?.trim();
       const suppliedApplyName = dialect === "sqlserver" && rawSuppliedApplyName ? quoteCompletionApplyName(rawSuppliedApplyName, dialect) : rawSuppliedApplyName;
+      const casedSuppliedApplyName = suppliedApplyName ? applySqlIdentifierCaseToName(suppliedApplyName, identifierCase, dialect) : undefined;
       const suppliedApplyNameIsQualified = suppliedApplyName?.includes(".") === true;
       const applyName =
         qualifiedByContext || schemaQualificationMode === "never"
@@ -4260,17 +4405,22 @@ function buildTableItems(
             ? defaultApplyName
             : ambiguousTableName && table.schema && (!suppliedApplyName || !suppliedApplyNameIsQualified)
               ? defaultApplyName
-              : (suppliedApplyName ?? defaultApplyName);
+              : (casedSuppliedApplyName ?? defaultApplyName);
       const alias = autoAliasTables ? generateTableCompletionAlias(table.name, existingAliases) : "";
       const schemaDetail = ambiguousTableName && table.schema ? `${table.schema}.${table.name}` : undefined;
       const detail = table.detail && schemaDetail ? `${schemaDetail}  ${table.detail}` : (table.detail ?? schemaDetail ?? (table.type === "table" ? undefined : table.type));
       return {
-        label: table.name,
+        label: tableName,
         type: "table" as const,
         detail,
         apply: formatTableAliasApply(applyName, alias),
         boost: computeBoost(table.name, prefix) + 1000 + (table.boost ?? 0),
-        dedupeKey: schemaQualificationMode === "never" && table.schema ? `${quoteCompletionApplyIdentifier(table.schema, dialect)}.${unqualifiedApplyName}` : table.applyName || ambiguousTableName || (isOracleCompletionDatabase(databaseType) && table.schema) ? applyName : undefined,
+        dedupeKey:
+          schemaQualificationMode === "never" && table.schema
+            ? `${quoteCasedIdentifier(table.schema, applySqlIdentifierCase(table.schema, identifierCase), dialect)}.${unqualifiedApplyName}`
+            : table.applyName || ambiguousTableName || (isOracleCompletionDatabase(databaseType) && table.schema)
+              ? applyName
+              : undefined,
       };
     })
     .sort(compareCompletionItems)
@@ -4286,6 +4436,7 @@ function buildForeignKeyRelatedTableItems(
   databaseType?: DatabaseType,
   currentSchema?: string,
   schemaQualificationMode: SqlTableCompletionSchemaQualification = "collision",
+  identifierCase?: SqlKeywordCase,
 ): SqlCompletionItem[] {
   if (!foreignKeysByTable || context.referencedTables.length === 0) return [];
   const candidates = new Map<string, { table: SqlCompletionTable; detail: string }>();
@@ -4318,19 +4469,21 @@ function buildForeignKeyRelatedTableItems(
   return [...candidates.values()]
     .map(({ table, detail }) => {
       const qualifiedByContext = !!qualifierSchema && !!table.schema && normalizeIdentifierPart(qualifierSchema) === normalizeIdentifierPart(table.schema);
-      const { ambiguousTableName, defaultApplyName } = resolveTableSchemaQualification(table, dialect, databaseType, currentSchema, schemasByTableName, schemaQualificationMode);
-      const unqualifiedApplyName = quoteCompletionApplyIdentifier(table.name, dialect);
+      const { ambiguousTableName, defaultApplyName } = resolveTableSchemaQualification(table, dialect, databaseType, currentSchema, schemasByTableName, schemaQualificationMode, identifierCase);
+      const tableName = applySqlIdentifierCase(table.name, identifierCase);
+      const unqualifiedApplyName = quoteCasedIdentifier(table.name, tableName, dialect);
       const applyName = qualifiedByContext || schemaQualificationMode === "never" ? unqualifiedApplyName : defaultApplyName;
       const alias = autoAliasTables ? generateTableCompletionAlias(table.name, existingAliases) : "";
       return {
-        label: table.name,
+        label: tableName,
         type: "table" as const,
         detail,
         apply: formatTableAliasApply(applyName, alias),
         boost: computeBoost(table.name, context.prefix) + 3600,
         // Mirror buildTableItems' dedupeKey so an FK candidate and the regular
         // candidate for the same schema-qualified table collapse to one entry.
-        dedupeKey: schemaQualificationMode === "never" && table.schema ? `${quoteCompletionApplyIdentifier(table.schema, dialect)}.${unqualifiedApplyName}` : ambiguousTableName || (isOracleCompletionDatabase(databaseType) && table.schema) ? applyName : undefined,
+        dedupeKey:
+          schemaQualificationMode === "never" && table.schema ? `${quoteCasedIdentifier(table.schema, applySqlIdentifierCase(table.schema, identifierCase), dialect)}.${unqualifiedApplyName}` : ambiguousTableName || (isOracleCompletionDatabase(databaseType) && table.schema) ? applyName : undefined,
       };
     })
     .sort(compareCompletionItems);
@@ -4371,8 +4524,14 @@ function buildObjectItems(context: SqlCompletionContext, objects: SqlCompletionO
   const onlyProcedures = context.contextKind === "exec";
   const onlyFunctions = context.suggestColumns && context.referencedTables.length > 0 && !context.qualifier;
   const prioritizeOracleFunctions = isOracleCompletionDatabase(databaseType) && context.statementKind === "select";
+  const allowOracleSequences = isOracleCompletionDatabase(databaseType) && !onlyProcedures;
   return objects
-    .filter((object) => object.type !== "sequence" && (!onlyProcedures || object.type === "procedure") && (!onlyFunctions || (object.type === "function" && object.name.toLowerCase().startsWith(context.prefix.toLowerCase()))) && objectMatchesCompletionContext(object, context))
+    .filter((object) => {
+      if (object.type === "sequence") {
+        return allowOracleSequences && objectMatchesCompletionContext(object, context);
+      }
+      return (!onlyProcedures || object.type === "procedure") && (!onlyFunctions || (object.type === "function" && object.name.toLowerCase().startsWith(context.prefix.toLowerCase()))) && objectMatchesCompletionContext(object, context);
+    })
     .map((object) => {
       const qualifiedByContext = objectIsQualifiedByContext(object, context);
       const objectInCurrentSchema = !!currentSchema && !!object.schema && normalizeIdentifierPart(object.schema) === normalizeIdentifierPart(currentSchema);
@@ -4389,10 +4548,10 @@ function buildObjectItems(context: SqlCompletionContext, objects: SqlCompletionO
       const baseDedupeKey = object.applyName || (isOracleCompletionDatabase(databaseType) && object.schema) ? applyName : undefined;
       return {
         label: object.name,
-        type: "function" as const,
+        type: object.type === "sequence" ? ("variable" as const) : ("function" as const),
         detail,
         info: buildRoutineInfo(object),
-        apply: object.type === "trigger" || object.type === "package" ? applyName : buildRoutineApply(applyName, object.signature, includeParams),
+        apply: object.type === "trigger" || object.type === "package" || object.type === "sequence" ? applyName : buildRoutineApply(applyName, object.signature, includeParams),
         boost: computeBoost(object.name, context.prefix) + typeBoost + schemaBoost,
         dedupeKey: signature ? `${baseDedupeKey ?? object.name}(${signature})` : baseDedupeKey,
         // Preserve exact routine matches before the capped candidate list is truncated.
@@ -4457,6 +4616,7 @@ function buildRoutineInfo(object: SqlCompletionObject): string | undefined {
 
 function routineTypeBoost(type: SqlCompletionObject["type"], prioritizeFunctions: boolean): number {
   if (type === "package") return 1600;
+  if (type === "sequence") return 1500;
   if (type === "function") return prioritizeFunctions ? 1800 : 900;
   return prioritizeFunctions ? 900 : 1800;
 }
@@ -4467,6 +4627,55 @@ function completionQualifierIsReferencedTable(context: SqlCompletionContext): bo
   const qualifierLower = qualifier.toLowerCase();
   const qualifiedTarget = qualifiedTableTargetFromContext(context);
   return context.referencedTables.some((table) => referencedTableMatchesColumnQualifier(table, qualifier, qualifierLower, qualifiedTarget));
+}
+
+function sequenceMatchesQualifier(object: SqlCompletionObject, context: SqlCompletionContext): boolean {
+  if (object.type !== "sequence") return false;
+  if (!context.qualifier) return false;
+  const parts = context.qualifierParts?.length ? context.qualifierParts : context.qualifier.split(".").filter(Boolean);
+  if (parts.length === 1) {
+    return normalizeIdentifierPart(object.name) === normalizeIdentifierPart(parts[0]);
+  }
+  if (parts.length === 2) {
+    const [schema, name] = parts;
+    const schemaMatches = !object.schema || normalizeIdentifierPart(object.schema) === normalizeIdentifierPart(schema);
+    return schemaMatches && normalizeIdentifierPart(object.name) === normalizeIdentifierPart(name);
+  }
+  return false;
+}
+
+function completionQualifierIsKnownTableOrSchema(context: SqlCompletionContext, tables: SqlCompletionTable[], schemas?: string[]): boolean {
+  if (!context.qualifier) return false;
+  const parts = context.qualifierParts?.length ? context.qualifierParts : context.qualifier.split(".").filter(Boolean);
+  if (parts.length === 1) {
+    const name = normalizeIdentifierPart(parts[0]);
+    if (schemas?.some((s) => normalizeIdentifierPart(s) === name)) return true;
+    if (tables.some((t) => normalizeIdentifierPart(t.name) === name)) return true;
+    return false;
+  }
+  if (parts.length === 2) {
+    const [schema, table] = parts;
+    if (tables.some((t) => normalizeIdentifierPart(t.name) === normalizeIdentifierPart(table) && (!t.schema || normalizeIdentifierPart(t.schema) === normalizeIdentifierPart(schema)))) return true;
+    return false;
+  }
+  return false;
+}
+
+function buildOracleSequencePseudoColumnItems(prefix: string, keywordCase?: SqlKeywordCase, hasKnownSequence = false): SqlCompletionItem[] {
+  const pseudoColumns = ["NEXTVAL", "CURRVAL"] as const;
+  return pseudoColumns
+    .filter((col) => matchesPrefix(col, prefix))
+    .map((col) => {
+      const label = applySqlKeywordCase(col, keywordCase);
+      const isNextVal = col === "NEXTVAL";
+      return {
+        label,
+        type: "column" as const,
+        detail: "sequence pseudo-column",
+        apply: label,
+        boost: computeBoost(col, prefix) + (hasKnownSequence ? (isNextVal ? 2200 : 2100) : isNextVal ? 1200 : 1100),
+      };
+    });
 }
 
 function objectIsQualifiedByContext(object: SqlCompletionObject, context: SqlCompletionContext): boolean {
@@ -4480,6 +4689,13 @@ function objectIsQualifiedByContext(object: SqlCompletionObject, context: SqlCom
 
 function objectMatchesCompletionContext(object: SqlCompletionObject, context: SqlCompletionContext): boolean {
   if (context.oracleTableFunctionContext && object.type !== "function") return false;
+  if (object.type === "sequence") {
+    if (context.qualifier) {
+      const qualifier = context.qualifier.toLowerCase();
+      return !!object.schema && object.schema.toLowerCase() === qualifier && matchesPrefix(object.name, context.prefix);
+    }
+    return matchesPrefix(object.name, context.prefix);
+  }
   if (context.qualifier) {
     const qualifier = context.qualifier.toLowerCase();
     const qualifierParts = qualifier.split(".").filter(Boolean);
@@ -4883,6 +5099,11 @@ function buildAliasItems(context: SqlCompletionContext): SqlCompletionItem[] {
     if (context.prefix && !matchesPrefix(ref.name, context.prefix)) continue;
     const candidate = generateAlias(ref.name, seen);
     if (!candidate || seen.has(candidate.toLowerCase())) continue;
+    // A relation that is also offered as a table candidate must not duplicate
+    // itself as a self-named alias snippet (CTEs and short table names);
+    // half-typed relations without columns keep theirs.
+    const offeredAsTable = (ref.columns?.length ?? 0) > 0 || ref.kind === "cte";
+    if (offeredAsTable && candidate.toLowerCase() === ref.name.toLowerCase()) continue;
     seen.add(candidate.toLowerCase());
     items.push({
       label: candidate,
@@ -5106,7 +5327,7 @@ function columnsForInsertTarget(context: SqlCompletionContext, columnsByTable: M
   });
 }
 
-function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<string, SqlCompletionColumn[]>, dialect?: SqlCompletionApplyDialect): SqlCompletionItem[] {
+function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<string, SqlCompletionColumn[]>, dialect?: SqlCompletionApplyDialect, databaseType?: DatabaseType, quoteIdentifiers?: boolean): SqlCompletionItem[] {
   // Build a bounded candidate pool before doing duplicate detection, ranking,
   // and completion object materialization. Canonical column arrays remain the
   // source of truth; the per-array prefix index is only a derived accelerator.
@@ -5174,6 +5395,7 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
     .slice(0, context.insertTable || !context.prefix ? 50 : context.qualifier ? 30 : 20);
 
   const batchSelectionMode = context.insertTable ? "insert" : context.statementKind === "select" && context.selectListColumnContext ? "select" : undefined;
+  const quoteBatchColumns = !!batchSelectionMode && quoteIdentifiers !== false && (databaseType === "mysql" || databaseType === "starrocks");
 
   return rankedColumns.map(({ column, boost }) => {
     return {
@@ -5185,10 +5407,12 @@ function buildColumnItems(context: SqlCompletionContext, columnsByTable: Map<str
       apply: buildColumnApply(column, context, dialect),
       boost,
       batchSelectionMode,
+      batchSelectionApply: quoteBatchColumns ? buildColumnApply(column, context, dialect, quoteTableIdentifier(databaseType, column.name)) : undefined,
       // The first selected column keeps the qualifier already present in the
       // document. Subsequent columns must use that same user-typed qualifier,
       // not a referenced-table alias which may be different from it.
       batchSelectionQualifier: batchSelectionMode === "select" && context.qualifier ? (context.qualifierParts ?? context.qualifier.split(".").filter(Boolean)).map((part) => quoteCompletionApplyIdentifier(part, dialect)).join(".") : undefined,
+      comment: column.comment?.trim() || undefined,
     };
   });
 }
@@ -5253,12 +5477,12 @@ function normalizeCompletionKey(key: string): string {
     .join(".");
 }
 
-function buildColumnApply(column: SqlCompletionColumn & { displayLabel: string }, context: SqlCompletionContext, dialect?: SqlCompletionApplyDialect): string {
+function buildColumnApply(column: SqlCompletionColumn & { displayLabel: string }, context: SqlCompletionContext, dialect?: SqlCompletionApplyDialect, columnName = quoteCompletionApplyIdentifier(column.name, dialect)): string {
   if (context.qualifier || column.displayLabel === column.name || !column.displayLabel.includes(".")) {
-    return quoteCompletionApplyIdentifier(column.name, dialect);
+    return columnName;
   }
   const qualifier = column.sourceQualifierSql ?? quoteCompletionApplyIdentifier(column.sourceAlias ?? column.table, dialect);
-  return `${qualifier}.${quoteCompletionApplyIdentifier(column.name, dialect)}`;
+  return `${qualifier}.${columnName}`;
 }
 
 function isKeyColumn(name: string): boolean {
@@ -5853,18 +6077,22 @@ function supportsTableAliases(databaseType?: DatabaseType): boolean {
   return databaseType !== "cassandra";
 }
 
-function buildJoinModifierKeywordItems(prefix: string, keywordCase?: SqlKeywordCase): SqlCompletionItem[] {
+function buildJoinModifierKeywordItems(prefix: string, keywordCase?: SqlKeywordCase, followingKeyword?: string): SqlCompletionItem[] {
   if (!prefix) return [];
-  return JOIN_MODIFIER_KEYWORD_PHRASES.filter((keyword) => matchesPrefix(keyword, prefix)).map((keyword) => {
-    const label = applySqlKeywordCase(keyword, keywordCase);
-    return {
-      label,
-      type: "keyword" as const,
-      apply: `${label} `,
-      detail: "join keyword",
-      boost: computeBoost(keyword, prefix) + 1300,
-    };
-  });
+  const phrases = followingKeyword === "JOIN" ? JOIN_MODIFIER_KEYWORD_PHRASES.filter((keyword) => keyword.endsWith(" JOIN")).map((keyword) => keyword.slice(0, -" JOIN".length)) : JOIN_MODIFIER_KEYWORD_PHRASES;
+
+  return phrases
+    .filter((keyword) => matchesPrefix(keyword, prefix))
+    .map((keyword) => {
+      const label = applySqlKeywordCase(keyword, keywordCase);
+      return {
+        label,
+        type: "keyword" as const,
+        apply: followingKeyword === "JOIN" ? undefined : `${label} `,
+        detail: "join keyword",
+        boost: computeBoost(keyword, prefix) + 1300,
+      };
+    });
 }
 
 function isPendingJoinKeywordContext(context: SqlCompletionContext): boolean {
@@ -5882,6 +6110,7 @@ function buildKeywordItems(prefix: string, context: SqlCompletionContext, databa
       if (WINDOW_FUNCTIONS.has(keyword)) return false;
       if (!matchesPrefix(keyword, prefix)) return false;
       if (!showDdl && isDml && (DDL_ONLY_KEYWORDS.has(keyword) || DATA_TYPE_KEYWORDS.has(keyword))) return false;
+      if (context.followingKeyword && keyword.includes(" ") && keyword.toUpperCase().endsWith(` ${context.followingKeyword}`)) return false;
       return true;
     })
     .map((keyword) => {
@@ -5889,11 +6118,12 @@ function buildKeywordItems(prefix: string, context: SqlCompletionContext, databa
       const isDataType = DATA_TYPE_KEYWORDS.has(keyword);
       const freqBoost = !context.dataTypeContext && HIGH_FREQUENCY_KEYWORDS.has(keyword) ? 100 : 0;
       const typeBoost = context.dataTypeContext && isDataType ? 2500 : 0;
+      const followingBoost = context.followingKeyword && isPairPrefixKeywordForFollowing(keyword, context.followingKeyword) ? 1300 : 0;
       return {
         label: applySqlKeywordCase(keyword, keywordCase),
         type: "keyword" as const,
         detail: isDataType ? "data type" : undefined,
-        boost: base + freqBoost + typeBoost,
+        boost: base + freqBoost + typeBoost + followingBoost,
       };
     });
 }

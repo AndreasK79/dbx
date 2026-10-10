@@ -844,6 +844,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           currentSchema: props.schema,
           keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
           functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+          identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -908,6 +909,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           currentSchema: props.schema,
           keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
           functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+          identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
           autoAliasTables: settingsStore.editorSettings.autoAliasTables,
           tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -1213,6 +1215,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       currentSchema: scope.schema,
       keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
       functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+      identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
@@ -1408,6 +1411,12 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
 
   function completionObjectKindsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>): CompletionAssistantObjectKind[] {
     if (completionContext.contextKind === "exec") return ["procedure"];
+    if (isOracleCompletionDatabase(props.databaseType)) {
+      if (completionContext.suggestColumns && completionContext.referencedTables.length > 0 && !completionContext.qualifier) {
+        return ["function", "sequence"];
+      }
+      return ["routine", "sequence"];
+    }
     if (completionContext.suggestColumns && completionContext.referencedTables.length > 0 && !completionContext.qualifier) return ["function"];
     return ["routine"];
   }
@@ -1678,6 +1687,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       currentSchema: scope.schema,
       keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
       functionCase: settingsStore.editorSettings.sqlFormatter.functionCase,
+      identifierCase: settingsStore.editorSettings.sqlFormatter.identifierCase,
       autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       tableCompletionSchemaQualification: settingsStore.editorSettings.tableCompletionSchemaQualification,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,

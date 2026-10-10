@@ -1,4 +1,5 @@
 import { isMacShortcutPlatform, parseShortcutParts, parseShortcutStrokes, shortcutDisplayParts } from "@/lib/editor/shortcutDisplay";
+import { isModifierDoubleTapShortcut, matchesModifierDoubleTapShortcut } from "@/lib/editor/modifierDoubleTapShortcut";
 
 export type ShortcutActionId =
   | "executeSql"
@@ -24,6 +25,7 @@ export type ShortcutActionId =
   | "undo"
   | "redo"
   | "selectAll"
+  | "selectCurrentStatement"
   | "extendSelection"
   | "addNextSelectionOccurrence"
   | "selectAllSelectionOccurrences"
@@ -37,6 +39,7 @@ export type ShortcutActionId =
   | "toggleFold"
   | "foldAll"
   | "unfoldAll"
+  | "editCell"
   | "editTableStructure"
   | "copyCurrentRow"
   | "deleteCurrentRow"
@@ -50,6 +53,7 @@ export type ShortcutActionId =
   | "openSettings"
   | "closeTab"
   | "closeOtherTabs"
+  | "closeWindow"
   | "focusSearch"
   | "focusDatabaseSelect"
   | "quickOpen"
@@ -85,6 +89,7 @@ export type ShortcutActionId =
   | "pasteSidebarSelection"
   | "editSidebarConnection"
   | "disconnectSidebarConnection"
+  | "disconnectAllActiveConnections"
   | "openDataInNewTab"
   | "viewTableDdl"
   | "sendSelectionToAi"
@@ -104,6 +109,7 @@ export interface ShortcutDefinition {
   scope: ShortcutScope;
   defaultShortcut: string;
   inputKind?: "keyboard" | "modifier-only";
+  supportsModifierDoubleTap?: boolean;
 }
 
 export type ShortcutSettings = Record<ShortcutActionId, string>;
@@ -322,6 +328,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: "Mod+A",
   },
   {
+    id: "selectCurrentStatement",
+    labelKey: "settings.shortcutSelectCurrentStatement",
+    scope: "editor",
+    defaultShortcut: "Mod+Shift+E",
+  },
+  {
     id: "extendSelection",
     labelKey: "settings.shortcutExtendSelection",
     scope: "editor",
@@ -398,6 +410,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutUnfoldAll",
     scope: "editor",
     defaultShortcut: foldAllDefaultShortcut("unfoldAll"),
+  },
+  {
+    id: "editCell",
+    labelKey: "settings.shortcutEditCell",
+    scope: "grid",
+    defaultShortcut: "F2",
   },
   {
     id: "editTableStructure",
@@ -478,6 +496,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: closeOtherTabsDefaultShortcut(),
   },
   {
+    id: "closeWindow",
+    labelKey: "settings.shortcutCloseWindow",
+    scope: "global",
+    defaultShortcut: "Shift+Mod+W",
+  },
+  {
     id: "focusSearch",
     labelKey: "settings.shortcutFocusSearch",
     scope: "global",
@@ -496,12 +520,14 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   },
   {
     id: "quickOpen",
+    supportsModifierDoubleTap: true,
     labelKey: "settings.shortcutQuickOpen",
     scope: "global",
     defaultShortcut: "Mod+P",
   },
   {
     id: "globalSearch",
+    supportsModifierDoubleTap: true,
     labelKey: "settings.shortcutGlobalSearch",
     scope: "global",
     defaultShortcut: "Mod+Alt+F",
@@ -713,6 +739,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: "Shift+Mod+F12",
   },
   {
+    id: "disconnectAllActiveConnections",
+    labelKey: "sidebar.disconnectAllActiveConnections",
+    scope: "global",
+    defaultShortcut: "",
+  },
+  {
     id: "copySidebarSelection",
     labelKey: "settings.shortcutCopySidebarSelection",
     scope: "sidebar",
@@ -778,6 +810,7 @@ function hasExplicitShortcut(settings: Partial<ShortcutSettings> | undefined, ac
 }
 
 function shortcutsUseSameKeys(first: string, second: string, platform = globalThis.navigator?.platform || ""): boolean {
+  if (isModifierDoubleTapShortcut(first) || isModifierDoubleTapShortcut(second)) return matchesModifierDoubleTapShortcut(first, second, platform);
   const comparisonKey = (shortcut: string) =>
     formatShortcut(shortcut, platform)
       .trim()

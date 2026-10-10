@@ -933,6 +933,9 @@ export const saveHistory = forward("saveHistory");
 export const loadHistory = forward("loadHistory");
 export const searchHistory = forward("searchHistory");
 export const loadHistoryConnectionOptions = forward("loadHistoryConnectionOptions");
+export const loadTaskRuns = forward("loadTaskRuns");
+export const loadTaskRun = forward("loadTaskRun");
+export const loadTaskRunItems = forward("loadTaskRunItems");
 export const loadRedisHistory = forward("loadRedisHistory");
 export const clearHistory = forward("clearHistory");
 export const clearHistoryBySource = forward("clearHistoryBySource");
@@ -980,6 +983,7 @@ export type { AiConfigItem };
 export type {
   AppSupportInfo,
   AiMessage,
+  AiToolCallRef,
   AiCompletionRequest,
   AiTaskContract,
   AiStreamChunk,

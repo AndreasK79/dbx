@@ -1,4 +1,7 @@
 import type { DatabaseType } from "@/types/database";
+import { supportsOracleDatabaseLinks } from "@/lib/database/oracleDatabaseLinks";
+import { isOracleReservedKeyword } from "@/lib/sql/sqlIdentifier";
+import { tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
 
 export type SqlParameterValueKind = "string" | "number" | "boolean" | "null" | "raw";
 
@@ -64,6 +67,8 @@ export interface SqlParameterOptions {
 const PARAMETER_NAME_RE = /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u;
 const PARAMETER_NAME_START_RE = /[\p{L}_]/u;
 const PARAMETER_NAME_CHAR_RE = /[\p{L}\p{N}_]/u;
+const ORACLE_OBJECT_PREFIX_KEYWORDS = new Set(["from", "join", "update", "into", "table", "delete"]);
+const ORACLE_TABLE_LIST_BOUNDARIES = new Set(["select", "from", "where", "group", "having", "order", "connect", "start", "union", "intersect", "minus", "for", "returning", "set", "values"]);
 const SQL_SERVER_TEMP_TABLE_CONTEXT_KEYWORDS = new Set(["table", "from", "join", "into", "update", "truncate"]);
 const MYSQL_ROUTINE_LABEL_STATEMENTS = new Set(["begin", "loop", "while", "repeat"]);
 const MYSQL_ROUTINE_LABEL_CONTEXTS = new Set(["begin", "then", "else", "do", "loop", "repeat"]);
@@ -324,7 +329,7 @@ function decodeMyBatisXmlComparisonEntities(sql: string, databaseType?: Database
     const next = sql[i + 1];
 
     if (ch === "'" || ch === '"' || ch === "`") {
-      i = skipQuoted(sql, i, ch);
+      i = skipQuoted(sql, i, ch, databaseType);
       continue;
     }
     if (ch === "[") {
@@ -391,6 +396,7 @@ function findSqlParameterOccurrences(sql: string, options?: SqlParameterOptions)
   const supportsNamedParameters = databaseType !== "saphana" && databaseType !== "neo4j" && databaseType !== "nebula";
   const enabledSyntaxes = options?.enabledSyntaxes ? new Set(options.enabledSyntaxes) : null;
   const isSyntaxEnabled = (syntax: SqlParameterSyntax) => !enabledSyntaxes || enabledSyntaxes.has(syntax);
+  const separatedOracleDatabaseLinks = isSyntaxEnabled("sqlserver") ? collectSeparatedOracleDatabaseLinks(sql, databaseType) : new Set<number>();
   const complexTypeFieldSeparators = supportsNamedParameters && isSyntaxEnabled("named") ? collectComplexTypeFieldSeparators(sql, databaseType) : new Set<number>();
   const duckDbStructFieldSeparators = supportsNamedParameters && isSyntaxEnabled("named") && databaseType === "duckdb" ? collectDuckDbStructFieldSeparators(sql) : new Set<number>();
   const triggerPseudoRecordFieldStarts = supportsNamedParameters && isSyntaxEnabled("named") ? collectTriggerPseudoRecordFieldStarts(sql, databaseType) : new Set<number>();
@@ -429,7 +435,7 @@ function findSqlParameterOccurrences(sql: string, options?: SqlParameterOptions)
         i = foreach.end;
         continue;
       }
-      const where = readMyBatisWhereAt(sql, i);
+      const where = readMyBatisWhereAt(sql, i, databaseType);
       if (where) {
         occurrences.push({
           key: "",
@@ -453,7 +459,7 @@ function findSqlParameterOccurrences(sql: string, options?: SqlParameterOptions)
         i = quoted.end;
         continue;
       }
-      const quotedEnd = skipQuoted(sql, i, ch);
+      const quotedEnd = skipQuoted(sql, i, ch, databaseType);
       // Double quotes can delimit identifiers, so only ordinary single-quoted
       // values opt into embedded interpolation.
       if (ch === "'" && !hasSqlStringLiteralPrefix(sql, i)) {
@@ -551,7 +557,7 @@ function findSqlParameterOccurrences(sql: string, options?: SqlParameterOptions)
     }
     if (ch === "@" && isSyntaxEnabled("sqlserver")) {
       const name = readParameterName(sql, i + 1);
-      if (name && next !== "@" && sql[i - 1] !== "@" && !isOracleDatabaseLinkMarker(sql, i, options?.databaseType) && !isJdbcxMcpScopedPackage(sql, i, i + 1 + name.length) && !nativeSqlServerParameters.declared.has(name.toLowerCase()) && !nativeSqlServerParameters.ignoredStarts.has(i)) {
+      if (name && next !== "@" && sql[i - 1] !== "@" && !separatedOracleDatabaseLinks.has(i) && !isJdbcxMcpScopedPackage(sql, i, i + 1 + name.length) && !nativeSqlServerParameters.declared.has(name.toLowerCase()) && !nativeSqlServerParameters.ignoredStarts.has(i)) {
         occurrences.push({
           key: name,
           name,
@@ -616,12 +622,12 @@ function readMyBatisForeachAt(sql: string, start: number, databaseType?: Databas
   };
 }
 
-function readMyBatisWhereAt(sql: string, start: number): { body: string; end: number } | null {
+function readMyBatisWhereAt(sql: string, start: number, databaseType?: DatabaseType): { body: string; end: number } | null {
   if (!/^<where(?:\s|>)/i.test(sql.slice(start))) return null;
   const openingEnd = findXmlTagEnd(sql, start);
   if (openingEnd === -1) return null;
 
-  const close = findMatchingXmlTagClose(sql, openingEnd + 1, "where");
+  const close = findMatchingXmlTagClose(sql, openingEnd + 1, "where", databaseType);
   if (!close) return null;
   return { body: sql.slice(openingEnd + 1, close.start), end: close.end };
 }
@@ -677,7 +683,7 @@ function findMatchingXmlTagClose(sql: string, start: number, tagName: string, da
     const next = sql[i + 1];
 
     if (ch === "'" || ch === '"' || ch === "`") {
-      i = skipQuoted(sql, i, ch);
+      i = skipQuoted(sql, i, ch, databaseType);
       continue;
     }
     if (ch === "[") {
@@ -734,10 +740,52 @@ function isDuckDbCompactPrefixAliasSeparator(sql: string, index: number, databas
   return PARAMETER_NAME_CHAR_RE.test(previous) || previous === '"';
 }
 
-function isOracleDatabaseLinkMarker(sql: string, index: number, databaseType: DatabaseType | undefined): boolean {
-  if (databaseType !== "oracle" || index === 0) return false;
-  const previous = sql[index - 1];
-  return PARAMETER_NAME_CHAR_RE.test(previous) || previous === "$" || previous === "#" || previous === '"';
+function collectSeparatedOracleDatabaseLinks(sql: string, databaseType: DatabaseType | undefined): Set<number> {
+  const links = new Set<number>();
+  if (!supportsOracleDatabaseLinks(databaseType) || !sql.includes("@")) return links;
+  const tokens = tokenizeSqlSemantic(sql, "oracle")
+    .filter((token) => token.kind !== "comment")
+    .flatMap((token) => {
+      const marker = token.kind === "word" ? token.text.indexOf("@") : -1;
+      if (marker <= 0) return [token];
+      // The semantic tokenizer keeps an unquoted compact object@link in one word.
+      // Split it without changing source offsets so it uses the same context check.
+      return [
+        { ...token, text: token.text.slice(0, marker), normalized: token.normalized.slice(0, marker), span: { ...token.span, end: token.span.start + marker } },
+        { ...token, text: token.text.slice(marker), normalized: token.normalized.slice(marker), span: { ...token.span, start: token.span.start + marker } },
+      ];
+    });
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token.kind !== "word" || !token.text.startsWith("@")) continue;
+    const isObjectIdentifier = (position: number) => {
+      const candidate = tokens[position];
+      return candidate && ((candidate.kind === "quoted_identifier" && candidate.quote === '"') || (candidate.kind === "word" && /^[\p{L}_][\p{L}\p{N}_$#]*$/u.test(candidate.text) && !isOracleReservedKeyword(candidate.text)));
+    };
+    if (!isObjectIdentifier(i - 1)) continue;
+    let objectStart = i - 1;
+    while (tokens[objectStart - 1]?.text === "." && isObjectIdentifier(objectStart - 2)) objectStart -= 2;
+    const prefix = tokens[objectStart - 1]?.normalized ?? "";
+    // Require a table reference or a remote routine call. Unknown expression
+    // keywords (CONTENT, BODY, LINK) must not hide template parameters.
+    const object = tokens[i - 1];
+    const routineCall = tokens[i + 1]?.text === "(" && (object.kind === "quoted_identifier" || !isOracleReservedKeyword(object.text));
+    let objectContext = (ORACLE_OBJECT_PREFIX_KEYWORDS.has(prefix) && !(prefix === "update" && tokens[objectStart - 2]?.normalized === "for")) || routineCall;
+    // A comma can separate tables or expressions. Only a FROM list makes the
+    // following non-reserved keyword an object name, including after subqueries.
+    if (prefix === ",") {
+      for (let j = objectStart - 2; j >= 0; j -= 1) {
+        const before = tokens[j];
+        if (before.depth < token.depth || before.text === ";") break;
+        if (before.depth === token.depth && before.kind === "word" && ORACLE_TABLE_LIST_BOUNDARIES.has(before.normalized)) {
+          objectContext = before.normalized === "from" || routineCall;
+          break;
+        }
+      }
+    }
+    if (objectContext) links.add(token.span.start);
+  }
+  return links;
 }
 
 function isPostgresQuestionMarkOperator(sql: string, index: number, databaseType: DatabaseType | undefined): boolean {
@@ -882,7 +930,7 @@ function readDuckDbStructFieldSeparator(sql: string, start: number): number | nu
   return sql[separator] === ":" ? separator : null;
 }
 
-// Oracle and Dameng expose trigger rows through colon-prefixed pseudo-records,
+// Oracle, OceanBase Oracle and Dameng expose trigger rows through colon-prefixed pseudo-records,
 // unlike PostgreSQL's unprefixed NEW/OLD records. Keep ordinary :name binds enabled.
 function collectTriggerPseudoRecordFieldStarts(sql: string, databaseType?: DatabaseType): Set<number> {
   const starts = new Set<number>();
@@ -905,7 +953,7 @@ function collectTriggerPseudoRecordFieldStarts(sql: string, databaseType?: Datab
     const ch = sql[i];
     const next = sql[i + 1];
     if (ch === "'" || ch === '"' || ch === "`") {
-      i = skipQuoted(sql, i, ch);
+      i = skipQuoted(sql, i, ch, databaseType);
       continue;
     }
     if (ch === "[") {
@@ -965,7 +1013,7 @@ function collectTriggerPseudoRecordFieldStarts(sql: string, databaseType?: Datab
 }
 
 function triggerPseudoRecordDefaults(databaseType?: DatabaseType): readonly TriggerPseudoRecordName[] | null {
-  if (databaseType === "oracle") return ["new", "old", "parent"];
+  if (databaseType === "oracle" || databaseType === "oceanbase-oracle") return ["new", "old", "parent"];
   if (databaseType === "dameng") return ["new", "old", "eventinfo"];
   return null;
 }
@@ -1712,10 +1760,29 @@ function hasSqlStringLiteralPrefix(sql: string, quoteStart: number): boolean {
   return PARAMETER_NAME_CHAR_RE.test(sql[quoteStart - 1]);
 }
 
-function skipQuoted(sql: string, start: number, quote: string): number {
+function skipOracleAlternativeQuoted(sql: string, quoteStart: number): number | null {
+  if (sql[quoteStart - 1]?.toLowerCase() !== "q") return null;
+  const prefixStart = sql[quoteStart - 2]?.toLowerCase() === "n" ? quoteStart - 2 : quoteStart - 1;
+  const previous = sql[prefixStart - 1] ?? "";
+  if (PARAMETER_NAME_CHAR_RE.test(previous) || previous === "$" || previous === "#") return null;
+
+  const openerCodePoint = sql.codePointAt(quoteStart + 1);
+  if (openerCodePoint === undefined) return null;
+  const opener = String.fromCodePoint(openerCodePoint);
+  if (/\s/.test(opener)) return null;
+  const closer = ({ "[": "]", "{": "}", "(": ")", "<": ">" } as Record<string, string>)[opener] ?? opener;
+  const end = sql.indexOf(closer + "'", quoteStart + 1 + opener.length);
+  return end === -1 ? sql.length : end + closer.length + 1;
+}
+
+function skipQuoted(sql: string, start: number, quote: string, databaseType?: DatabaseType): number {
+  if (quote === "'" && (databaseType === "oracle" || databaseType === "oceanbase-oracle")) {
+    const end = skipOracleAlternativeQuoted(sql, start);
+    if (end !== null) return end;
+  }
   let i = start + 1;
   while (i < sql.length) {
-    if (sql[i] === "\\" && quote === "'" && i + 1 < sql.length) {
+    if (sql[i] === "\\" && quote === "'" && databaseType !== "oracle" && databaseType !== "oceanbase-oracle" && i + 1 < sql.length) {
       i += 2;
       continue;
     }

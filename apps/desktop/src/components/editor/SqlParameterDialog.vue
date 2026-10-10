@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import TruncatedTextTooltip from "@/components/ui/TruncatedTextTooltip.vue";
 import { loadSqlParameterHistory, rememberSqlParameterValues } from "@/lib/sql/sqlParameterHistory";
 import { substituteSqlParameters, type SqlParameterDescriptor, type SqlParameterInput, type SqlParameterSyntax, type SqlParameterValueKind } from "@/lib/sql/sqlParameters";
+import { useDialogEditorFocusRestore } from "@/composables/useDialogEditorFocusRestore";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import { useToast } from "@/composables/useToast";
 import { copyToClipboard } from "@/lib/common/clipboard";
@@ -37,6 +38,8 @@ const formRef = ref<HTMLFormElement | null>(null);
 const histories = ref<Record<string, SqlParameterInput[]>>({});
 const activeHistoryName = ref("");
 let closeHistoryTimer: ReturnType<typeof setTimeout> | undefined;
+
+const { onCloseAutoFocus: onSqlParameterDialogCloseAutoFocus } = useDialogEditorFocusRestore(open);
 
 const parameterKinds: SqlParameterValueKind[] = ["string", "number", "boolean", "null", "raw"];
 
@@ -167,7 +170,7 @@ async function copyResolvedSql() {
        outside pointerdown unless the event is prevented, hence
        @interact-outside.prevent; Escape/Cancel/Execute still close it. -->
   <Dialog :modal="false" v-model:open="open">
-    <DialogContent class="max-h-[86vh] border border-border !bg-background-solid text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]" @open-auto-focus="focusFirstParameterInputOnOpen" @interact-outside.prevent>
+    <DialogContent class="max-h-[86vh] border border-border !bg-background-solid text-foreground shadow-2xl !backdrop-blur-none sm:max-w-[720px]" @open-auto-focus="focusFirstParameterInputOnOpen" @close-auto-focus="onSqlParameterDialogCloseAutoFocus" @interact-outside.prevent>
       <!-- Form wrapper so Enter in any field submits (implicit submission → Execute). -->
       <form ref="formRef" class="grid grid-cols-[minmax(0,1fr)] gap-4" @submit.prevent="execute">
         <DialogHeader>

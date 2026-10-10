@@ -5,6 +5,7 @@ import { clearDataGridPendingSnapshot, DATA_GRID_QUICK_ENTRY_DRAFT_ROW_ID, useDa
 import { clearDataGridClipboardCopy, parseDataGridClipboard, rememberDataGridClipboardCopy } from "@/lib/dataGrid/dataGridClipboard";
 import { buildMongoUpdateDocument, MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridInputValue, mongoDocumentGridValue } from "@/lib/mongo/mongoDocumentValues";
 import type { CellValue } from "@/lib/dataGrid/cellValue";
+import { buildOrderedGridRows } from "@/lib/dataGrid/gridNewRowPlacement";
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
@@ -688,7 +689,195 @@ describe("useDataGridEditor cell mutation notifications", () => {
   });
 });
 
+describe("useDataGridEditor addRows", () => {
+  it("prepares a large batch with progress before committing one undoable change", async () => {
+    const editor = createEditor();
+    editor.newRows.value = [];
+    const progress: number[] = [];
+    const firstId = await editor.addRowsInBatches(5000, null, {
+      onProgress: ({ completed }) => {
+        progress.push(completed);
+        expect(editor.newRows.value).toEqual([]);
+        expect(editor.canUndoPendingChange.value).toBe(false);
+      },
+    });
+    expect(firstId).toBe(-1);
+    expect(progress[0]).toBe(0);
+    expect(progress.at(-1)).toBe(5000);
+    expect(progress.length).toBeGreaterThan(2);
+    expect(editor.newRows.value).toHaveLength(5000);
+    editor.undoPendingChange();
+    expect(editor.newRows.value).toEqual([]);
+  });
+
+  it("cancels a prepared batch without pending rows, undo history, or a transaction", async () => {
+    const editor = createEditor();
+    const controller = new AbortController();
+    const before = editor.newRows.value;
+    const result = await editor.addRowsInBatches(5000, null, {
+      signal: controller.signal,
+      onProgress: ({ completed }) => {
+        if (completed >= 1000) controller.abort();
+      },
+    });
+    expect(result).toBeUndefined();
+    expect(editor.newRows.value).toBe(before);
+    expect(editor.canUndoPendingChange.value).toBe(false);
+    expect(editor.transactionActive.value).toBe(false);
+  });
+
+  it("drops prepared rows if pending state changes while yielding", async () => {
+    const editor = createEditor();
+    let changed = false;
+    const result = await editor.addRowsInBatches(5000, null, {
+      onProgress: ({ completed }) => {
+        if (completed >= 1000 && !changed) {
+          editor.discardChanges();
+          changed = true;
+        }
+      },
+    });
+    expect(result).toBeUndefined();
+    expect(editor.newRows.value).toEqual([]);
+    expect(editor.canUndoPendingChange.value).toBe(false);
+  });
+
+  it("rejects a huge allocation before emitting progress or modifying pending rows", async () => {
+    const editor = createEditor();
+    const onProgress = vi.fn();
+    expect(await editor.addRowsInBatches(1_000_000_000, null, { onProgress })).toBeUndefined();
+    expect(editor.newRows.value).toEqual([[null, null, null]]);
+    expect(editor.canUndoPendingChange.value).toBe(false);
+    expect(onProgress).not.toHaveBeenCalled();
+    expect(editor.saveError.value).not.toBe("");
+  });
+
+  it("uses the cumulative cell capacity for wide tables", () => {
+    const { editor, result } = createEditorWithResult();
+    editor.newRows.value = [];
+    result.value = { columns: Array.from({ length: 2000 }, (_, index) => `column${index}`), rows: [] };
+    expect(editor.availableInsertRows.value).toBe(500);
+    editor.addRows(400);
+    expect(editor.availableInsertRows.value).toBe(100);
+    const before = editor.newRows.value;
+    editor.addRows(101);
+    expect(editor.newRows.value).toBe(before);
+    expect(editor.saveError.value).not.toBe("");
+  });
+
+  it("adds more than 1000 independent blank rows as one undoable change", async () => {
+    const editor = createEditor();
+    editor.newRows.value = [];
+
+    expect(editor.addRows(1500)).toBe(-1);
+    expect(editor.newRows.value).toHaveLength(1500);
+    expect(editor.newRowMeta.value).toHaveLength(1500);
+    expect(editor.newRows.value.at(-1)).toEqual([null, null, null]);
+    editor.newRows.value[0]![0] = "first";
+    expect(editor.newRows.value[1]).toEqual([null, null, null]);
+    await nextTick();
+
+    editor.undoPendingChange();
+    expect(editor.newRows.value).toEqual([]);
+    editor.redoPendingChange();
+    expect(editor.newRows.value).toHaveLength(1500);
+    expect(editor.newRows.value[0]).toEqual(["first", null, null]);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])("rejects an invalid count without changing pending rows: %s", (count) => {
+    const editor = createEditor();
+    expect(editor.addRows(count)).toBeUndefined();
+    expect(editor.newRows.value).toEqual([[null, null, null]]);
+    expect(editor.canUndoPendingChange.value).toBe(false);
+  });
+});
+
 describe("useDataGridEditor appendPastedRowsToNewRow", () => {
+  it("can cancel before scanning a large reusable buffer", async () => {
+    const editor = createEditor();
+    editor.newRows.value = [];
+    editor.addRows(5000);
+    const read = vi.fn(() => null);
+    Object.defineProperty(editor.newRows.value[4900]!, 0, { get: read });
+    const controller = new AbortController();
+    const before = editor.newRows.value;
+    const result = await editor.appendPastedRowsToNewRowInBatches(
+      -1,
+      Array.from({ length: 5000 }, () => ["Ada"]),
+      [0],
+      undefined,
+      {
+        signal: controller.signal,
+        onProgress: () => controller.abort(),
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "cancelled" });
+    expect(read).not.toHaveBeenCalled();
+    expect(editor.newRows.value).toBe(before);
+  });
+
+  it("preserves unrelated pending row objects when replacing a blank target", () => {
+    const editor = createEditor();
+    editor.newRows.value = [
+      [null, null, null],
+      ["keep", null, null],
+    ];
+    const retained = editor.newRows.value[1];
+    expect(editor.appendPastedRowsToNewRow(-1, [["Ada"], ["Grace"]], [0])).toEqual({ ok: true, rowCount: 2 });
+    expect(editor.newRows.value[2]).toBe(retained);
+    editor.undoPendingChange();
+    expect(editor.newRows.value).toEqual([
+      [null, null, null],
+      ["keep", null, null],
+    ]);
+  });
+
+  it("keeps recent undo and redo available while bounding history for a million pending cells", () => {
+    const { editor, result } = createEditorWithResult();
+    result.value = { columns: Array.from({ length: 50 }, (_, i) => `c${i}`), rows: [] };
+    editor.newRows.value = [];
+    editor.addRows(20_000);
+    for (let i = 0; i < 6; i++) editor.applyCellValue(-1, 0, `edit-${i}`);
+    editor.undoPendingChange();
+    expect(editor.newRows.value[0]![0]).toBe("edit-4");
+    editor.undoPendingChange();
+    expect(editor.newRows.value[0]![0]).toBe("edit-3");
+    expect(editor.canUndoPendingChange.value).toBe(false);
+    editor.redoPendingChange();
+    expect(editor.newRows.value[0]![0]).toBe("edit-4");
+  });
+
+  it("cancels a large paste without consuming blank rows or adding undo history", async () => {
+    const editor = createEditor();
+    const controller = new AbortController();
+    const before = editor.newRows.value;
+    const result = await editor.appendPastedRowsToNewRowInBatches(
+      -1,
+      Array.from({ length: 5000 }, () => ["Ada"]),
+      [0],
+      undefined,
+      {
+        signal: controller.signal,
+        onProgress: ({ completed }) => {
+          if (completed >= 1000) controller.abort();
+        },
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "cancelled" });
+    expect(editor.newRows.value).toBe(before);
+    expect(editor.newRows.value).toEqual([[null, null, null]]);
+    expect(editor.canUndoPendingChange.value).toBe(false);
+  });
+
+  it("rejects a clipboard batch exceeding pending cell capacity atomically", () => {
+    const { editor, result } = createEditorWithResult();
+    result.value = { columns: Array.from({ length: 2000 }, (_, index) => `column${index}`), rows: [] };
+    editor.addRows(499);
+    const before = editor.newRows.value;
+    expect(editor.appendPastedRowsAsNewRows([["Ada"], ["Grace"]], [0])).toEqual({ ok: false, reason: "capacity-exceeded" });
+    expect(editor.newRows.value).toBe(before);
+  });
+
   beforeEach(() => {
     mocks.getConfig.mockReturnValue({ id: "connection-1", db_type: "postgres" });
   });
@@ -890,6 +1079,63 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
     expect(editor.newRows.value).toEqual([
       ["Ada", null, null],
       ["Grace", null, null],
+    ]);
+  });
+
+  it.each(["above", "below"] as const)("keeps expanded paste rows %s the original anchor", async (position) => {
+    const editor = createEditor(undefined, true, undefined, undefined, [["source", null, null]]);
+    editor.newRows.value = [];
+    editor.addRows(1, { anchorId: 0, position });
+    await nextTick();
+
+    expect(editor.appendPastedRowsToNewRow(-1, [["Ada"], ["Grace"]], [0])).toEqual({ ok: true, rowCount: 2 });
+    const ordered = () => buildOrderedGridRows([0], editor.newRowMeta.value, editor.newRows.value.length);
+    const expected =
+      position === "above"
+        ? [
+            { kind: "new", newIndex: 0 },
+            { kind: "new", newIndex: 1 },
+            { kind: "source", sourceIndex: 0 },
+          ]
+        : [
+            { kind: "source", sourceIndex: 0 },
+            { kind: "new", newIndex: 0 },
+            { kind: "new", newIndex: 1 },
+          ];
+    expect(ordered()).toEqual(expected);
+    editor.undoPendingChange();
+    expect(editor.newRows.value).toEqual([[null, null, null]]);
+    editor.redoPendingChange();
+    expect(ordered()).toEqual(expected);
+    expect(editor.newRows.value).toEqual([
+      ["Ada", null, null],
+      ["Grace", null, null],
+    ]);
+  });
+
+  it("preserves blank rows inserted at a different anchor while expanding a paste", async () => {
+    const editor = createEditor(undefined, true, undefined, undefined, [
+      ["first", null, null],
+      ["second", null, null],
+    ]);
+    editor.newRows.value = [];
+    editor.addRows(1, { anchorId: 0, position: "below" });
+    editor.addRows(1, { anchorId: 1, position: "below" });
+    await nextTick();
+
+    editor.appendPastedRowsToNewRow(-1, [["Ada"], ["Grace"]], [0]);
+
+    expect(editor.newRows.value).toEqual([
+      ["Ada", null, null],
+      ["Grace", null, null],
+      [null, null, null],
+    ]);
+    expect(buildOrderedGridRows([0, 1], editor.newRowMeta.value, editor.newRows.value.length)).toEqual([
+      { kind: "source", sourceIndex: 0 },
+      { kind: "new", newIndex: 0 },
+      { kind: "new", newIndex: 1 },
+      { kind: "source", sourceIndex: 1 },
+      { kind: "new", newIndex: 2 },
     ]);
   });
 
@@ -1153,6 +1399,80 @@ describe("useDataGridEditor saveChanges reload", () => {
     maxMatchedRows: 1,
     message: "Cannot safely update or delete this row: more than one row matches.",
   };
+
+  it.each(["oracle", "oceanbase-oracle"] as const)("reports a concurrently deleted ROWID target without keeping an impossible retry pending (%s)", async (databaseType) => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["DELETE FROM orders_test WHERE ROWID='ROW-22'"], rollbackStatements: ["restore ROW-22"] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 0 });
+    const { editor, emit } = createSaveTestEditor({ databaseType, primaryKeys: ["__DBX_ROWID"] });
+    editor.deletedRows.value.add(1);
+
+    await editor.saveChanges();
+
+    expect(editor.saveError.value).not.toBe("");
+    expect(editor.deletedRows.value.size).toBe(0);
+    expect(editor.isSaving.value).toBe(false);
+    expect(emit).toHaveBeenCalledWith("reload", undefined, "", undefined, undefined, 100, 0);
+    expect(mocks.addHistory).toHaveBeenCalledWith(expect.objectContaining({ success: false, rollback_sql: undefined, error: editor.saveError.value }));
+  });
+
+  it("keeps a successful ROWID deletion successful", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["DELETE FROM orders_test WHERE ROWID='ROW-21'"], rollbackStatements: [] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 1 });
+    const { editor } = createSaveTestEditor({ databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"] });
+    editor.deletedRows.value.add(0);
+    await editor.saveChanges();
+    expect(editor.saveError.value).toBe("");
+    expect(mocks.addHistory).toHaveBeenCalledWith(expect.objectContaining({ success: true, affected_rows: 1 }));
+  });
+
+  it("reports partial ROWID deletion after a transactional batch and does not replay completed deletes", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["DELETE FROM orders_test WHERE ROWID='ROW-21'", "DELETE FROM orders_test WHERE ROWID='ROW-22'"], rollbackStatements: [] });
+    mocks.executeInTransaction.mockResolvedValue({ affected_rows: 1 });
+    const { editor, emit } = createSaveTestEditor({ databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"] });
+    editor.deletedRows.value.add(0);
+    editor.deletedRows.value.add(1);
+    await editor.saveChanges();
+    expect(mocks.executeInTransaction).toHaveBeenCalledTimes(1);
+    expect(editor.saveError.value).not.toBe("");
+    expect(editor.deletedRows.value.size).toBe(0);
+    expect(mocks.addHistory).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
+    expect(emit).toHaveBeenCalledWith("reload", undefined, "", undefined, undefined, 100, 0);
+    await editor.saveChanges();
+    expect(mocks.executeInTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a manual transaction's zero-row ROWID delete without claiming rollback", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["DELETE FROM orders_test WHERE ROWID='ROW-22'"], rollbackStatements: ["restore ROW-22"] });
+    mocks.executeInManualTransaction.mockResolvedValue([{ affected_rows: 0 }]);
+    const { editor } = createSaveTestEditor({ databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"], manualTransactionSessionId: "manual-1" });
+    editor.deletedRows.value.add(1);
+    await editor.saveChanges();
+    expect(editor.saveError.value).not.toBe("");
+    expect(editor.deletedRows.value.size).toBe(0);
+    expect(mocks.addHistory).toHaveBeenCalledWith(expect.objectContaining({ success: false, rollback_sql: undefined }));
+  });
+
+  it("retains ROWID deletes when execution fails instead of treating the error as an already-missing target", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["delete ROW-22"], rollbackStatements: [] });
+    mocks.executeBatch.mockRejectedValue(new Error("delete connection failed"));
+    const { editor, emit } = createSaveTestEditor({ databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"] });
+    editor.deletedRows.value.add(1);
+    await editor.saveChanges();
+    expect(editor.saveError.value).toContain("delete connection failed");
+    expect(editor.deletedRows.value).toEqual(new Set([1]));
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake a protected LOB PL/SQL block's unknown update count for a missed ROWID delete", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["BEGIN\nDELETE FROM orders_test WHERE ROWID='ROW-22';\nIF SQL%ROWCOUNT <> 1 THEN RAISE_APPLICATION_ERROR(-20001, 'LOB target changed or missing; reload before saving'); END IF;\nEND;"], rollbackStatements: [] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 0 });
+    const { editor } = createSaveTestEditor({ databaseType: "oceanbase-oracle", primaryKeys: ["__DBX_ROWID"] });
+    editor.deletedRows.value.add(1);
+    await editor.saveChanges();
+    expect(editor.saveError.value).toBe("");
+    expect(editor.deletedRows.value.size).toBe(0);
+    expect(mocks.addHistory).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
 
   it("refuses a keyless save when the server counts more than one row matching the predicate the save sends", async () => {
     mocks.prepareDataGridSave.mockResolvedValue({

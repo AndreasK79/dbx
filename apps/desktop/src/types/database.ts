@@ -4,6 +4,7 @@ import type { SqlFormatDialect } from "@/lib/sql/sqlFormatter";
 import type { MultiDbExecutionTarget, MultiDbResultRunExecution } from "@/types/sqlExecution";
 import type { DatabaseType } from "@/types/generated/databaseTypes";
 import type { PluginAiRecommendation } from "@/types/pluginAiRecommendations";
+import type { GraphResult } from "@/lib/graph/graphResult";
 
 export type { DatabaseType } from "@/types/generated/databaseTypes";
 
@@ -157,6 +158,8 @@ export interface ConnectionConfig {
   redis_database_aliases?: Record<string, string>;
   /** Key-search templates for the Redis browser. Non-empty overrides global settings. */
   redis_key_templates?: string[];
+  /** Default Redis glob pattern applied when opening a new key-browser tab. */
+  redis_key_filter?: string;
   redis_key_grouping?: import("@/lib/redis/redisKeyGrouping").RedisKeyGrouping;
   etcd_endpoints?: string;
   gbase_server?: string;
@@ -1214,10 +1217,10 @@ export interface ConstraintInfo {
   match_type?: string | null;
   on_update?: string | null;
   on_delete?: string | null;
-  deferrable: boolean;
-  initially_deferred: boolean;
-  enabled: boolean;
-  valid: boolean;
+  deferrable?: boolean | null;
+  initially_deferred?: boolean | null;
+  enabled?: boolean | null;
+  valid?: boolean | null;
 }
 
 export interface PartitionInfo {
@@ -1327,6 +1330,7 @@ export interface QueryResult {
   columns: string[];
   /** Typed Neo4j node properties; source columns remain unchanged for paging. */
   neo4j_node_cells?: import("@/lib/neo4j/neo4jNodeResult").Neo4jNodeCell[];
+  graph_data?: GraphResult;
   /** One SRID per geometry/geography column (first non-null observed). */
   spatial_columns?: SpatialColumn[];
   /**
@@ -1621,6 +1625,12 @@ export interface SqlColumnReference {
   scope_id?: number;
 }
 
+export interface SqlGroupByViolation {
+  span: SqlTextSpan;
+  column: string;
+  qualifier?: string | null;
+}
+
 export interface SqlReferenceScope {
   id: number;
   parent_id?: number | null;
@@ -1630,6 +1640,7 @@ export interface SqlReferenceAnalysis {
   tables: SqlTableReference[];
   columns: SqlColumnReference[];
   scopes?: SqlReferenceScope[];
+  group_by_violations?: SqlGroupByViolation[];
 }
 
 export type TreeNodeType =
@@ -1659,6 +1670,7 @@ export type TreeNodeType =
   | "package-body"
   | "group-columns"
   | "group-indexes"
+  | "group-database-indexes"
   | "group-fkeys"
   | "group-triggers"
   | "group-events"
@@ -1672,6 +1684,8 @@ export type TreeNodeType =
   | "group-materialized-views"
   | "group-procedures"
   | "group-functions"
+  | "group-internal-functions"
+  | "group-udf-functions"
   | "group-types"
   | "group-sequences"
   | "group-synonyms"
@@ -1961,7 +1975,7 @@ export interface QueryPageJumpProgress {
   targetPage: number;
 }
 
-export type TabOutputView = "result" | "summary" | "explain" | "chart" | "messages" | "profile";
+export type TabOutputView = "result" | "graph" | "summary" | "explain" | "chart" | "messages" | "profile";
 
 export type RedisResultViewMode = "grid" | "console";
 
@@ -2486,6 +2500,8 @@ export interface TransferTaskConfig {
   targetTableNameCase: TransferTableNameCase;
   quoteTargetColumnNames: boolean;
   batchSize: number;
+  /** Optional per-source-table transfer filter (bare WHERE or a full SELECT). */
+  tableFilters?: Record<string, string>;
   /** Legacy-compatible rebuild flag; true takes precedence over the saved DML mode. */
   dropTargetBeforeCreate?: boolean;
   /** Legacy field only. Saved confirmation is always ignored and reset to false. */

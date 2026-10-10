@@ -10,6 +10,7 @@ import com.dbx.agent.CompletionAssistantRequest;
 import com.dbx.agent.CompletionAssistantResponse;
 import com.dbx.agent.ConfiguredJdbcAgent;
 import com.dbx.agent.ConnectParams;
+import com.dbx.agent.ConstraintInfo;
 import com.dbx.agent.DatabaseInfo;
 import com.dbx.agent.DdlBuilder;
 import com.dbx.agent.ExecuteQueryOptions;
@@ -298,13 +299,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 return List.of();
             }
             String baseSql = """
-                SELECT OBJECT_NAME, OBJECT_TYPE
-                FROM ALL_OBJECTS
-                WHERE OWNER = ? AND OBJECT_TYPE IN (%s)
+                SELECT o.OBJECT_NAME, o.OBJECT_TYPE, c.COMMENTS
+                FROM ALL_OBJECTS o
+                LEFT JOIN ALL_TAB_COMMENTS c ON c.OWNER = o.OWNER AND c.TABLE_NAME = o.OBJECT_NAME
+                    AND o.OBJECT_TYPE IN ('TABLE', 'VIEW')
+                WHERE o.OWNER = ? AND o.OBJECT_TYPE IN (%s)
                 """.stripIndent().trim();
             MetadataSql query = oceanBaseMetadataSql(
                 String.format(baseSql, placeholders(objectTypes.size())),
-                "OBJECT_NAME, OBJECT_TYPE",
+                "OBJECT_NAME, OBJECT_TYPE, COMMENTS",
                 "OBJECT_NAME",
                 """
                 ORDER BY CASE OBJECT_TYPE
@@ -334,7 +337,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                     while (rs.next()) {
                         String objectType = rs.getString(2);
                         result.add(new ObjectInfo(rs.getString(1),
-                            "PACKAGE BODY".equals(objectType) ? "PACKAGE_BODY" : objectType, owner, null));
+                            "PACKAGE BODY".equals(objectType) ? "PACKAGE_BODY" : objectType, owner, rs.getString(3)));
                     }
                 }
             }
@@ -680,8 +683,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         args.addAll(objectTypes);
         String sql = baseSql;
         if (constraints.hasFilter()) {
-            sql += " AND UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'";
-            args.add(constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT));
+            sql += " AND (UPPER(" + nameColumn + ") LIKE ? ESCAPE '\\'"
+                + " OR UPPER(c.COMMENTS) LIKE ? ESCAPE '\\')";
+            String pattern = constraints.fuzzyLikePattern().toUpperCase(Locale.ROOT);
+            args.add(pattern);
+            args.add(pattern);
         }
         sql += "\n" + orderSql;
         if (constraints.hasLimit()) {
@@ -912,7 +918,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT c.COLUMN_NAME, c.DATA_TYPE, c.NULLABLE, c.DATA_PRECISION, c.DATA_SCALE,
-                    c.DATA_LENGTH, c.CHAR_LENGTH, c.DATA_DEFAULT, cc.COMMENTS,
+                    c.DATA_LENGTH, c.CHAR_LENGTH, c.CHAR_USED, c.DATA_DEFAULT, cc.COMMENTS,
                     CASE WHEN pk.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK
                 FROM ALL_TAB_COLUMNS c
                 LEFT JOIN ALL_COL_COMMENTS cc
@@ -946,7 +952,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                         Integer charLen = intOrNull(rs, "CHAR_LENGTH");
                         result.add(new ColumnInfo(
                             name,
-                            formatDataType(baseType, numPrec, numScale, dataLen, charLen),
+                            formatDataType(baseType, numPrec, numScale, dataLen, charLen, rs.getString("CHAR_USED")),
                             "Y".equalsIgnoreCase(rs.getString("NULLABLE")),
                             defaultValue,
                             rs.getInt("IS_PK") == 1,
@@ -1318,6 +1324,84 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     }
 
     @Override
+    public List<ConstraintInfo> listConstraints(String schema, String table) {
+        return unchecked(() -> {
+            String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
+            String sql = """
+                SELECT c.CONSTRAINT_NAME, c.CONSTRAINT_TYPE, c.SEARCH_CONDITION,
+                       c.STATUS, c.VALIDATED, c.DEFERRABLE, c.DEFERRED, c.GENERATED,
+                       cc.COLUMN_NAME, tc.NULLABLE
+                FROM ALL_TABLES t
+                LEFT JOIN ALL_CONSTRAINTS c ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME
+                    AND c.CONSTRAINT_TYPE IN ('P', 'U', 'C')
+                LEFT JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = c.OWNER
+                    AND cc.TABLE_NAME = c.TABLE_NAME AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME
+                LEFT JOIN ALL_TAB_COLUMNS tc ON tc.OWNER = t.OWNER
+                    AND tc.TABLE_NAME = t.TABLE_NAME AND tc.COLUMN_NAME = cc.COLUMN_NAME
+                WHERE t.OWNER = ? AND t.TABLE_NAME = ?
+                ORDER BY c.CONSTRAINT_NAME, cc.POSITION
+                """.stripIndent().trim();
+            Map<String, ConstraintInfo> result = new LinkedHashMap<>();
+            try (var stmt = requireConnection().prepareStatement(sql)) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    boolean visible = false;
+                    while (rs.next()) {
+                        visible = true;
+                        String name = rs.getString("CONSTRAINT_NAME");
+                        if (name == null) continue;
+                        String column = rs.getString("COLUMN_NAME");
+                        String condition = rs.getString("SEARCH_CONDITION");
+                        // NOT NULL already appears in the columns tab, as for native Oracle.
+                        if ("C".equals(rs.getString("CONSTRAINT_TYPE"))
+                            && "GENERATED NAME".equals(rs.getString("GENERATED"))
+                            && "N".equals(rs.getString("NULLABLE"))
+                            && column != null && condition != null
+                            && condition.matches("\\s*" + Pattern.quote(quoteIdentifier(column))
+                                + "\\s+(?i:IS\\s+NOT\\s+NULL)\\s*")) continue;
+                        ConstraintInfo constraint = result.get(name);
+                        if (constraint == null) {
+                            String type = switch (rs.getString("CONSTRAINT_TYPE")) {
+                                case "P" -> "PRIMARY KEY";
+                                case "U" -> "UNIQUE";
+                                default -> "CHECK";
+                            };
+                            constraint = new ConstraintInfo(name, type, condition,
+                                new ArrayList<>(),
+                                constraintState(rs.getString("DEFERRABLE"), "DEFERRABLE", "NOT DEFERRABLE"),
+                                constraintState(rs.getString("DEFERRED"), "DEFERRED", "IMMEDIATE"),
+                                constraintState(rs.getString("STATUS"), "ENABLED", "DISABLED"),
+                                constraintState(rs.getString("VALIDATED"), "VALIDATED", "NOT VALIDATED"));
+                            result.put(name, constraint);
+                        }
+                        if (column != null) constraint.columns().add(column);
+                    }
+                    if (!visible) throw new SQLException("Table does not exist or is not accessible", "42000");
+                }
+            }
+            return result.values().stream().map(constraint -> {
+                String definition = constraint.definition();
+                if (definition == null) definition = "";
+                if (!constraint.constraint_type().equals("CHECK")) {
+                    definition = constraint.constraint_type() + " (" + String.join(", ",
+                        constraint.columns().stream().map(OceanBaseOracleAgent::quoteIdentifier).toList()) + ")";
+                }
+                return new ConstraintInfo(constraint.name(), constraint.constraint_type(), definition,
+                    constraint.columns(), constraint.deferrable(), constraint.initially_deferred(),
+                    constraint.enabled(), constraint.valid());
+            }).toList();
+        });
+    }
+
+    private static Boolean constraintState(String value, String yes, String no) {
+        if (yes.equals(value)) return true;
+        if (no.equals(value)) return false;
+        return null;
+    }
+
+    @Override
     public List<TriggerInfo> listTriggers(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
@@ -1448,17 +1532,23 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         return false;
     }
 
-    private static String formatDataType(String base, Integer numPrec, Integer numScale, Integer dataLen, Integer charLen) {
+    private static String formatDataType(String base, Integer numPrec, Integer numScale, Integer dataLen, Integer charLen, String charUsed) {
         if (base == null || base.isBlank()) {
             return "";
         }
         return switch (base.toUpperCase(Locale.ROOT)) {
-            case "VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR" -> {
+            case "VARCHAR2", "CHAR" -> {
+                if ("B".equalsIgnoreCase(charUsed) && dataLen != null) yield base + "(" + dataLen + " BYTE)";
+                if ("C".equalsIgnoreCase(charUsed) && charLen != null) yield base + "(" + charLen + " CHAR)";
+                Integer len = charLen == null ? dataLen : charLen;
+                yield len == null ? base : base + "(" + len + ")";
+            }
+            case "NVARCHAR2", "NCHAR" -> {
                 Integer len = charLen == null ? dataLen : charLen;
                 yield len == null ? base : base + "(" + len + ")";
             }
             case "NUMBER" -> {
-                if (numPrec != null && numScale != null && numScale > 0) {
+                if (numPrec != null && numScale != null && numScale != 0) {
                     yield base + "(" + numPrec + "," + numScale + ")";
                 }
                 if (numPrec != null && numPrec > 0) {
