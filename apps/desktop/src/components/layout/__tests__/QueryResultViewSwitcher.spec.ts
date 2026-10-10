@@ -101,7 +101,7 @@ describe("QueryResultViewSwitcher error badge", () => {
   }
 
   it("badges the summary button with the error count", async () => {
-    const { host } = await mountSwitcher(false, { canShowSummary: true, errorCount: 2 });
+    const { host } = await mountSwitcher(false, false, { canShowSummary: true, errorCount: 2 });
     const summary = summaryButton(host)!;
     expect(summary.getAttribute("aria-label")).toBe("Summary (2)");
     const badge = summary.querySelector("span.rounded-full.bg-destructive");
@@ -109,7 +109,7 @@ describe("QueryResultViewSwitcher error badge", () => {
   });
 
   it("renders no badge on clean runs", async () => {
-    const { host } = await mountSwitcher(false, { canShowSummary: true });
+    const { host } = await mountSwitcher(false, false, { canShowSummary: true });
     const summary = summaryButton(host)!;
     expect(summary.getAttribute("aria-label")).toBe("Summary");
     expect(summary.querySelector("span.rounded-full.bg-destructive")).toBeNull();
