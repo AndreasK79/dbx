@@ -546,6 +546,10 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       }
     }
     touchPendingChanges();
+    // Save errors ride along while failed edits are still pending (they may fail
+    // again on the next save); undo/redo onto a snapshot with nothing pending
+    // leaves the error describing edits that no longer exist, so clear it there.
+    if (!hasPendingChanges.value) saveError.value = "";
   }
 
   function boundedPendingHistory(history: readonly PendingChangesHistorySnapshot[], snapshot: PendingChangesHistorySnapshot): PendingChangesHistorySnapshot[] {
@@ -2330,6 +2334,9 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     queuedAutoSaveChanges.clear();
     editingCell.value = null;
     clearPendingChangeHistory();
+    // Discarding — the Discard action or a result replacement invalidating the
+    // pending state — is an explicit dismiss boundary for save errors.
+    saveError.value = "";
     touchPendingChanges();
     exitTransaction();
   }
