@@ -117,6 +117,7 @@ import { restoreGlobalNavigationEntry } from "@/lib/navigation/globalNavigationE
 import {
   isBrowserReloadShortcut,
   isBrowserTaskManagerShortcut,
+  isCloseAllTabsShortcut,
   isCloseOtherTabsShortcut,
   isCloseTabShortcut,
   isCloseWindowShortcut,
@@ -170,7 +171,7 @@ import type { DriverStoreFocus, DriverStoreTab } from "@/lib/connection/agentDri
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/backend/safeStorage";
 import { webPath } from "@/lib/common/webPath";
 import { eventTargetAllowsNativeClipboard, shouldBlockAppNativeSelectAll } from "@/lib/common/clipboard";
-import { APP_FONT_SANS_CSS_VAR, DATA_GRID_FONT_FAMILY_CSS_VAR, DEFAULT_DATA_GRID_FONT_FAMILY, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FONT_MONO_CSS_VAR } from "@/lib/app/appFonts";
+import { APP_FONT_SANS_CSS_VAR, DATA_GRID_FONT_FAMILY_CSS_VAR, DEFAULT_DATA_GRID_FONT_FAMILY, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, EDITOR_FONT_FAMILY_CSS_VAR, FONT_MONO_CSS_VAR } from "@/lib/app/appFonts";
 import { DATA_GRID_TYPE_COLOR_KEYS, dataGridTypeColorCssVar, resolveActiveDataGridTypeColors } from "@/lib/dataGrid/dataGridTypeColorScheme";
 import { rankSavedSqlHistory } from "@/lib/savedSql/savedSqlHistory";
 import { useUiFontFamilyPreview } from "@/composables/useUiFontFamilyPreview";
@@ -179,6 +180,7 @@ import { savedSqlErrorMessage } from "@/lib/savedSql/savedSqlErrors";
 import { savedSqlDefaultTargetForWrite } from "@/lib/savedSql/savedSqlExecutionTarget";
 import { countActiveUpdateBlockingTasks } from "@/lib/app/appUpdateTaskGuard";
 import { initSavedSqlEditorPositions } from "@/lib/app/savedSqlEditorPosition";
+import { dismissOpenModalSurface } from "@/lib/ui/modalSurface";
 import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { objectBrowserTablesToAiTreeNodes } from "@/lib/ai/objectBrowserToAiTargets";
 import { aiTargetFromTab, type AiConversationBinding } from "@/lib/ai/aiConversationBinding";
@@ -1710,7 +1712,9 @@ function applyUiFontFamily(fontFamily: string, options?: { debouncePluginBumpMs?
 // Mirrors the editor font onto the global mono token so host mono surfaces and
 // plugin sandboxes (via the plugin bridge's token push) follow the same setting.
 function applyMonoFontFamily(fontFamily: string) {
-  writeRootToken(FONT_MONO_CSS_VAR, fontFamily || DEFAULT_MONO_FONT_FAMILY);
+  const value = fontFamily || DEFAULT_MONO_FONT_FAMILY;
+  writeRootToken(FONT_MONO_CSS_VAR, value);
+  writeRootToken(EDITOR_FONT_FAMILY_CSS_VAR, value);
 }
 
 function applyDataGridFontFamily(fontFamily: string) {
@@ -4270,6 +4274,10 @@ function refreshPluginWorkbenches(pluginId: string): void {
 }
 
 async function closeActiveSurface() {
+  // Cmd+W (and the native macOS "Close Tab" menu item) must not reach the surface behind
+  // an open modal dialog. While a dialog owns the window the keystroke dismisses that
+  // dialog instead, exactly like Esc, so the shortcut never goes dead on the user.
+  if (dismissOpenModalSurface()) return;
   if (showSettingsPage.value) {
     closeSettingsPage();
   } else if (showPluginCenter.value) {
@@ -4446,6 +4454,12 @@ async function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     appTabBarRef.value?.closeOtherActiveTabs();
+    return;
+  }
+  if (isCloseAllTabsShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    appTabBarRef.value?.closeAllTabs();
     return;
   }
   if (isDisconnectAllActiveConnectionsShortcut(e, shortcuts)) {

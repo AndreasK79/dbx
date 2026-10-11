@@ -134,6 +134,10 @@ pub struct TableExportRequest {
     pub numeric_column_right_align: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_comments: Option<Vec<Option<String>>>,
+    /// Render `column_comments` as a second header row (names on row 1,
+    /// comments on row 2, data from row 3) instead of overriding headers.
+    #[serde(default)]
+    pub header_comment_rows: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_filter: Option<bool>,
     /// SQL format only: when set, the export is packaged as a `.zip` archive
@@ -1339,6 +1343,7 @@ async fn try_export_native_table_stream(
                 request.date_time_format.as_deref(),
                 request.numeric_column_right_align,
                 request.auto_filter.unwrap_or(true),
+                request.header_comment_rows,
             )?;
             let result = stream_native_table_rows(
                 state,
@@ -2037,6 +2042,7 @@ async fn export_table_data_core_inner(
                 request.date_time_format.as_deref(),
                 request.numeric_column_right_align,
                 request.auto_filter.unwrap_or(true),
+                request.header_comment_rows,
             )?;
 
             loop {
@@ -2613,6 +2619,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -2785,6 +2792,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -2960,6 +2968,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -2989,6 +2998,7 @@ mod tests {
             rows: vec![vec![json!(1_700_000_000_000_i64), json!(21.5)]],
             numeric_column_right_align: false,
             auto_filter: None,
+            header_comment_rows: false,
         })
         .unwrap();
         let sheet = read_zip_entry(&workbook, "xl/worksheets/sheet1.xml");
@@ -3029,6 +3039,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3075,6 +3086,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3116,6 +3128,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3165,6 +3178,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3226,6 +3240,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3281,6 +3296,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3364,6 +3380,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3429,6 +3446,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3496,6 +3514,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3555,6 +3574,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: None,
         };
@@ -3603,6 +3623,7 @@ mod tests {
             numeric_column_right_align: false,
             column_comments: None,
             auto_filter: None,
+            header_comment_rows: false,
             split_max_mb: None,
             omit_database_qualifier: Some(true),
         };
@@ -4277,6 +4298,7 @@ esac"#,
             ],
             numeric_column_right_align: false,
             auto_filter: None,
+            header_comment_rows: false,
         };
         let workbook = build_xlsx_workbook(&data).expect("XLSX build should succeed");
 

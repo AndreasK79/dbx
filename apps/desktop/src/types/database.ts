@@ -2161,6 +2161,7 @@ export interface QueryTab {
     columnName: string;
   };
   executionId?: string;
+  liveQueryMessages?: QueryMessage[];
   /** Ephemeral result run targeted by the current execution; null means a new run is being produced. */
   executingResultRunId?: string | null;
   isExplaining?: boolean;

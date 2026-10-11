@@ -2607,6 +2607,8 @@ async fn stream_select_query_inner_with_mode(
     on_item: &mut impl FnMut(PostgresQueryStreamItem) -> Result<(), String>,
     force_unnamed: bool,
 ) -> Result<u64, String> {
+    let _ = drain_postgres_notices(client).await;
+    let _notice_subscription = subscribe_postgres_notices(client).await;
     let client = &EncodingClient::new(client);
     match stream_select_query_prepared(client, sql, row_limit, on_item, force_unnamed).await {
         Ok(rows) => Ok(rows),
@@ -2803,24 +2805,54 @@ fn postgres_connection_key_from_row(row: &tokio_postgres::Row) -> Option<Postgre
     Some((row.try_get::<_, String>(1).ok()?, row.try_get::<_, String>(2).ok()?, row.try_get::<_, String>(0).ok()?))
 }
 
-/// Per-physical-connection notice state: the ordered buffer drained into query
-/// results, plus an optional live tap that fires the moment the connection's
-/// driver task polls each notice off the wire.
-pub struct PostgresNoticeSink {
-    notices: Mutex<Vec<QueryMessage>>,
-    tap: Mutex<Option<StatementNoticeTap>>,
+/// Per-physical-connection notice state: the capped message buffer drained
+/// into query results, plus the two live channels — the task-scoped message
+/// sink subscribed while a statement runs (`with_query_messages` streaming)
+/// and the per-statement notice tap that streams to the UI while the
+/// statement is still executing.
+#[derive(Default)]
+struct PostgresNoticeBuffer {
+    messages: dbx_driver_support::query_messages::QueryMessageBuffer,
+    sink: Option<dbx_driver_support::query_messages::QueryMessageSink>,
+    tap: Option<StatementNoticeTap>,
 }
 
-impl PostgresNoticeSink {
-    fn new() -> Self {
-        Self { notices: Mutex::new(Vec::new()), tap: Mutex::new(None) }
+/// Notice buffers for live connections, keyed by connection identity. Entries
+/// are weak so they disappear once the pooled connection (and its driver
+/// task) is dropped.
+type PostgresNoticeBuffers = HashMap<PostgresConnectionKey, Weak<Mutex<PostgresNoticeBuffer>>>;
+
+struct PostgresNoticeSubscription(Arc<Mutex<PostgresNoticeBuffer>>);
+
+impl Drop for PostgresNoticeSubscription {
+    fn drop(&mut self) {
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).sink = None;
     }
 }
 
-/// Notice sinks for live connections, keyed by connection identity. Entries
-/// are weak so they disappear once the pooled connection (and its driver
-/// task) is dropped.
-type PostgresNoticeBuffers = HashMap<PostgresConnectionKey, Weak<PostgresNoticeSink>>;
+fn capture_postgres_notice(buffer: &Mutex<PostgresNoticeBuffer>, message: QueryMessage) {
+    // The task-scoped sink rides the buffer lock; the tap is cloned out and
+    // fired after the lock is released so a slow consumer can never stall
+    // this driver task.
+    let tap = {
+        let mut buffer = buffer.lock().unwrap_or_else(|error| error.into_inner());
+        if let (Some(message), Some(sink)) = (buffer.messages.push(message.clone()), buffer.sink.as_ref()) {
+            sink(message);
+        }
+        buffer.tap.clone()
+    };
+    if let Some(tap) = tap {
+        tap.emit(&message);
+    }
+}
+
+async fn subscribe_postgres_notices(client: &deadpool_postgres::Client) -> Option<PostgresNoticeSubscription> {
+    let key = postgres_client_key(&EncodingClient::new(client)).await?;
+    let buffer = postgres_notice_buffers().lock().unwrap_or_else(|error| error.into_inner()).get(&key)?.upgrade()?;
+    buffer.lock().unwrap_or_else(|error| error.into_inner()).sink =
+        dbx_driver_support::query_messages::current_query_message_sink();
+    Some(PostgresNoticeSubscription(buffer))
+}
 
 fn postgres_notice_buffers() -> &'static Mutex<PostgresNoticeBuffers> {
     static BUFFERS: OnceLock<Mutex<PostgresNoticeBuffers>> = OnceLock::new();
@@ -3001,8 +3033,8 @@ where
             // No query can complete before the connection is being driven, so
             // the notice sink is handed to the driver task through a slot
             // that is filled once the backend PID is known.
-            let notice_sink_slot = Arc::new(Mutex::new(None::<Arc<PostgresNoticeSink>>));
-            let task_sink = Arc::clone(&notice_sink_slot);
+            let notice_buffer = Arc::new(Mutex::new(None::<Arc<Mutex<PostgresNoticeBuffer>>>));
+            let task_buffer = Arc::clone(&notice_buffer);
             let conn_task = tokio::spawn(async move {
                 loop {
                     match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
@@ -3014,16 +3046,10 @@ where
                                 detail: error.detail().map(str::to_string),
                                 hint: error.hint().map(str::to_string),
                             };
-                            let sink = task_sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-                            match sink {
-                                Some(sink) => {
-                                    // Fire the live tap outside all locks so a slow
-                                    // consumer can never stall this driver task.
-                                    let tap = sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-                                    if let Some(tap) = tap {
-                                        tap.emit(&message);
-                                    }
-                                    sink.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(message);
+                            let buffer = task_buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+                            match buffer {
+                                Some(buffer) => {
+                                    capture_postgres_notice(&buffer, message);
                                 }
                                 None => {
                                     log::info!("[postgres][notice] {}: {}", message.severity, message.message);
@@ -3046,12 +3072,12 @@ where
             // by the driver task instead. Never fail the connection over this.
             if let Ok(row) = client.query_one(POSTGRES_CONNECTION_IDENTITY_SQL, &[]).await {
                 if let Some(key) = postgres_connection_key_from_row(&row) {
-                    let sink = Arc::new(PostgresNoticeSink::new());
-                    let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let buffer = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+                    let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|error| error.into_inner());
                     buffers.retain(|_, weak| weak.strong_count() > 0);
-                    buffers.insert(key, Arc::downgrade(&sink));
+                    buffers.insert(key, Arc::downgrade(&buffer));
                     drop(buffers);
-                    *notice_sink_slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sink);
+                    *notice_buffer.lock().unwrap_or_else(|error| error.into_inner()) = Some(buffer);
                 }
             }
 
@@ -3136,15 +3162,15 @@ async fn postgres_client_key(client: &deadpool_postgres::Client) -> Option<Postg
 }
 
 fn take_notices_for_key(key: &PostgresConnectionKey) -> Vec<QueryMessage> {
-    let sink = {
+    let buffer = {
         let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         buffers.retain(|_, weak| weak.strong_count() > 0);
         buffers.get(key).and_then(Weak::upgrade)
     };
-    let Some(sink) = sink else {
+    let Some(buffer) = buffer else {
         return Vec::new();
     };
-    let notices = std::mem::take(&mut *sink.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    let notices = buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).messages.take();
     notices
 }
 
@@ -3172,12 +3198,12 @@ pub async fn drain_postgres_transaction_notices(
 /// returns to the pool — a later statement on the same connection can never
 /// have its tap cleared by an earlier one.
 pub struct PostgresNoticeTapGuard {
-    sink: Arc<PostgresNoticeSink>,
+    buffer: Arc<Mutex<PostgresNoticeBuffer>>,
 }
 
 impl Drop for PostgresNoticeTapGuard {
     fn drop(&mut self) {
-        *self.sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = None;
     }
 }
 
@@ -3210,9 +3236,9 @@ fn attach_postgres_notice_tap_for_key(
 ) -> Option<PostgresNoticeTapGuard> {
     let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     buffers.retain(|_, weak| weak.strong_count() > 0);
-    let sink = buffers.get(key).and_then(Weak::upgrade)?;
-    *sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tap);
-    Some(PostgresNoticeTapGuard { sink })
+    let buffer = buffers.get(key).and_then(Weak::upgrade)?;
+    buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = Some(tap);
+    Some(PostgresNoticeTapGuard { buffer })
 }
 
 /// Delivers a failed statement's notices inside its error message.
@@ -8886,6 +8912,8 @@ pub async fn execute_query_with_max_rows(
     // by this statement are attached to its result.
     let _ = drain_postgres_notices(client).await;
 
+    let _notice_subscription = subscribe_postgres_notices(client).await;
+
     let result = if postgres_statement_returns_rows(sql) {
         execute_select_query(client, sql, start, row_limit).await
     } else {
@@ -9750,6 +9778,8 @@ async fn execute_query_with_max_rows_inner(
         None => None,
     };
 
+    let _notice_subscription = subscribe_postgres_notices(client).await;
+
     let result = if postgres_statement_returns_rows(sql) {
         if prefer_text_protocol {
             execute_select_text(client, sql, start, row_limit, None, progress_clock.as_deref()).await
@@ -9793,6 +9823,26 @@ async fn execute_query_with_max_rows_inner(
             Err(append_postgres_notices_to_error(error, &notices))
         }
     }
+}
+
+pub async fn execute_query_on_client_unnamed(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    max_rows: usize,
+) -> Result<QueryResult, String> {
+    execute_query_with_max_rows_inner(client, sql, Some(max_rows), false, None, true, None).await
+}
+
+/// [`execute_query_on_client_unnamed`] with a live notice tap — the
+/// manual-transaction statement loop streams each statement's notices while
+/// it runs, the same wiring as the pooled multi-statement loop.
+pub async fn execute_query_on_client_unnamed_tapped(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    max_rows: usize,
+    notice_tap: Option<&StatementNoticeTap>,
+) -> Result<QueryResult, String> {
+    execute_query_with_max_rows_inner(client, sql, Some(max_rows), false, None, true, notice_tap).await
 }
 
 // Sibling of `postgres_indexes_for_relations_sql` (~line 3288), for a single
@@ -11647,6 +11697,78 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires DBX_TEST_POSTGRES_URL pointing at a PostgreSQL database"]
+    async fn postgres_query_messages_stream_and_survive_cancel_and_error() {
+        use dbx_driver_support::query_messages::{with_query_messages, QueryMessagesCallback};
+        let url = std::env::var("DBX_TEST_POSTGRES_URL").expect("DBX_TEST_POSTGRES_URL");
+        let pool = connect_with_local_timezone(&url, Duration::from_secs(10), "UTC").await.unwrap();
+        for outcome in ["success", "error", "cancel"] {
+            let emitted = Arc::new(Mutex::new(Vec::new()));
+            let output = Arc::clone(&emitted);
+            let token = CancellationToken::new();
+            let cancel = token.clone();
+            let callback: QueryMessagesCallback = Arc::new(move |messages| {
+                output.lock().unwrap().extend(messages);
+                if outcome == "cancel" {
+                    cancel.cancel();
+                }
+            });
+            let ending =
+                if outcome == "error" { "RAISE EXCEPTION 'expected failure';" } else { "RAISE NOTICE 'second';" };
+            let sql = format!("DO $$ BEGIN RAISE NOTICE 'first'; PERFORM pg_sleep(2); {ending} END $$");
+            let budget = crate::execution::DbOperationBudget::with_defaults();
+            let query = with_query_messages(
+                Some(callback),
+                execute_query_with_max_rows_and_cancel(&pool, &sql, None, Some(token), budget, None, false),
+            );
+            let mut query = std::pin::pin!(query);
+            if outcome != "cancel" {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        tokio::select! {
+                            result = query.as_mut() => panic!("query finished before displaying its first notice: {result:?}"),
+                            _ = tokio::time::sleep(Duration::from_millis(20)) => {
+                                if !emitted.lock().unwrap().is_empty() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }).await.unwrap();
+                assert_eq!(emitted.lock().unwrap()[0].message, "first");
+            }
+            let result = query.await;
+            if outcome == "success" {
+                assert_eq!(result.unwrap().messages.len(), 2);
+                assert_eq!(emitted.lock().unwrap().len(), 2);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(emitted.lock().unwrap().len(), 1);
+                assert_eq!(emitted.lock().unwrap()[0].message, "first");
+            }
+            assert!(execute_query_with_max_rows(&pool, "SELECT 1", None).await.unwrap().messages.is_empty());
+        }
+    }
+
+    #[test]
+    fn postgres_notice_subscriptions_are_connection_scoped_and_removed_on_drop() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&received);
+        let first = Arc::new(Mutex::new(PostgresNoticeBuffer {
+            sink: Some(Arc::new(move |message| output.lock().unwrap().push(message))),
+            ..Default::default()
+        }));
+        let second = Mutex::new(PostgresNoticeBuffer::default());
+        let subscription = PostgresNoticeSubscription(Arc::clone(&first));
+        capture_postgres_notice(&first, test_query_message("first connection"));
+        capture_postgres_notice(&second, test_query_message("second connection"));
+        assert_eq!(received.lock().unwrap().len(), 1);
+        drop(subscription);
+        capture_postgres_notice(&first, test_query_message("after cancellation"));
+        assert_eq!(received.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn postgres_connection_identity_normalizes_vendor_numeric_types_to_text() {
         assert!(POSTGRES_CONNECTION_IDENTITY_SQL.contains("pg_backend_pid()::text"));
@@ -11854,14 +11976,16 @@ mod tests {
         );
     }
 
-    fn test_notice_sink(notices: Vec<QueryMessage>) -> Arc<PostgresNoticeSink> {
-        Arc::new(PostgresNoticeSink { notices: Mutex::new(notices), tap: Mutex::new(None) })
+    fn test_notice_buffer() -> Arc<Mutex<PostgresNoticeBuffer>> {
+        Arc::new(Mutex::new(PostgresNoticeBuffer::default()))
     }
 
     #[test]
     fn take_notices_for_key_returns_buffered_notices_and_empties_buffer() {
         let key = ("test-host".to_string(), "9000001".to_string(), "9000001".to_string());
-        let buffer = test_notice_sink(vec![test_query_message("first"), test_query_message("second")]);
+        let buffer = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+        capture_postgres_notice(&buffer, test_query_message("first"));
+        capture_postgres_notice(&buffer, test_query_message("second"));
         postgres_notice_buffers()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -11876,7 +12000,7 @@ mod tests {
 
         // The buffer was drained but stays registered while the connection lives.
         assert!(take_notices_for_key(&key).is_empty());
-        buffer.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(test_query_message("third"));
+        capture_postgres_notice(&buffer, test_query_message("third"));
         let notices = take_notices_for_key(&key);
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].message, "third");
@@ -11886,8 +12010,10 @@ mod tests {
     fn take_notices_for_key_prunes_dead_buffers_and_misses_return_empty() {
         let live_key = ("test-host".to_string(), "9000002".to_string(), "9000002".to_string());
         let dead_key = ("test-host".to_string(), "9000003".to_string(), "9000003".to_string());
-        let live = test_notice_sink(vec![test_query_message("live")]);
-        let dead = test_notice_sink(vec![test_query_message("dead")]);
+        let live = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+        capture_postgres_notice(&live, test_query_message("live"));
+        let dead = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+        capture_postgres_notice(&dead, test_query_message("dead"));
         {
             let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             buffers.insert(live_key.clone(), Arc::downgrade(&live));
@@ -11915,8 +12041,10 @@ mod tests {
         // keeps notice attribution separate.
         let key_a = ("server-a".to_string(), "5432".to_string(), "42".to_string());
         let key_b = ("server-b".to_string(), "5432".to_string(), "42".to_string());
-        let buffer_a = test_notice_sink(vec![test_query_message("from-a")]);
-        let buffer_b = test_notice_sink(vec![test_query_message("from-b")]);
+        let buffer_a = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+        capture_postgres_notice(&buffer_a, test_query_message("from-a"));
+        let buffer_b = Arc::new(Mutex::new(PostgresNoticeBuffer::default()));
+        capture_postgres_notice(&buffer_b, test_query_message("from-b"));
         {
             let mut buffers = postgres_notice_buffers().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             buffers.insert(key_a.clone(), Arc::downgrade(&buffer_a));
@@ -11931,19 +12059,9 @@ mod tests {
         assert_eq!(notices_b[0].message, "from-b");
     }
 
-    /// Mirrors the driver task's `AsyncMessage::Notice` arm: fire the tap, then
-    /// buffer the message.
-    fn deliver_notice_to_sink(sink: &PostgresNoticeSink, message: QueryMessage) {
-        let tap = sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        if let Some(tap) = tap {
-            tap.emit(&message);
-        }
-        sink.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(message);
-    }
-
     #[test]
     fn tap_fires_in_order_and_buffer_still_collects() {
-        let sink = test_notice_sink(Vec::new());
+        let buffer = test_notice_buffer();
         let streamed = Arc::new(Mutex::new(Vec::new()));
         let tap = {
             let streamed = streamed.clone();
@@ -11951,70 +12069,65 @@ mod tests {
                 streamed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(message.clone());
             })
         };
-        *sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tap);
+        buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = Some(tap);
 
-        deliver_notice_to_sink(&sink, test_query_message("first"));
-        deliver_notice_to_sink(&sink, test_query_message("second"));
+        capture_postgres_notice(&buffer, test_query_message("first"));
+        capture_postgres_notice(&buffer, test_query_message("second"));
 
         let streamed = streamed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         assert_eq!(streamed.iter().map(|message| message.message.as_str()).collect::<Vec<_>>(), ["first", "second"]);
-        assert_eq!(
-            sink.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().map(|message| message
-                .message
-                .as_str())
-                .collect::<Vec<_>>(),
-            ["first", "second"]
-        );
+        let buffered = buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).messages.drain();
+        assert_eq!(buffered.iter().map(|message| message.message.as_str()).collect::<Vec<_>>(), ["first", "second"]);
     }
 
     #[test]
     fn tap_guard_clears_on_drop() {
-        let sink = test_notice_sink(Vec::new());
+        let buffer = test_notice_buffer();
         {
             let tap = StatementNoticeTap::new(|_message| {});
-            *sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tap);
-            let guard = PostgresNoticeTapGuard { sink: Arc::clone(&sink) };
-            assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some());
+            buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = Some(tap);
+            let guard = PostgresNoticeTapGuard { buffer: Arc::clone(&buffer) };
+            assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_some());
             drop(guard);
         }
-        assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_none());
+        assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_none());
     }
 
     #[test]
     fn tap_not_cleared_across_statements() {
         // A successor statement's tap must survive the predecessor's guard drop.
-        let sink = test_notice_sink(Vec::new());
+        let buffer = test_notice_buffer();
         {
             let first = StatementNoticeTap::new(|_message| {});
-            let guard = PostgresNoticeTapGuard { sink: Arc::clone(&sink) };
-            *sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(first);
+            let guard = PostgresNoticeTapGuard { buffer: Arc::clone(&buffer) };
+            buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = Some(first);
             drop(guard);
         }
-        assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_none());
+        assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_none());
         let second = StatementNoticeTap::new(|_message| {});
-        *sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(second);
-        assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some());
+        buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap = Some(second);
+        assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_some());
     }
 
     #[test]
     fn attach_postgres_notice_tap_returns_none_without_registry_entry() {
-        // No sink registered for this key: attach must degrade to None instead
+        // No buffer registered for this key: attach must degrade to None instead
         // of failing the statement.
         let key = ("missing-host".to_string(), "9999999".to_string(), "9999999".to_string());
         assert!(attach_postgres_notice_tap_for_key(&key, StatementNoticeTap::new(|_message| {})).is_none());
 
-        // With a registered live sink the same call attaches and keeps it
+        // With a registered live buffer the same call attaches and keeps it
         // registered for later statements.
-        let sink = test_notice_sink(Vec::new());
+        let buffer = test_notice_buffer();
         postgres_notice_buffers()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(key.clone(), Arc::downgrade(&sink));
+            .insert(key.clone(), Arc::downgrade(&buffer));
         let guard = attach_postgres_notice_tap_for_key(&key, StatementNoticeTap::new(|_message| {}));
         assert!(guard.is_some());
-        assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some());
+        assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_some());
         drop(guard);
-        assert!(sink.tap.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_none());
+        assert!(buffer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).tap.is_none());
     }
 
     #[test]

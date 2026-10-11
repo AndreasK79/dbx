@@ -1546,6 +1546,10 @@ export interface ExecuteMultiProgress {
   error?: BackendError;
 }
 
+export async function subscribeQueryMessages(_executionId: string, _onMessages: (messages: import("@/types/database").QueryMessage[]) => void): Promise<() => void> {
+  return () => {};
+}
+
 export async function executeMultiWithProgress(
   connectionId: string,
   database: string,
@@ -3522,6 +3526,7 @@ export async function exportQueryResultXlsx(
   // text the grid already formatted (milliseconds included) and never goes
   // through a `numFmt` display pattern.
   _dateTimeFormat?: string,
+  headerCommentRows?: boolean,
 ): Promise<void> {
   const { buildXlsxWorkbook } = await import("@/lib/export/xlsxExport");
   const workbook = buildXlsxWorkbook({
@@ -3532,6 +3537,7 @@ export async function exportQueryResultXlsx(
     rows,
     numericColumnRightAlign,
     autoFilter,
+    headerCommentRows,
   });
   const fileName = filePath.split(/[\\/]/).pop() || "export.xlsx";
   const blob = new Blob([new Uint8Array(workbook)], {
@@ -3555,6 +3561,7 @@ export async function exportQueryResultsXlsx(
     rows: readonly (readonly XlsxCellValue[])[];
     numericColumnRightAlign?: boolean;
     autoFilter?: boolean;
+    headerCommentRows?: boolean;
   }[],
   autoFilter?: boolean,
   _dateTimeFormat?: string,

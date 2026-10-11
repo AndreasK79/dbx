@@ -9,6 +9,17 @@ use dbx_core::models::connection::DatabaseType;
 use dbx_core::query_cancel::RunningTaskMetadata;
 use dbx_core::sql::split_sql_statements;
 
+fn query_messages_callback(
+    app: &AppHandle,
+    execution_id: Option<&str>,
+) -> Option<dbx_core::query::query_messages::QueryMessagesCallback> {
+    let execution_id = execution_id?.to_string();
+    let app = app.clone();
+    Some(Arc::new(move |messages| {
+        let _ = app.emit("query-messages", serde_json::json!({ "executionId": execution_id, "messages": messages }));
+    }))
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExecuteMultiProgress {
@@ -147,6 +158,7 @@ fn manual_transaction_command_error(error: String) -> ManualTransactionCommandEr
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_query(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     connection_id: String,
     database: String,
@@ -172,26 +184,30 @@ pub async fn execute_query(
     });
     let cancel_token = registered_query.as_ref().map(|query| query.token());
 
-    let result = dbx_core::query::execute_sql_statement_with_options_typed(
-        &state,
-        &connection_id,
-        &database,
-        &sql,
-        schema.as_deref(),
-        cancel_token,
-        dbx_core::query::QueryExecutionOptions {
-            max_rows,
-            fetch_size,
-            page_size,
-            row_offset,
-            catalog,
-            result_session_id,
-            client_session_id,
-            timeout_secs,
-            execution_id,
-            execution_mode: execution_mode.unwrap_or_default(),
-            ..Default::default()
-        },
+    let messages = query_messages_callback(&app, execution_id.as_deref());
+    let result = dbx_core::query::query_messages::with_query_messages(
+        messages,
+        dbx_core::query::execute_sql_statement_with_options_typed(
+            &state,
+            &connection_id,
+            &database,
+            &sql,
+            schema.as_deref(),
+            cancel_token,
+            dbx_core::query::QueryExecutionOptions {
+                max_rows,
+                fetch_size,
+                page_size,
+                row_offset,
+                catalog,
+                result_session_id,
+                client_session_id,
+                timeout_secs,
+                execution_id,
+                execution_mode: execution_mode.unwrap_or_default(),
+                ..Default::default()
+            },
+        ),
     )
     .await;
 
@@ -353,38 +369,42 @@ pub async fn execute_multi(
         schema
     );
 
-    let result = dbx_core::query::batch_progress::with_coalesced_execute_multi_progress(progress, |progress| {
-        dbx_core::query::execute_multi_core_with_options_for_client_and_progress_typed(
-            &state,
-            &connection_id,
-            &database,
-            &sql,
-            schema.as_deref(),
-            cancel_token,
-            dbx_core::query::QueryExecutionOptions {
-                max_rows,
-                fetch_size,
-                page_size,
-                row_offset,
-                max_result_bytes,
-                result_key_columns: result_key_columns.unwrap_or_default(),
-                table_data_preview: table_data_preview.unwrap_or(false),
-                catalog,
-                result_session_id,
-                client_session_id,
-                timeout_secs,
-                await_cancel_completion: false,
-                execution_id,
-                use_transaction,
-                continue_on_error: continue_on_error.unwrap_or(false),
-                execution_mode: execution_mode.unwrap_or_default(),
-                preserve_explicit_transaction: preserve_explicit_transaction.unwrap_or(false),
-                notice_sink,
-                notice_tap: None,
-            },
-            progress,
-        )
-    })
+    let messages = query_messages_callback(&app, execution_id.as_deref());
+    let result = dbx_core::query::query_messages::with_query_messages(
+        messages,
+        dbx_core::query::batch_progress::with_coalesced_execute_multi_progress(progress, |progress| {
+            dbx_core::query::execute_multi_core_with_options_for_client_and_progress_typed(
+                &state,
+                &connection_id,
+                &database,
+                &sql,
+                schema.as_deref(),
+                cancel_token,
+                dbx_core::query::QueryExecutionOptions {
+                    max_rows,
+                    fetch_size,
+                    page_size,
+                    row_offset,
+                    max_result_bytes,
+                    result_key_columns: result_key_columns.unwrap_or_default(),
+                    table_data_preview: table_data_preview.unwrap_or(false),
+                    catalog,
+                    result_session_id,
+                    client_session_id,
+                    timeout_secs,
+                    await_cancel_completion: false,
+                    execution_id,
+                    use_transaction,
+                    continue_on_error: continue_on_error.unwrap_or(false),
+                    execution_mode: execution_mode.unwrap_or_default(),
+                    preserve_explicit_transaction: preserve_explicit_transaction.unwrap_or(false),
+                    notice_sink,
+                    notice_tap: None,
+                },
+                progress,
+            )
+        }),
+    )
     .await;
     // Tail delivery: everything the interval gate is still holding must reach
     // the UI before this command's invoke result lands on the same channel.
@@ -619,22 +639,26 @@ pub async fn execute_in_manual_transaction(
             batcher.handle(statement_index, message.clone());
         })
     });
-    let result = dbx_core::query::execute_in_manual_transaction_with_options(
-        &state,
-        &txn_session_id,
-        &sql,
-        &database,
-        schema.as_deref(),
-        dbx_core::query::ManualTransactionExecutionOptions {
-            max_rows,
-            table_data_preview: table_data_preview.unwrap_or(false),
-            page_size,
-            result_session_id,
-            classification_sql,
-            execution_id,
-            timeout_secs,
-            notice_sink,
-        },
+    let messages = query_messages_callback(&app, execution_id.as_deref());
+    let result = dbx_core::query::query_messages::with_query_messages(
+        messages,
+        dbx_core::query::execute_in_manual_transaction_with_options(
+            &state,
+            &txn_session_id,
+            &sql,
+            &database,
+            schema.as_deref(),
+            dbx_core::query::ManualTransactionExecutionOptions {
+                max_rows,
+                table_data_preview: table_data_preview.unwrap_or(false),
+                page_size,
+                result_session_id,
+                classification_sql,
+                execution_id,
+                timeout_secs,
+                notice_sink,
+            },
+        ),
     )
     .await;
     // Tail delivery, same contract as execute_multi.

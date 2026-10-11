@@ -1,4 +1,5 @@
 pub mod batch_progress;
+pub use dbx_drivers::query_messages;
 pub mod document_ops;
 pub mod hbase_ops;
 pub mod mongo_ops;
@@ -6934,57 +6935,20 @@ async fn execute_manual_txn_postgres_statement(
     row_limit: usize,
     notice_tap: Option<&crate::types::StatementNoticeTap>,
 ) -> Result<db::QueryResult, String> {
-    // The transaction session holds its connection for its lifetime, so notices
-    // from BEGIN/SET search_path and earlier statements accumulate in its
-    // buffer; drain them so each statement's result carries only its own
-    // messages (same hygiene as the pooled executors).
-    let _ = db::postgres::drain_postgres_notices(conn).await;
-    // Attach the live tap strictly after the pre-drain so no straggler notice
-    // from an earlier statement streams; the guard drops at the end of this
-    // frame, before the session's next statement attaches its own tap.
-    let _tap_guard = match notice_tap {
-        Some(tap) => db::postgres::attach_postgres_notice_tap(conn, tap.clone()).await,
-        None => None,
-    };
-    let result = if db::postgres::postgres_statement_returns_rows(sql) {
-        db::postgres::execute_select_query_unnamed(conn, sql, std::time::Instant::now(), row_limit).await
-    } else {
-        // Plain formatter: tokio-postgres's `Error` Display is just "db error",
-        // and this path's callers wrap the message without resolving cursor
-        // markers, so the marker-carrying form would leak into user-facing text.
-        let affected = conn.execute_typed(sql, &[]).await.map_err(db::postgres::pg_error_to_string_plain)?;
-        Ok(db::QueryResult {
-            columns: vec![],
-            column_types: Vec::new(),
-            column_sortables: vec![],
-            spatial_columns: vec![],
-            spatial_values: vec![],
-            rows: vec![],
-            affected_rows: affected,
-            execution_time_ms: 0,
-            server_execute_time_us: None,
-            query_timings_ms: None,
-            truncated: false,
-            session_id: None,
-            has_more: false,
-            elasticsearch_raw_body: None,
-            messages: Vec::new(),
-        })
-    };
-    match result {
-        Ok(mut result) => {
-            result.messages = db::postgres::drain_postgres_notices(conn).await;
-            Ok(result)
-        }
-        Err(error) => {
-            // A failed statement still reports the notices it raised before
-            // failing — they ride the error message (the UI renders it
-            // pre-formatted), and draining clears the buffer for the session's
-            // teardown statements.
-            let notices = db::postgres::drain_postgres_notices(conn).await;
-            Err(db::postgres::append_postgres_notices_to_error(error, &notices))
-        }
-    }
+    // Upstream consolidated the statement runner — stale-notice pre-drain,
+    // rows/non-rows classification, the per-statement notice drain, and the
+    // failed-statement notices riding the error — into
+    // execute_query_on_client_unnamed; the tapped variant threads our live
+    // streaming through it (the tap guard attaches strictly after the
+    // pre-drain inside the helper, so a straggler from an earlier statement
+    // can never stream). Marker strip: this path's callers wrap the message
+    // without resolving cursor-position markers (only the pooled dispatcher
+    // resolves them), so the marker-carrying formatter the helper uses for
+    // the pooled path must not leak into user-facing text here.
+    db::postgres::execute_query_on_client_unnamed_tapped(conn, sql, row_limit, notice_tap).await.map_err(|mut error| {
+        while crate::sql_error_position::take_marker(&mut error).is_some() {}
+        error
+    })
 }
 
 async fn execute_manual_txn_mysql_statement(
