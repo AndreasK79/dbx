@@ -7,6 +7,7 @@ vi.mock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => true }));
 vi.mock("@/lib/backend/api", () => ({
   executeMulti: mocks.executeMulti,
   subscribeQueryMessages: mocks.subscribe,
+  withStatementNotices: vi.fn(async (_executionId, _onStatementNotices, run) => run()),
   closeClientConnectionSession: vi.fn().mockResolvedValue(undefined),
   closeQuerySession: vi.fn().mockResolvedValue(undefined),
   saveOpenTabsState: vi.fn().mockResolvedValue(undefined),

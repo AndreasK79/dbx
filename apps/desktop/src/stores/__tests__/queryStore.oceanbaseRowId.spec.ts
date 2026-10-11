@@ -23,6 +23,7 @@ vi.mock("@/lib/backend/api", () => ({
   listObjects: mocks.listObjects,
   listTables: mocks.listTables,
   prepareQueryPaginationExecutionPlan: mocks.preparePlan,
+  withStatementNotices: vi.fn(async (_executionId, _onStatementNotices, run) => run()),
   closeClientConnectionSession: vi.fn().mockResolvedValue(undefined),
   closeQuerySession: vi.fn().mockResolvedValue(undefined),
   saveOpenTabsState: vi.fn(),
