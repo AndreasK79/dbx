@@ -2811,8 +2811,8 @@ fn postgres_connection_key_from_row(row: &tokio_postgres::Row) -> Option<Postgre
 /// and the per-statement notice tap that streams to the UI while the
 /// statement is still executing.
 #[derive(Default)]
-struct PostgresNoticeBuffer {
-    messages: dbx_driver_support::query_messages::QueryMessageBuffer,
+pub(crate) struct PostgresNoticeBuffer {
+    pub(crate) messages: dbx_driver_support::query_messages::QueryMessageBuffer,
     sink: Option<dbx_driver_support::query_messages::QueryMessageSink>,
     tap: Option<StatementNoticeTap>,
 }
@@ -2830,7 +2830,7 @@ impl Drop for PostgresNoticeSubscription {
     }
 }
 
-fn capture_postgres_notice(buffer: &Mutex<PostgresNoticeBuffer>, message: QueryMessage) {
+pub(crate) fn capture_postgres_notice(buffer: &Mutex<PostgresNoticeBuffer>, message: QueryMessage) {
     // The task-scoped sink rides the buffer lock; the tap is cloned out and
     // fired after the lock is released so a slow consumer can never stall
     // this driver task.
@@ -3159,6 +3159,13 @@ async fn resolve_postgres_transaction_client_key(
 async fn postgres_client_key(client: &deadpool_postgres::Client) -> Option<PostgresConnectionKey> {
     let client = &EncodingClient::new(client);
     resolve_postgres_client_key(client).await
+}
+
+pub(crate) fn postgres_query_message_buffer(
+    client: &deadpool_postgres::Client,
+) -> Option<Arc<Mutex<PostgresNoticeBuffer>>> {
+    let key = cached_postgres_client_key(client)??;
+    postgres_notice_buffers().lock().unwrap_or_else(|e| e.into_inner()).get(&key).and_then(Weak::upgrade)
 }
 
 fn take_notices_for_key(key: &PostgresConnectionKey) -> Vec<QueryMessage> {

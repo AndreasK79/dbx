@@ -7180,6 +7180,15 @@ mod tests {
             fail_once: Option<&'static str>,
         }
 
+        fn record_snapshot_command(commands: &Mutex<Vec<String>>, statement: &str) {
+            // Infrastructure identity lookup for PostgreSQL notice attribution is
+            // unrelated to manual-transaction snapshot rotation semantics.
+            if statement.starts_with("SELECT pg_backend_pid()") {
+                return;
+            }
+            commands.lock().unwrap().push(statement.to_string());
+        }
+
         impl deadpool_postgres::Connect for SnapshotTestConnect {
             fn connect(
                 &self,
@@ -7219,13 +7228,7 @@ mod tests {
                                     (b'n', Vec::new())
                                 }
                                 b'E' => {
-                                    // The notice-buffer connection-identity probe
-                                    // (SELECT pg_backend_pid()…) is infrastructure,
-                                    // not a user statement; keep it out of the
-                                    // recorded command stream.
-                                    if !statement.contains("pg_backend_pid") {
-                                        commands.lock().unwrap().push(statement.clone());
-                                    }
+                                    record_snapshot_command(&commands, &statement);
                                     if fail_once == Some(statement.as_str()) {
                                         fail_once = None;
                                         (b'E', b"SERROR\0CXX000\0Mtest statement failed\0\0".to_vec())
@@ -11969,6 +11972,7 @@ for line in sys.stdin:
             selected_tables: None,
             part_cooldown_ms: 0,
             skip_relational_constraints: false,
+            failure_log_enabled: true,
         }
     }
 

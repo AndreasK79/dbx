@@ -41,6 +41,7 @@ import {
   analyzeEditableQueryEditability,
   analyzeSelectStructureForDisplay,
   foldUnquotedPostgresMetadataIdentifier,
+  hasTopLevelKeyword,
   resolveMetadataColumnName,
   resolveSourceColumnsByOrdinal,
   sourceColumnsForResult,
@@ -108,14 +109,14 @@ import { replaceSqlServerLeadingUseQuery, sqlServerLeadingUseScript, switchesDat
 import { classifySqlRisk } from "@/lib/sql/sqlRisk";
 import { externalSqlFileDisplayTitles, normalizeExternalSqlPath } from "@/lib/sql/sqlFileOpen";
 import { clearDataGridPendingSnapshot, clearDataGridPendingSnapshotsForTab } from "@/composables/useDataGridEditor";
-import { combineDataGridOrderByInputs } from "@/composables/useDataGridSortBuilder";
+import { combineDataGridOrderByInputs, copyDataGridSortBuilderStatesForTab } from "@/composables/useDataGridSortBuilder";
 import { beginClosingDataGridViewSnapshotsForTab, clearDataGridViewSnapshot, clearDataGridViewSnapshotsForTab } from "@/lib/dataGrid/dataGridViewStateCache";
 import { beginClosingBrowserState } from "@/lib/tabs/documentBrowserStateCache";
-import { clearDataGridStructuredFilterStatesForTab } from "@/lib/dataGrid/dataGridFilterBuilderPersistence";
+import { clearDataGridStructuredFilterStatesForTab, copyDataGridStructuredFilterStatesForTab } from "@/lib/dataGrid/dataGridFilterBuilderPersistence";
 import { clearDataGridSearchStatesForTab } from "@/lib/dataGrid/dataGridSearchStatePersistence";
 import { buildTabResultSnapshot, deleteTabResultSnapshot, pruneTabResultSnapshots, readTabResultSnapshot, tabResultCacheKey, writeTabResultSnapshot } from "@/lib/tabs/tabResultCache";
 import { estimateQueryResultsBytes, selectInactiveResultEvictions } from "@/lib/tabs/queryResultSize";
-import { queryResultBaseSql, queryResultExecutionSql, resultGridInstanceKey, syncTabTitleNumbers, tabDisplayTitle } from "@/lib/tabs/tabPresentation";
+import { queryResultBaseSql, queryResultExecutionSql, resultGridInstanceKey, syncTabTitleNumbers, TAB_TITLE_SUFFIX_MAX_LENGTH, tabDisplayTitle } from "@/lib/tabs/tabPresentation";
 import { isQueryExecutionErrorResult } from "@/lib/query/queryResultError";
 import { batchSqlRecoverySql, batchSqlRecoveryState, mergeBatchQueryResults, offsetBatchQueryResultIndexes, prepareBatchSqlRecovery, type BatchSqlRecoveryAction } from "@/lib/query/batchSqlRecovery";
 import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryResultArchive } from "@/lib/query/queryResultArchive";
@@ -1107,7 +1108,7 @@ export const useQueryStore = defineStore("query", () => {
   // 里而不是渲染函数里，是为了避免在 computed 求值过程中写标签状态；getter 只读
   // 参与标题计算的字段（id + 显示标题），分配编号本身不会再次触发它。
   watch(
-    () => tabs.value.map((tab) => `${tab.id}\u0000${tabDisplayTitle(tab, t)}`),
+    () => tabs.value.map((tab) => `${tab.id}\u0000${tabDisplayTitle(tab, t)}\u0000${tab.titleSuffix ?? ""}`),
     () => syncTabTitleNumbers(tabs.value, t),
     { immediate: true, flush: "sync" },
   );
@@ -2630,6 +2631,7 @@ export const useQueryStore = defineStore("query", () => {
     tabs.value.map((t) => ({
       id: t.id,
       title: t.title,
+      titleSuffix: t.titleSuffix,
       connectionId: t.connectionId,
       database: t.database,
       schema: t.schema,
@@ -4834,6 +4836,12 @@ export const useQueryStore = defineStore("query", () => {
       previewSql: original.previewSql,
     };
     initializeResultAutoSave(newTab);
+    if (newTab.mode === "data") {
+      // Seed builder state before the new grid mounts; the combined WHERE alone
+      // cannot recover which conditions belong to the manual input or quick UI.
+      copyDataGridStructuredFilterStatesForTab(id, newId);
+      copyDataGridSortBuilderStatesForTab(id, newId);
+    }
     tabs.value.splice(idx + 1, 0, newTab);
 
     const owner = groupForTab(id);
@@ -5659,6 +5667,19 @@ export const useQueryStore = defineStore("query", () => {
     if (!tab || tab.mode !== "query") return false;
     tab.title = trimmed;
     tab.customTitle = true;
+    return true;
+  }
+
+  /**
+   * Sets (or clears, with an empty string) the user-chosen suffix shown after a
+   * tab's title. The suffix replaces the automatic number for that tab only.
+   */
+  function setTabTitleSuffix(id: string, suffix: string) {
+    const tab = tabs.value.find((t) => t.id === id);
+    if (!tab) return false;
+    const trimmed = suffix.trim().slice(0, TAB_TITLE_SUFFIX_MAX_LENGTH);
+    if (trimmed) tab.titleSuffix = trimmed;
+    else delete tab.titleSuffix;
     return true;
   }
 
@@ -6497,6 +6518,7 @@ export const useQueryStore = defineStore("query", () => {
     const stableLobSource = databaseType === "oracle" ? oracleRowIdIsSafeForQuery(tab, loaded) : databaseType === "db2";
     const largeValuePreview = (databaseType === "oracle" || databaseType === "db2") && primaryKeys.length > 0 && stableLobSource && columnsAllowDeferredLobMarkers(loaded.tableMeta.columns) && queryProjectsDeferredLob(databaseType, metadataAnalysis, loaded.source.key, loaded.tableMeta.columns);
     const unchanged = { sql, metadataSql: sql, hiddenPrimaryKeys: [], largeValuePreview };
+    if (hasTopLevelKeyword(sql, ["GROUP", "HAVING"], databaseType)) return unchanged;
     const missingPrimaryKeys =
       declaredPrimaryKeys.length === 0
         ? primaryKeys.filter(
@@ -6530,9 +6552,11 @@ export const useQueryStore = defineStore("query", () => {
     if (!databaseType || !HIDDEN_QUERY_KEY_DATABASE_TYPES.has(databaseType) || !tab.connectionId) return unchanged;
 
     try {
+      if (hasTopLevelKeyword(sql, ["GROUP", "HAVING"], databaseType)) return unchanged;
       const editability = analyzeEditableQueryEditability(sql);
       if (!editability.editable || !editability.analysis) return unchanged;
       const analysis = editability.analysis;
+      if (analysis.groupByColumns?.length || analysis.hasHavingClause) return unchanged;
       const sources = editableQuerySources(analysis);
       if (sources.length !== 1 || analysis.distinct) return unchanged;
       const source = sources[0]!;
@@ -10157,6 +10181,7 @@ export const useQueryStore = defineStore("query", () => {
     rollbackTransaction,
     ensureManualTransactionSession,
     renameTab,
+    setTabTitleSuffix,
     openDatabaseBrowser,
     openDatabaseSearch,
     openDriverProfileWorkspace,

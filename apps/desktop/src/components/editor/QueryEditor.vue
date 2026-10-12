@@ -70,7 +70,7 @@ import { executableStatementRangeAtCursor, executableStatementRangeCacheForDoc, 
 
 import { looksLikeDmlStatement } from "@/lib/sql/dmlChangePreview";
 
-import { canFormatSqlForDatabaseType, formatSqlForEditing, compressSqlText } from "@/lib/sql/sqlFormatter";
+import { canFormatSqlForDatabaseType, formatSqlText, compressSqlText } from "@/lib/sql/sqlFormatter";
 import { detectAndFormatStructured } from "@/lib/sql/autoFormat";
 import { restoreSqlFromSourcePaste } from "@/lib/sql/sqlSourcePaste";
 import { enabledSqlParameterSyntaxes, resolveSqlVariableSyntaxToggles } from "@/lib/sql/sqlVariableSyntax";
@@ -132,6 +132,7 @@ import { computePasteCaretResyncTarget } from "@/lib/editor/queryEditorPasteCare
 import { extendQueryEditorSelection, runQueryEditorAltExtendSelection } from "@/lib/editor/queryEditorExtendSelection";
 import { addNextQueryEditorSelectionOccurrence, selectAllQueryEditorSelectionOccurrences } from "@/lib/editor/queryEditorOccurrenceSelection";
 import { selectLineEnds } from "@/lib/editor/selectLineEnds";
+import { scrollEditorLine } from "@/lib/editor/scrollEditorLine";
 import { createQueryEditorStringMouseSelection } from "@/lib/editor/queryEditorStringMouseSelection";
 import { createQueryEditorCompletionShortcutBindings } from "@/lib/editor/queryEditorCompletionShortcut";
 import { createQueryEditorSelectionCaseShortcutBindings } from "@/lib/editor/queryEditorSelectionCaseShortcut";
@@ -1419,6 +1420,8 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.deleteLine, (view) => codeMirrorRuntime.codeMirrorDeleteLine?.(view) ?? false),
         ...binding(shortcuts.moveLineUp, (view) => codeMirrorRuntime.codeMirrorMoveLineUp?.(view) ?? false),
         ...binding(shortcuts.moveLineDown, (view) => codeMirrorRuntime.codeMirrorMoveLineDown?.(view) ?? false),
+        ...binding(shortcuts.scrollLineUp, (view) => scrollEditorLine(view, "up")),
+        ...binding(shortcuts.scrollLineDown, (view) => scrollEditorLine(view, "down")),
         ...binding(shortcuts.copyLineUp, (view) => codeMirrorRuntime.codeMirrorCopyLineUp?.(view) ?? false),
         ...binding(shortcuts.copyLineDown, (view) => codeMirrorRuntime.codeMirrorCopyLineDown?.(view) ?? false),
         ...binding(shortcuts.undo, (view) => codeMirrorRuntime.codeMirrorUndo?.(view) ?? false),
@@ -1748,7 +1751,12 @@ async function formatCurrentSql() {
           return;
         } else {
           formattedAsSql = true;
-          formatted = await formatSqlForEditing(source, formatDialect, settingsStore.editorSettings.sqlFormatter);
+          // The explicit Format command has to say why it did nothing:
+          // `formatSqlForEditing` returns unparseable input unchanged (the right
+          // contract for format-on-save, which must never fail), which turned
+          // this command into a silent no-op. A thrown error reaches the
+          // `formatError` toast below.
+          formatted = await formatSqlText(source, formatDialect, settingsStore.editorSettings.sqlFormatter);
         }
       }
     }
@@ -2424,12 +2432,9 @@ watch(
   },
 );
 
-watch(
-  () => props.executionError,
-  () => {
-    reconfigureDiagnostics();
-  },
-);
+watch([() => props.executionError, () => props.executionErrorSql, () => props.executionErrorResult], () => {
+  reconfigureDiagnostics();
+});
 
 watch(
   () => props.statementExecutionMarkers ?? [],
