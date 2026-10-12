@@ -1081,7 +1081,11 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     );
     try {
       await waitForLargeValueSnapshot(
-        api.exportSnapshotResult({ ...selected, context: { ...selected.context, executionId }, format, quoteMode: useSettingsStore().editorSettings.csvQuoteMode, nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode) }, outputPath, controller.signal),
+        api.exportSnapshotResult(
+          { ...selected, context: { ...selected.context, executionId }, format, quoteMode: useSettingsStore().editorSettings.csvQuoteMode === "all" ? "all" : "necessary", nullLiteral: csvNullLiteralForMode(useSettingsStore().editorSettings.csvNullMode) },
+          outputPath,
+          controller.signal,
+        ),
         controller.signal,
       );
       if (!isCurrent()) throw new Error("LOB result context changed");
