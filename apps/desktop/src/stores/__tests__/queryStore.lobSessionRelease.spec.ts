@@ -16,6 +16,7 @@ vi.mock("@/lib/backend/api", () => ({
   checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
   analyzeEditableQueryEditability: vi.fn().mockResolvedValue({ editable: false, reason: "complex-query" }),
   prepareQueryPaginationExecutionPlan: vi.fn(async (options) => ({ sqlToExecute: options.sql, pageSql: options.sql, pageLimit: options.pagination.limit, pageOffset: options.pagination.offset, useAgentResultSession: true })),
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
   saveOpenTabsState: vi.fn().mockResolvedValue(undefined),
   deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
   loadSchemaCache: vi.fn().mockResolvedValue(null),
