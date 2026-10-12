@@ -19,11 +19,12 @@ use crate::csv_export::{
     push_table_csv_row_with_format, push_tsv_row, resolve_csv_delimiter, resolve_csv_quote_char, CsvQuoteMode,
     CsvTextFormat,
 };
-use crate::data_grid_sql::extra_is_auto_generated;
+use crate::data_grid_sql::DataGridPrimaryKeyMode;
 pub use crate::database_export::ExportStatus;
 use crate::database_export::{
     build_export_insert_statements_excluding_with_dialect, is_export_cancelled, is_internal_export_column,
-    BuildExportInsertStatementsOptions, SqlExportProjection, SqlInsertDialect, SqlInsertMode,
+    sql_export_excluded_primary_keys, BuildExportInsertStatementsOptions, SqlExportProjection, SqlInsertDialect,
+    SqlInsertMode,
 };
 use crate::db::agent_driver::AgentTableReadStartParams;
 use crate::models::connection::DatabaseType;
@@ -42,31 +43,6 @@ const SQL_INSERT_BATCH_SIZE: usize = 100;
 
 pub fn table_export_client_session_id(export_id: &str) -> String {
     task_client_session_id("table-export", export_id)
-}
-
-/// SQL 导出时需要排除的列名：用户选择了“不含主键”时，与 copy-as-INSERT
-/// 一致只剔除自增/identity 主键；手动赋值的主键保留，否则回放 INSERT 缺值。
-fn sql_export_excluded_columns(
-    request: &TableExportRequest,
-    primary_keys: &[String],
-    col_names: &[String],
-    column_extras: &[Option<String>],
-) -> Vec<String> {
-    if !request.exclude_primary_keys {
-        return Vec::new();
-    }
-    primary_keys
-        .iter()
-        .filter(|pk| {
-            col_names
-                .iter()
-                .position(|name| name.eq_ignore_ascii_case(pk))
-                .and_then(|index| column_extras.get(index))
-                .and_then(|extra| extra.as_deref())
-                .is_some_and(extra_is_auto_generated)
-        })
-        .cloned()
-        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,9 +91,9 @@ pub struct TableExportRequest {
     pub column_extras: Option<Vec<Option<String>>>,
     #[serde(default)]
     pub primary_keys: Option<Vec<String>>,
-    /// 导出 SQL 时是否排除主键列（对应前端数据提取设置里的“排除主键”）。
+    /// SQL INSERT 导出使用的数据提取器主键模式。
     #[serde(default)]
-    pub exclude_primary_keys: bool,
+    pub primary_key_mode: DataGridPrimaryKeyMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub where_input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1513,7 +1489,16 @@ async fn try_export_native_table_stream(
                             batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
                             preserve_original_language: false,
                         }),
-                        &sql_export_excluded_columns(request, primary_keys, col_names, column_extras),
+                        &projection.project_excluded_columns(
+                            col_names,
+                            &sql_export_excluded_primary_keys(
+                                Some(*db_type),
+                                request.primary_key_mode,
+                                primary_keys,
+                                col_names,
+                                column_extras,
+                            ),
+                        ),
                         request.insert_dialect,
                     )?;
                     write_sql_export_statements(file, statements, &mut wrote_statements)?;
@@ -2370,7 +2355,16 @@ async fn export_table_data_core_inner(
                         batch_size: Some(request.insert_mode.batch_size(SQL_INSERT_BATCH_SIZE)),
                         preserve_original_language: false,
                     }),
-                    &sql_export_excluded_columns(request, &primary_keys, &col_names, &column_extras),
+                    &projection.project_excluded_columns(
+                        &col_names,
+                        &sql_export_excluded_primary_keys(
+                            Some(db_type),
+                            request.primary_key_mode,
+                            &primary_keys,
+                            &col_names,
+                            &column_extras,
+                        ),
+                    ),
                     request.insert_dialect,
                 )?;
                 write_sql_export_statements(&mut file, statements, &mut wrote_statements)?;
@@ -2437,6 +2431,125 @@ mod tests {
     use std::io::Read;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn sql_export_primary_key_modes_keep_manual_keys_or_exclude_all_keys() {
+        let primary_keys = vec!["id".to_string(), "stat_date".to_string()];
+        let columns = vec!["id".to_string(), "stat_date".to_string()];
+        let extras = vec![Some("auto_increment".to_string()), None];
+
+        assert_eq!(
+            sql_export_excluded_primary_keys(
+                Some(DatabaseType::Mysql),
+                DataGridPrimaryKeyMode::ExcludeGenerated,
+                &primary_keys,
+                &columns,
+                &extras,
+            ),
+            vec!["id"]
+        );
+        assert_eq!(
+            sql_export_excluded_primary_keys(
+                Some(DatabaseType::Mysql),
+                DataGridPrimaryKeyMode::ExcludeAll,
+                &primary_keys,
+                &columns,
+                &extras,
+            ),
+            primary_keys
+        );
+        assert!(sql_export_excluded_primary_keys(
+            Some(DatabaseType::Mysql),
+            DataGridPrimaryKeyMode::Include,
+            &primary_keys,
+            &columns,
+            &extras
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn generated_key_export_matches_case_distinct_column_names_exactly() {
+        assert!(sql_export_excluded_primary_keys(
+            Some(DatabaseType::Postgres),
+            DataGridPrimaryKeyMode::ExcludeGenerated,
+            &["id".to_string()],
+            &["ID".to_string(), "id".to_string()],
+            &[Some("identity".to_string()), None],
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn sql_export_primary_key_exclusions_resolve_before_projection() {
+        let columns = vec!["ID".into(), "id".into(), "name".into()];
+        let projection = SqlExportProjection::resolve(
+            &columns,
+            Some(&[
+                crate::types::SqlExportColumnSelection { source_index: 0, name: "ID".into(), name_occurrence: 0 },
+                crate::types::SqlExportColumnSelection { source_index: 2, name: "name".into(), name_occurrence: 0 },
+            ]),
+        )
+        .unwrap();
+        let excluded = sql_export_excluded_primary_keys(
+            Some(DatabaseType::Postgres),
+            DataGridPrimaryKeyMode::ExcludeAll,
+            &["id".into()],
+            &columns,
+            &[],
+        );
+        let statements = build_export_insert_statements_excluding_with_dialect(
+            projection.project_insert_options(BuildExportInsertStatementsOptions {
+                database_type: Some(DatabaseType::Postgres),
+                identifier_quote: None,
+                schema: Some("public".into()),
+                table_name: Some("users".into()),
+                qualified_table_name: None,
+                columns: columns.clone(),
+                column_types: vec![Some("integer".into()), Some("integer".into()), Some("text".into())],
+                column_extras: Vec::new(),
+                spatial_columns: Vec::new(),
+                spatial_values: Vec::new(),
+                rows: vec![vec![json!(91), json!(1), json!("Ada")]],
+                batch_size: Some(100),
+                preserve_original_language: false,
+            }),
+            &projection.project_excluded_columns(&columns, &excluded),
+            SqlInsertDialect::Source,
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("users.sql");
+        let mut writer = TableExportSqlWriter::Plain(std::io::BufWriter::new(std::fs::File::create(&output).unwrap()));
+        write_sql_export_statements(&mut writer, statements, &mut false).unwrap();
+        writer.finish("users.sql").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "INSERT INTO \"public\".\"users\" (\"ID\", \"name\") VALUES (91, 'Ada');"
+        );
+    }
+
+    #[test]
+    fn sql_export_primary_key_exclusions_preserve_unique_case_fallback() {
+        assert_eq!(
+            sql_export_excluded_primary_keys(
+                Some(DatabaseType::Mysql),
+                DataGridPrimaryKeyMode::ExcludeAll,
+                &["ID".into()],
+                &["id".into(), "name".into()],
+                &[],
+            ),
+            vec!["id"]
+        );
+        assert!(sql_export_excluded_primary_keys(
+            Some(DatabaseType::Mysql),
+            DataGridPrimaryKeyMode::ExcludeAll,
+            &["Id".into()],
+            &["id".into(), "ID".into()],
+            &[],
+        )
+        .is_empty());
+    }
 
     #[test]
     fn split_zip_sql_export_writes_batch_statements_separately() {
@@ -2604,7 +2717,7 @@ mod tests {
             column_types: Some(vec![Some("INTEGER".to_string()), Some("VARCHAR".to_string())]),
             column_extras: None,
             primary_keys: Some(vec!["id".to_string()]),
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count,
@@ -2777,7 +2890,7 @@ mod tests {
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
             null_literal: String::new(),
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             columns: None,
             selected_columns: None,
             column_types: None,
@@ -2953,7 +3066,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: Some("WHERE temperature > 1".to_string()),
             order_by: Some("Time DESC".to_string()),
             skip_count: true,
@@ -3024,7 +3137,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3071,7 +3184,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3113,7 +3226,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3163,7 +3276,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3225,7 +3338,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: Some("WHERE status = 'active'".to_string()),
             order_by: None,
             skip_count: false,
@@ -3281,7 +3394,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: false,
@@ -3365,7 +3478,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: false,
@@ -3431,7 +3544,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3499,7 +3612,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: false,
@@ -3564,7 +3677,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
@@ -3613,7 +3726,7 @@ mod tests {
             column_types: None,
             column_extras: None,
             primary_keys: None,
-            exclude_primary_keys: false,
+            primary_key_mode: DataGridPrimaryKeyMode::Include,
             where_input: None,
             order_by: None,
             skip_count: true,
