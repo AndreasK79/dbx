@@ -291,6 +291,11 @@ export interface AiProviderPreset extends Omit<AiConfig, "apiKey"> {
   group?: "builtin" | "partner";
 }
 
+export interface AiBuiltinProviderPreset extends AiProviderPreset {
+  id: string;
+  group: "builtin";
+}
+
 export interface AiPartnerProviderPreset extends AiProviderPreset {
   id: string;
   group: "partner";
@@ -511,6 +516,20 @@ export const AI_PROVIDER_PRESETS: Record<AiProvider, AiProviderPreset> = {
   },
 };
 
+/** UI-only entry for the optional CC-SWITCH integration. It must never become an AiConfig provider. */
+export const CC_SWITCH_PROVIDER_ID = "cc-switch";
+export const CC_SWITCH_PROVIDER_PRESET: AiBuiltinProviderPreset = {
+  id: CC_SWITCH_PROVIDER_ID,
+  label: "AI Config Importer",
+  provider: "custom",
+  endpoint: "",
+  model: "",
+  apiStyle: "completions",
+  authMethod: "bearer",
+  requiresApiKey: false,
+  group: "builtin",
+};
+
 /** Brand names stay as preset labels; only the generic "custom" entry is localized. */
 export function aiProviderLabel(provider: AiProvider, t: (key: string) => string): string {
   if (provider === "custom") return t("ai.providerCustom");
@@ -629,11 +648,11 @@ export function getAiProviderPreset(provider: AiProvider, endpoint = ""): AiProv
   return partnerPreset ?? AI_PROVIDER_PRESETS[provider];
 }
 
-export function getAiProviderPresetOption(id: string): AiProviderPreset | AiPartnerProviderPreset {
-  return AI_PROVIDER_PARTNER_PRESETS.find((preset) => preset.id === id) ?? AI_PROVIDER_PRESETS[id as AiProvider] ?? AI_PROVIDER_PRESETS.custom;
+export function getAiProviderPresetOption(id: string): AiProviderPreset | AiBuiltinProviderPreset | AiPartnerProviderPreset {
+  return id === CC_SWITCH_PROVIDER_ID ? CC_SWITCH_PROVIDER_PRESET : (AI_PROVIDER_PARTNER_PRESETS.find((preset) => preset.id === id) ?? AI_PROVIDER_PRESETS[id as AiProvider] ?? AI_PROVIDER_PRESETS.custom);
 }
 
-export function getAiProviderPresetDefaultEndpoint(preset: AiProviderPreset | AiPartnerProviderPreset, locale: string): string {
+export function getAiProviderPresetDefaultEndpoint(preset: AiProviderPreset | AiBuiltinProviderPreset | AiPartnerProviderPreset, locale: string): string {
   if (preset.provider === "minimax" && locale === "zh-CN") {
     return "https://api.minimaxi.com/v1";
   }
@@ -1091,6 +1110,7 @@ export interface EditorSettings {
   dataGridMultiRowTranspose: boolean;
   dataGridHideNullColumns: boolean;
   dataGridHideEmptyColumns: boolean;
+  dataGridFreezeFirstColumn: boolean;
   dataGridBooleanDisplayMode: "dropdown" | "checkbox";
   numericColumnRightAlign: boolean;
   tableFontFamily: string;
@@ -1168,6 +1188,7 @@ export interface EditorSettings {
   exportBatchSize: number;
   preferredExportPath: string;
   autoOpenExportFolder: boolean;
+  applyColumnFormattersOnExport: boolean;
   csvQuoteMode: CsvQuoteMode;
   csvNullMode: CsvNullMode;
   /** Global Redis key-search templates; overridden by non-empty connection templates. */
@@ -1422,6 +1443,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   dataGridMultiRowTranspose: false,
   dataGridHideNullColumns: false,
   dataGridHideEmptyColumns: false,
+  dataGridFreezeFirstColumn: false,
   dataGridBooleanDisplayMode: "dropdown",
   numericColumnRightAlign: true,
   tableFontFamily: DEFAULT_DATA_GRID_FONT_FAMILY,
@@ -1495,6 +1517,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   exportBatchSize: 2000,
   preferredExportPath: "",
   autoOpenExportFolder: false,
+  applyColumnFormattersOnExport: true,
   csvQuoteMode: DEFAULT_CSV_QUOTE_MODE,
   csvNullMode: DEFAULT_CSV_NULL_MODE,
   redisKeyTemplates: [],
@@ -2071,6 +2094,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     dataGridMultiRowTranspose: settings.dataGridMultiRowTranspose === true,
     dataGridHideNullColumns: settings.dataGridHideNullColumns === true,
     dataGridHideEmptyColumns: settings.dataGridHideEmptyColumns === true,
+    dataGridFreezeFirstColumn: settings.dataGridFreezeFirstColumn === true,
     dataGridBooleanDisplayMode: settings.dataGridBooleanDisplayMode === "checkbox" ? "checkbox" : "dropdown",
     numericColumnRightAlign: typeof settings.numericColumnRightAlign === "boolean" ? settings.numericColumnRightAlign : DEFAULT_EDITOR_SETTINGS.numericColumnRightAlign,
     tableFontFamily: normalizeFontFamily(settings.tableFontFamily, DEFAULT_EDITOR_SETTINGS.tableFontFamily),
@@ -2191,6 +2215,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     exportBatchSize: typeof settings.exportBatchSize === "number" && settings.exportBatchSize >= 100 && settings.exportBatchSize <= 100000 ? Math.round(settings.exportBatchSize) : DEFAULT_EDITOR_SETTINGS.exportBatchSize,
     preferredExportPath: typeof settings.preferredExportPath === "string" ? settings.preferredExportPath.trim() : DEFAULT_EDITOR_SETTINGS.preferredExportPath,
     autoOpenExportFolder: typeof settings.autoOpenExportFolder === "boolean" ? settings.autoOpenExportFolder : DEFAULT_EDITOR_SETTINGS.autoOpenExportFolder,
+    applyColumnFormattersOnExport: typeof settings.applyColumnFormattersOnExport === "boolean" ? settings.applyColumnFormattersOnExport : DEFAULT_EDITOR_SETTINGS.applyColumnFormattersOnExport,
     csvQuoteMode: normalizeCsvQuoteMode(settings.csvQuoteMode),
     csvNullMode: normalizeCsvNullMode(settings.csvNullMode),
     redisKeyTemplates: normalizeRedisKeyTemplates(settings.redisKeyTemplates),
@@ -2960,6 +2985,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.dataGridMultiRowTranspose !== undefined) editorSettings.value.dataGridMultiRowTranspose = partial.dataGridMultiRowTranspose === true;
     if (partial.dataGridHideNullColumns !== undefined) editorSettings.value.dataGridHideNullColumns = partial.dataGridHideNullColumns === true;
     if (partial.dataGridHideEmptyColumns !== undefined) editorSettings.value.dataGridHideEmptyColumns = partial.dataGridHideEmptyColumns === true;
+    if (partial.dataGridFreezeFirstColumn !== undefined) editorSettings.value.dataGridFreezeFirstColumn = partial.dataGridFreezeFirstColumn === true;
     if (partial.dataGridBooleanDisplayMode !== undefined) editorSettings.value.dataGridBooleanDisplayMode = partial.dataGridBooleanDisplayMode === "dropdown" ? "dropdown" : "checkbox";
     if (partial.numericColumnRightAlign !== undefined) editorSettings.value.numericColumnRightAlign = partial.numericColumnRightAlign === true;
     if (partial.tableFontFamily !== undefined) editorSettings.value.tableFontFamily = normalizeFontFamily(partial.tableFontFamily, DEFAULT_EDITOR_SETTINGS.tableFontFamily);
@@ -3044,6 +3070,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.exportBatchSize !== undefined) editorSettings.value.exportBatchSize = Math.min(100000, Math.max(100, Math.round(partial.exportBatchSize)));
     if (partial.preferredExportPath !== undefined) editorSettings.value.preferredExportPath = typeof partial.preferredExportPath === "string" ? partial.preferredExportPath.trim() : "";
     if (partial.autoOpenExportFolder !== undefined) editorSettings.value.autoOpenExportFolder = partial.autoOpenExportFolder === true;
+    if (partial.applyColumnFormattersOnExport !== undefined) editorSettings.value.applyColumnFormattersOnExport = partial.applyColumnFormattersOnExport === true;
     if (partial.csvQuoteMode !== undefined) editorSettings.value.csvQuoteMode = normalizeCsvQuoteMode(partial.csvQuoteMode);
     if (partial.csvNullMode !== undefined) editorSettings.value.csvNullMode = normalizeCsvNullMode(partial.csvNullMode);
     if (partial.redisKeyTemplates !== undefined) editorSettings.value.redisKeyTemplates = normalizeRedisKeyTemplates(partial.redisKeyTemplates);

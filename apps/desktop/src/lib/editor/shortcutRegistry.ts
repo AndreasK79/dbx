@@ -96,6 +96,7 @@ export type ShortcutActionId =
   | "disconnectAllActiveConnections"
   | "openDataInNewTab"
   | "viewTableDdl"
+  | "editSidebarTableStructure"
   | "sendSelectionToAi"
   | "sqlIntentionActions"
   | "commitTransaction"
@@ -810,6 +811,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutViewTableDdl",
     scope: "sidebar",
     defaultShortcut: "Shift+Mod+D",
+  },
+  {
+    id: "editSidebarTableStructure",
+    labelKey: "settings.shortcutEditSidebarTableStructure",
+    scope: "sidebar",
+    defaultShortcut: "F4",
   },
   {
     id: "sendSelectionToAi",
