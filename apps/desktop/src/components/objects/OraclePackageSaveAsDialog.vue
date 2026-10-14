@@ -43,7 +43,7 @@ function edit(part: "spec" | "body", event: Event) {
       </DialogHeader>
       <div class="grid gap-3">
         <p class="text-sm text-muted-foreground">{{ t("objects.packageSaveAsHint", { name: oldName }) }}</p>
-        <Input :model-value="newName" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" :disabled="busy" @update:model-value="emit('update:newName', $event)" />
+        <Input :model-value="newName" :placeholder="t('contextMenu.renameObjectNamePlaceholder')" :disabled="busy" @update:model-value="emit('update:newName', String($event))" />
         <p v-if="loading || validating" role="status" class="text-sm text-muted-foreground">{{ t("common.loading") }}</p>
         <div v-if="plan" class="grid gap-2">
           <p v-if="!plan.metadataComplete" class="text-sm text-destructive">{{ t("objects.packageSaveAsMetadataProblem") }}</p>
