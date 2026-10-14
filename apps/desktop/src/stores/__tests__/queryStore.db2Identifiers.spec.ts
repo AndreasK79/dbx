@@ -18,6 +18,9 @@ vi.mock("@/lib/backend/api", () => ({
   listTables: vi.fn().mockResolvedValue([]),
   prepareQueryPaginationExecutionPlan: vi.fn(async (options) => ({ sqlToExecute: options.sql, useAgentResultSession: false })),
   saveOpenTabsState: vi.fn().mockResolvedValue(undefined),
+  // mod 37: query execution dispatch runs under withStatementNotices; specs with a
+  // closed api mock must pass the run through (see queryStore.queryMessages.spec.ts).
+  withStatementNotices: vi.fn(async (_executionId: string, _onStatementNotices: (event: unknown) => void, run: () => Promise<unknown>) => run()),
 }));
 vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({
