@@ -467,7 +467,7 @@ export const AI_PROVIDER_PRESETS: Record<AiProvider, AiProviderPreset> = {
     requiresApiKey: false,
   },
   "codebuddy-cli": {
-    label: "CodeBuddy Code",
+    label: "CodeBuddy Code CLI",
     iconSlug: "codebuddy",
     provider: "codebuddy-cli",
     endpoint: "",
