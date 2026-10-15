@@ -47,7 +47,6 @@ import {
   ListTree,
   Maximize2,
   RefreshCw,
-  RefreshCcw,
   TableProperties,
   Network,
   UserRound,
@@ -139,6 +138,7 @@ import {
   shouldIncludeSyntheticRowId,
 } from "@/lib/table/tableEditing";
 import { buildDataGridConditionalUpdateSql, buildDataGridContextFilterCondition, buildDataGridCountSql, buildHiveTablePropertiesSql, type DataGridContextFilterMode } from "@/lib/dataGrid/dataGridSql";
+import { sumGridCountValues } from "@/lib/dataGrid/dataGridCountValue";
 import {
   buildVisibleTransposeRows,
   averageTransposeRecordWidth,
@@ -399,6 +399,7 @@ import {
   DATA_GRID_TOOLBAR_ACTION_COLLAPSE_ORDER,
   dataGridDeleteRowToolbarState,
   dataGridToolbarActionCollapseCount,
+  shouldCompactDataGridConditionInput,
   isDataGridToolbarCompact,
   type DataGridReloadIntent,
   type DataGridToolbarActionCapability,
@@ -412,7 +413,7 @@ import { constraintsForConstraintsTab } from "@/lib/table/constraintPresentation
 import { filterObjectBrowserTableColumns } from "@/lib/table/objectBrowserTableInfo";
 import { gaussdbMTypeDisplayName } from "@/lib/table/postgresDataTypeHelp";
 import { reserveDataGridHeaderLine } from "@/lib/dataGrid/dataGridHeaderLayout";
-import { buildColumnIndexMap, columnIndexColorClass, columnIndexNameKey, type ColumnIndexKind } from "@/lib/dataGrid/dataGridColumnIndexIcon";
+import { buildColumnIndexMap, columnIndexCacheAction, columnIndexColorClass, columnIndexNameKey, type ColumnIndexKind } from "@/lib/dataGrid/dataGridColumnIndexIcon";
 import { isSchemaAware, supportsTableStructureEditing } from "@/lib/database/databaseCapabilities";
 import { rememberDataGridConditionHistory } from "@/lib/dataGrid/dataGridConditionHistory";
 import { buildDataGridLocalFilterOptions, restoreDataGridLocalColumnFilters, type DataGridLocalFilterOption } from "@/lib/dataGrid/dataGridLocalColumnFilterState";
@@ -852,6 +853,7 @@ const dataGridViewportWidth = ref(0);
 const dataGridTopbarOverflowCompact = ref(false);
 const dataGridTopbarOverflowActionCount = ref(0);
 const dataGridTopbarExpandedRequiredWidth = ref(0);
+const dataGridFilterExpandedRequiredWidth = ref(0);
 const showColumnCommentsInHeader = computed(() => settingsStore.editorSettings.showColumnCommentsInHeader);
 const showColumnTypesInHeader = computed(() => settingsStore.editorSettings.showColumnTypesInHeader);
 const showColumnHeaderTooltips = computed(() => settingsStore.editorSettings.showColumnHeaderTooltips !== false);
@@ -873,10 +875,15 @@ const compactColumnHeaderActions = computed(() => settingsStore.editorSettings.c
 const dataGridRenderMode = computed(() => settingsStore.editorSettings.dataGridRenderMode);
 const dataGridSearchMode = computed(() => settingsStore.editorSettings.dataGridSearchMode);
 const dataGridRowNumberMode = computed(() => settingsStore.editorSettings.dataGridRowNumberMode);
-const compactDataGridToolbar = computed(() => dataGridTopbarOverflowCompact.value || isDataGridToolbarCompact(dataGridTopbarWidth.value, dataGridViewportWidth.value, DATA_GRID_CONDITION_TOOLBAR_MIN_WIDTH));
 const splitDataGridToolbar = computed(() => settingsStore.editorSettings.dataGridToolbarLayout === "split");
-const responsiveDataGridToolbarActionCount = computed(() => dataGridToolbarActionCollapseCount(dataGridTopbarWidth.value, dataGridViewportWidth.value, DATA_GRID_CONDITION_TOOLBAR_MIN_WIDTH));
+const compactDataGridToolbar = computed(() => dataGridTopbarOverflowCompact.value || (!splitDataGridToolbar.value && isDataGridToolbarCompact(dataGridTopbarWidth.value, dataGridViewportWidth.value, DATA_GRID_CONDITION_TOOLBAR_MIN_WIDTH)));
+const responsiveDataGridToolbarActionCount = computed(() => (splitDataGridToolbar.value ? 0 : dataGridToolbarActionCollapseCount(dataGridTopbarWidth.value, dataGridViewportWidth.value, DATA_GRID_CONDITION_TOOLBAR_MIN_WIDTH)));
 const compactDataGridToolbarActionCount = computed(() => Math.max(responsiveDataGridToolbarActionCount.value, dataGridTopbarOverflowActionCount.value));
+const compactDataGridToolbarActions = computed(() => (splitDataGridToolbar.value ? compactDataGridToolbarActionCount.value > 0 : compactDataGridToolbar.value));
+watch(splitDataGridToolbar, () => {
+  resetDataGridTopbarOverflowCompact();
+  nextTick(updateDataGridTopbarWidth);
+});
 const infiniteScrollEnabled = computed(() => props.paginationEnabled && settingsStore.editorSettings.infiniteScroll);
 const queryResultMaxRows = computed(() => effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows));
 const paginationMaxRows = computed(() => (isResultsContext.value ? queryResultMaxRows.value : undefined));
@@ -3127,6 +3134,50 @@ function updateDataGridTopbarWidth() {
       return;
     }
 
+    if (splitDataGridToolbar.value) {
+      // Split rows each have the whole pane: the single-row breakpoint reserves
+      // space for controls that no longer share their row. Measure them separately.
+      const filters = currentTopbar.querySelector<HTMLElement>('[data-grid-topbar-row="filters"]');
+      const filterWidth = filters?.clientWidth ?? 0;
+      const conditionEditors = filters?.querySelectorAll<HTMLElement>("[data-grid-condition-editor]") ?? [];
+      let conditionInputsNeedCompact = false;
+      for (const editor of conditionEditors) {
+        const input = editor.querySelector<HTMLElement>("[data-grid-condition-input-viewport]");
+        if (!input) continue;
+        // Input widths change when the WHERE/ORDER BY divider moves even when
+        // the whole toolbar keeps the same width. Observe their own viewports.
+        dataGridTopbarResizeObserver?.observe(input);
+        const label = editor.querySelector<HTMLElement>(".data-grid-topbar-condition-label");
+        const hiddenLabelWidth = label ? Math.max(0, label.scrollWidth - label.clientWidth) : 0;
+        conditionInputsNeedCompact ||= shouldCompactDataGridConditionInput(input.clientWidth, hiddenLabelWidth, dataGridTopbarOverflowCompact.value);
+      }
+      const filtersOverflow = filterWidth > 0 && !!filters && filters.scrollWidth > filterWidth + 1;
+      let changed = false;
+      if (dataGridTopbarOverflowCompact.value && filterWidth >= dataGridFilterExpandedRequiredWidth.value && !conditionInputsNeedCompact) {
+        dataGridTopbarOverflowCompact.value = false;
+        dataGridFilterExpandedRequiredWidth.value = 0;
+        changed = true;
+      } else if (!dataGridTopbarOverflowCompact.value && filterWidth > 0 && (filtersOverflow || conditionInputsNeedCompact)) {
+        dataGridFilterExpandedRequiredWidth.value = filtersOverflow ? filters!.scrollWidth + DATA_GRID_TOPBAR_EXPAND_HYSTERESIS_PX : 0;
+        dataGridTopbarOverflowCompact.value = true;
+        changed = true;
+      }
+
+      const actionRows = currentTopbar.querySelectorAll<HTMLElement>(':scope > [data-grid-topbar-row="actions"]');
+      const actionsWidth = Array.from(actionRows).reduce((width, row) => width + Math.max(row.clientWidth, row.scrollWidth), 0);
+      if (dataGridTopbarOverflowActionCount.value > 0 && dataGridTopbarWidth.value >= dataGridTopbarExpandedRequiredWidth.value) {
+        dataGridTopbarOverflowActionCount.value = 0;
+        dataGridTopbarExpandedRequiredWidth.value = 0;
+        changed = true;
+      } else if (dataGridTopbarWidth.value > 0 && actionsWidth > dataGridTopbarWidth.value + 1 && dataGridTopbarOverflowActionCount.value < DATA_GRID_TOOLBAR_ACTION_COLLAPSE_ORDER.length) {
+        dataGridTopbarExpandedRequiredWidth.value = Math.max(dataGridTopbarExpandedRequiredWidth.value, actionsWidth + DATA_GRID_TOPBAR_EXPAND_HYSTERESIS_PX);
+        dataGridTopbarOverflowActionCount.value += 1;
+        changed = true;
+      }
+      if (changed) scheduleDataGridTopbarRecheck();
+      return;
+    }
+
     if (dataGridTopbarOverflowCompact.value || dataGridTopbarOverflowActionCount.value > 0) {
       if (dataGridTopbarWidth.value >= dataGridTopbarExpandedRequiredWidth.value) {
         dataGridTopbarOverflowCompact.value = false;
@@ -3159,6 +3210,7 @@ function resetDataGridTopbarOverflowCompact() {
   dataGridTopbarOverflowCompact.value = false;
   dataGridTopbarOverflowActionCount.value = 0;
   dataGridTopbarExpandedRequiredWidth.value = 0;
+  dataGridFilterExpandedRequiredWidth.value = 0;
   scheduleDataGridTopbarRecheck();
 }
 
@@ -4187,7 +4239,8 @@ async function lastPage() {
       if (!sql || generation !== manualTotalRowCountGeneration) return;
       const result = await api.executeQuery(props.connectionId, props.executionDatabase ?? props.database ?? "", sql, countTarget.schema, undefined, dataGridCountQueryOptions(connectionStore.getConfig(props.connectionId), settingsStore.editorSettings.globalQueryTimeoutSecs));
       if (generation !== manualTotalRowCountGeneration) return;
-      const total = Number(result.rows?.[0]?.[0] ?? 0);
+      // InfluxQL aggregates return one count per field column with a leading time cell.
+      const total = sumGridCountValues(result.rows?.[0]) ?? 0;
       if (!Number.isFinite(total) || total < 0) return;
       manualTotalRowCount.value = total;
       jumpToCountedLastPage(total);
@@ -4259,7 +4312,8 @@ async function calculateTotalRowCount() {
     if (!countTarget?.sql || generation !== manualTotalRowCountGeneration) return;
     const result = await api.executeQuery(props.connectionId, props.executionDatabase ?? props.database ?? "", countTarget.sql, countTarget.schema, undefined, dataGridCountQueryOptions(connectionStore.getConfig(props.connectionId), settingsStore.editorSettings.globalQueryTimeoutSecs));
     if (generation !== manualTotalRowCountGeneration) return;
-    const total = Number(result.rows?.[0]?.[0] ?? 0);
+    // InfluxQL returns zero rows when nothing matches instead of a count of 0.
+    const total = sumGridCountValues(result.rows?.[0]) ?? 0;
     if (Number.isFinite(total) && total >= 0) {
       manualTotalRowCount.value = total;
     }
@@ -4510,6 +4564,7 @@ const {
   isSaving,
   saveError,
   saveWarning,
+  previewValidationMessage,
   useTransaction,
   beginBatch,
   commitBatch,
@@ -4559,6 +4614,7 @@ const {
   recordScrollPosition,
   isPreviewLoading,
   previewChanges,
+  isUntouchedNewRow,
 } = editor;
 getGridNewRows = () => newRows.value;
 getGridRowData = rowDataWithChanges;
@@ -4640,7 +4696,7 @@ function schedulePreviewRefresh() {
 async function openSqlPreview() {
   const stmts = await previewChanges();
   previewSqlText.value = stmts.join("\n");
-  if (stmts.length > 0) {
+  if (stmts.length > 0 || previewValidationMessage.value) {
     showSqlPreview.value = true;
   }
 }
@@ -5363,8 +5419,15 @@ const displayRowRefs = computed<DisplayRowRef[]>(() => {
       // Pending rows must remain visible while a column filter is active so
       // users can fill in and review newly inserted records before saving.
       if (!row) continue;
-      const status: RowStatus = "new";
-      if (!matchesRowStatusFilter(status, rowStatusFilter.value)) continue;
+      // A blank row created as a placeholder is not a pending INSERT. Keep it
+      // visible, but give it the clean row-number treatment so the green
+      // marker only identifies rows that will be submitted.
+      const isUntouched = isUntouchedNewRow(row, newIndex);
+      const status: RowStatus = isUntouched ? "clean" : "new";
+      // Placeholders remain discoverable under the "new" filter so adding a
+      // row does not hide the blank editor the user just created.
+      const filterStatus: RowStatus = isUntouched ? "new" : status;
+      if (!matchesRowStatusFilter(filterStatus, rowStatusFilter.value)) continue;
       refs.push({
         id: -(newIndex + 1),
         displayIndex: refs.length,
@@ -7420,8 +7483,11 @@ async function applyOrderBySearch(_value?: string, structuredOrderByOverride?: s
   // in its own tab field so store-side rebuilds keep the composite ORDER BY
   // while the manual input stays free of the structured terms.
   emit("update:structuredOrderByInput", structuredOrderBy ?? "");
-  const manualOrderByClause = orderByInput.value.trim();
-  if (manualOrderByClause) rememberDataGridConditionHistory("orderBy", conditionHistoryScope.value, manualOrderByClause);
+  // Record the clause that is actually applied, so sorts built with the sort
+  // builder (not only the manual ORDER BY input) are restorable from the ORDER BY
+  // history. This mirrors applyWhereFilter, which remembers currentWhereInput()
+  // and therefore already keeps structured filter rules in the WHERE history (#12224).
+  if (orderByClause) rememberDataGridConditionHistory("orderBy", conditionHistoryScope.value, orderByClause);
   isApplyingWhere.value = true;
   queryControlError.value = "";
   currentPage.value = 1;
@@ -7604,6 +7670,7 @@ function rowNumberPageOffset(): number {
 
 function rowNumberText(item: RowItem | undefined): string {
   if (!item) return "";
+  if (item.isNew && item.status === "clean") return "*";
   return resolveDataGridRowNumberLabel({
     displayIndex: item.displayIndex,
     sourceIndex: item.sourceIndex,
@@ -7682,23 +7749,25 @@ function dataGridRowStyle(item: RowItem): CSSProperties {
             ? settingsStore.editorSettings.dataGridZebraRowBg?.trim() || `var(--data-grid-row-muted-bg, ${dark ? DATA_GRID_DARK_STRIPED_ROW_BG : DATA_GRID_LIGHT_STRIPED_ROW_BG})`
             : "var(--data-grid-background)";
   const rowNumberBg =
-    item.status === "new"
-      ? dark
-        ? "rgb(33, 45, 40)"
-        : "rgb(219, 244, 233)"
-      : item.status === "edited"
+    item.isNew && item.status === "clean"
+      ? rowBg
+      : item.status === "new"
         ? dark
-          ? "rgb(48, 41, 28)"
-          : "rgb(253, 241, 219)"
-        : item.status === "deleted"
+          ? "rgb(33, 45, 40)"
+          : "rgb(219, 244, 233)"
+        : item.status === "edited"
           ? dark
-            ? "rgb(55, 31, 32)"
-            : "rgb(255, 244, 244)"
-          : isRowActive(item.displayIndex) && !item.isDeleted
-            ? activeRowBg
-            : dark
-              ? "rgb(35, 37, 42)"
-              : "rgb(255, 255, 255)";
+            ? "rgb(48, 41, 28)"
+            : "rgb(253, 241, 219)"
+          : item.status === "deleted"
+            ? dark
+              ? "rgb(55, 31, 32)"
+              : "rgb(255, 244, 244)"
+            : isRowActive(item.displayIndex) && !item.isDeleted
+              ? activeRowBg
+              : dark
+                ? "rgb(35, 37, 42)"
+                : "rgb(255, 255, 255)";
   return {
     "--data-grid-cell-bg": rowBg,
     "--data-grid-row-number-bg": rowNumberBg,
@@ -8029,8 +8098,8 @@ function onCanvasScroll(event: Event) {
   }
   if (scrollTopChanged || viewportHeightChanged) {
     updateGridVerticalScrollbar(scroller);
-    maybeCheckInfiniteScroll(scroller);
   }
+  maybeCheckInfiniteScroll(scroller);
   if (viewportWidthChanged || viewportHeightChanged) {
     const gutter = scrollbarGutterWidth(scroller);
     if (gridScrollbarGutter.value !== gutter) gridScrollbarGutter.value = gutter;
@@ -9282,7 +9351,11 @@ function openColumnDetailDialog(columnIndex: number) {
 function openContextCellDetailDialog() {
   const cell = contextCell.value;
   if (!cell || cell.col < 0) return;
-  openCellDetailDialog(cell.rowIndex, cell.col);
+  if (cellDetailDialogDefault.value) {
+    openCellDetailDialog(cell.rowIndex, cell.col);
+  } else {
+    showCellDetails(cell.rowIndex, cell.col);
+  }
 }
 
 function openContextColumnDetailDialog() {
@@ -9913,8 +9986,8 @@ async function previewConditionalBulkEditMatchCount() {
       whereInput,
     });
     const result = await api.executeQuery(props.connectionId, props.executionDatabase ?? props.database ?? "", sql, undefined, undefined, dataGridCountQueryOptions(connectionStore.getConfig(props.connectionId), settingsStore.editorSettings.globalQueryTimeoutSecs));
-    const count = Number(result.rows?.[0]?.[0] ?? 0);
-    if (!Number.isFinite(count) || count < 0) throw new Error("Invalid row count returned by the database");
+    const count = sumGridCountValues(result.rows?.[0]);
+    if (count === undefined || count < 0) throw new Error("Invalid row count returned by the database");
     if (requestId !== conditionalBulkEditMatchCountRequestId) return;
     conditionalBulkEditMatchCount.value = count;
   } catch (error: any) {
@@ -12554,6 +12627,10 @@ async function refreshActiveTableInfo() {
   }
 }
 
+// 手动刷新会重新发布 tableMeta（例如 catalog/database 从 undefined 变成具体值），
+// 但表身份没有变化。此时清空 indexes 会让表头索引标识闪断（#12093），所以同表刷新
+// 只把缓存标记为过期、保留当前标识直到新结果返回，只有真正切换表才清空。
+let lastMetadataIndexTableIdentity = currentIndexTableIdentity.value;
 watch(
   () => [props.connectionId, props.database, props.tableMeta?.database, props.tableMeta?.catalog, props.tableMeta?.schema, props.tableMeta?.tableName],
   () => {
@@ -12570,11 +12647,18 @@ watch(
     tableOverviewLoaded.value = false;
     tableOverviewRequestGeneration.value += 1;
     rawDdlContent.value = "";
-    indexes.value = [];
-    indexesLoaded.value = false;
-    indexesLoading.value = false;
-    indexesError.value = "";
-    indexesRequestGeneration.value += 1;
+    const indexTableIdentity = currentIndexTableIdentity.value;
+    const indexCacheAction = columnIndexCacheAction(lastMetadataIndexTableIdentity, indexTableIdentity, indexesLoaded.value);
+    lastMetadataIndexTableIdentity = indexTableIdentity;
+    if (indexCacheAction === "reset") {
+      indexes.value = [];
+      indexesLoaded.value = false;
+      indexesLoading.value = false;
+      indexesError.value = "";
+      indexesRequestGeneration.value += 1;
+    } else if (indexCacheAction === "keep-refresh") {
+      indexesLoaded.value = false;
+    }
     foreignKeys.value = [];
     foreignKeysLoaded.value = false;
     foreignKeysLoading.value = false;
@@ -14040,7 +14124,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
           :class="splitDataGridToolbar ? 'grid h-16 grid-cols-[auto_minmax(0,1fr)] grid-rows-2' : 'flex h-8 items-center'"
         >
           <div v-if="hasResultToolbarLeadingSlot" data-grid-topbar-row="actions" class="flex shrink-0 items-center border-r" :class="splitDataGridToolbar ? 'col-start-1 row-start-1' : ''">
-            <slot name="result-toolbar-leading" :compact="compactDataGridToolbar" />
+            <slot name="result-toolbar-leading" :compact="compactDataGridToolbarActions" />
           </div>
           <!-- Clip both axes instead of creating a hidden scroll container around the toolbar controls. -->
           <div data-grid-topbar-row="filters" class="data-grid-topbar-scroll min-w-0 overflow-clip" :class="splitDataGridToolbar ? 'data-grid-topbar-scroll--row-divider col-span-2 row-start-2' : 'flex-1'">
@@ -14154,12 +14238,12 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             @wheel="onDataGridTopbarFixedActionWheel"
           >
             <template #leading>
-              <slot v-if="hasResultToolbarActionsSlot" name="result-toolbar-actions" :compact="compactDataGridToolbar" />
+              <slot v-if="hasResultToolbarActionsSlot" name="result-toolbar-actions" :compact="compactDataGridToolbarActions" />
               <DataGridVirtualRowIdentifier
                 v-if="showVirtualRowIdentifierControl"
                 :columns="props.tableMeta!.columns"
                 :selected-columns="virtualRowIdentifierColumns"
-                :compact="compactDataGridToolbar"
+                :compact="compactDataGridToolbarActions"
                 :disabled="virtualRowIdentifierDisabled"
                 @apply="applyVirtualRowIdentifier"
                 @clear="clearVirtualRowIdentifier"
@@ -14190,7 +14274,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   <Button
                     variant="ghost"
                     size="sm"
-                    :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compactDataGridToolbar ? 'data-grid-topbar-action-button--compact' : '', mongoJsonPreviewOpen ? 'text-primary bg-primary/10 hover:bg-primary/15' : '']"
+                    :class="['data-grid-topbar-action-button h-5 shrink-0 text-xs px-1.5', compactDataGridToolbarActions ? 'data-grid-topbar-action-button--compact' : '', mongoJsonPreviewOpen ? 'text-primary bg-primary/10 hover:bg-primary/15' : '']"
                     :aria-pressed="mongoJsonPreviewOpen"
                     @click="toggleMongoJsonPreview"
                   >
@@ -14198,7 +14282,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                     <span
                       class="data-grid-topbar-action-label"
                       :class="{
-                        'data-grid-topbar-action-label--compact': compactDataGridToolbar,
+                        'data-grid-topbar-action-label--compact': compactDataGridToolbarActions,
                       }"
                       >{{ t("grid.mongoJsonPreview") }}</span
                     >
@@ -15402,6 +15486,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                           @mousedown="onRowNumberMouseDown(item, $event)"
                           @dblclick.stop="toggleTranspose(item.displayIndex)"
                           @contextmenu="onRowContext(item.id, item.displayIndex)"
+                          :title="item.isNew && item.status === 'clean' ? t('grid.uncommittedBlankRow') : undefined"
                         >
                           {{ rowNumberText(item) }}
                         </div>
@@ -15909,7 +15994,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               <DataGridCellDetailHexViewer v-if="activeCellDetailTabs.includes('hexViewer')" :rows="activeBinaryHexRows" :byte-count="activeBinaryHexByteCount" />
 
               <TabsContent v-if="activeCellDetailTabs.includes('valueEditor')" value="valueEditor" class="m-0 min-h-0 min-w-0 flex-1 flex flex-col p-3 text-xs">
-                <div class="min-w-0 flex min-h-0 flex-1 flex-col">
+                <div :style="detailTransformOpen ? { display: 'none' } : null" class="min-w-0 flex min-h-0 flex-1 flex-col">
                   <TemporalCellEditor
                     v-if="detailTemporalEditorConfig"
                     v-model="detailEditValue"
@@ -15930,6 +16015,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                     :identity="`${activeCellDetail.rowId}:${activeCellDetail.colIndex}:${activeCellDetailTab}`"
                     :incomplete="activeCellDetail.isSourceTruncated"
                     :unsafe-number="typeof activeCellDetail.value === 'number' && Number.isInteger(activeCellDetail.value) && !Number.isSafeInteger(activeCellDetail.value) && detailEditValue === activeCellDetail.rawValue"
+                    :column="activeCellDetail.column"
+                    :row-number="activeCellDetail.rowNumber"
                   />
                   <DropdownMenu v-if="activeCellDetail?.isEditable">
                     <DropdownMenuTrigger as-child>
@@ -16003,23 +16090,17 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
               count: result.rows.length,
             })
           }}
-          <i18n-t v-if="showRerunTotalCountAction && !(totalRowCountBusy && !manualTotalRowCountLoading)" keypath="grid.totalRowCountWithAction" tag="span" class="text-muted-foreground/70">
-            <template #button>
-              <button
-                type="button"
-                class="mr-1 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm align-middle text-muted-foreground/70 hover:bg-gray-200 hover:text-foreground disabled:pointer-events-none disabled:opacity-50 dark:hover:bg-gray-800"
-                :disabled="manualTotalRowCountLoading"
-                :aria-busy="manualTotalRowCountLoading ? 'true' : undefined"
-                :title="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
-                :aria-label="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
-                @click="calculateTotalRowCount"
-              >
-                <Loader2 v-if="manualTotalRowCountLoading" aria-hidden="true" class="h-3 w-3 animate-spin" />
-                <RefreshCcw v-else aria-hidden="true" class="h-3 w-3" />
-              </button>
-            </template>
-            <template #count>{{ displayedTotalRowCount }}</template>
-          </i18n-t>
+          <button
+            v-if="showRerunTotalCountAction && !(totalRowCountBusy && !manualTotalRowCountLoading)"
+            type="button"
+            class="text-muted-foreground/70 underline underline-offset-2 hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+            :disabled="manualTotalRowCountLoading"
+            :aria-busy="manualTotalRowCountLoading ? 'true' : undefined"
+            :title="manualTotalRowCountLoading ? t('grid.totalRowCountLoading') : t('grid.calculateTotalRows')"
+            @click="calculateTotalRowCount"
+          >
+            {{ t(totalRowCountLabelKey, { count: displayedTotalRowCount }) }}
+          </button>
           <span v-else-if="typeof displayedTotalRowCount === 'number' && displayedTotalRowCount >= 0" class="text-muted-foreground/70">{{ t(totalRowCountLabelKey, { count: displayedTotalRowCount }) }}</span>
           <span v-if="totalRowCountBusy && !(showRerunTotalCountAction && manualTotalRowCountLoading)" class="text-muted-foreground/70">
             {{ t("grid.totalRowCountLoading") }}
@@ -16292,7 +16373,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         :title="t('grid.resizeSqlPreview')"
         @pointerdown.prevent="onSqlPreviewResizeStart"
       />
-      <SqlPreviewPanel :sql="previewSqlText" :loading="isPreviewLoading" :can-undo="canUndoPendingChange" :can-redo="canRedoPendingChange" @undo="undoGridChange" @redo="redoGridChange" @close="closeSqlPreview" />
+      <SqlPreviewPanel :sql="previewSqlText" :empty-message="previewValidationMessage || undefined" :loading="isPreviewLoading" :can-undo="canUndoPendingChange" :can-redo="canRedoPendingChange" @undo="undoGridChange" @redo="redoGridChange" @close="closeSqlPreview" />
     </div>
 
     <DangerConfirmDialog

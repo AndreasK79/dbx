@@ -23,6 +23,7 @@ import { needsTabNavigationHistoryShortcutMigration, normalizeShortcutSettings, 
 import type { SavedSqlOpenTargetMode } from "@/lib/savedSql/savedSqlExecutionTarget";
 import type { ConnectionListSortMode } from "@/lib/sidebar/connectionListSort";
 import { type ColumnNameCopySeparator } from "@/lib/dataGrid/dataGridColumnNameCopy";
+import { normalizeRedisValuePreviewLimitKiB, REDIS_VALUE_PREVIEW_LIMIT_KIB_DEFAULT } from "@/lib/redis/redisValuePreviewLimit";
 import { normalizeRedisKeyTemplates } from "@/lib/redis/redisKeyTemplates";
 import { REDIS_DATABASE_DISPLAY_LIMIT_DEFAULT, REDIS_DATABASE_DISPLAY_LIMIT_MIN, REDIS_DATABASE_DISPLAY_LIMIT_MAX } from "@/lib/redis/redisDatabaseAlias";
 import { normalizeSidebarHiddenTablePrefixes } from "@/lib/sidebar/sidebarTableNameDisplay";
@@ -937,7 +938,7 @@ export const DEFAULT_CUSTOM_THEMES: CustomTheme[] = [
   },
 ];
 
-export type SidebarObjectInfoMode = "comment-inline" | "comment-aligned" | "comment-right" | "size" | "hidden";
+export type SidebarObjectInfoMode = "comment-inline" | "comment-aligned" | "comment-right" | "size" | "comment-and-size" | "hidden";
 
 /**
  * 删除连接时记住的「连接名 → 数据库」。带上 `dbType` 是为了只在新建同名**同类型**
@@ -1195,6 +1196,8 @@ export interface EditorSettings {
   redisKeyTemplates: string[];
   /** Sidebar database-list cap for Redis connections; the rest are revealed via "load more". */
   redisDatabaseDisplayLimit: number;
+  /** Maximum Redis String/Bitmap preview size in KiB. */
+  redisValuePreviewLimitKiB: number;
   exportRowLimitEnabled: boolean;
   exportRowLimit: number;
   queryExportKeysetOptimizationEnabled: boolean;
@@ -1522,6 +1525,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   csvNullMode: DEFAULT_CSV_NULL_MODE,
   redisKeyTemplates: [],
   redisDatabaseDisplayLimit: REDIS_DATABASE_DISPLAY_LIMIT_DEFAULT,
+  redisValuePreviewLimitKiB: REDIS_VALUE_PREVIEW_LIMIT_KIB_DEFAULT,
   exportRowLimitEnabled: false,
   exportRowLimit: 100000,
   queryExportKeysetOptimizationEnabled: true,
@@ -1775,7 +1779,7 @@ function normalizeConnectionListSortMode(value: unknown): ConnectionListSortMode
 }
 
 function normalizeSidebarObjectInfoMode(value: unknown, legacyCommentLayout?: unknown, legacyHideTableComments?: unknown, legacyShowDatabaseSizes?: unknown): SidebarObjectInfoMode {
-  if (value === "comment-inline" || value === "comment-aligned" || value === "comment-right" || value === "size" || value === "hidden") return value;
+  if (value === "comment-inline" || value === "comment-aligned" || value === "comment-right" || value === "size" || value === "comment-and-size" || value === "hidden") return value;
   if (legacyCommentLayout === "hidden" || legacyHideTableComments === true) return "hidden";
   if (legacyShowDatabaseSizes === true) return "size";
   if (legacyCommentLayout === "aligned") return "comment-aligned";
@@ -2219,6 +2223,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     csvQuoteMode: normalizeCsvQuoteMode(settings.csvQuoteMode),
     csvNullMode: normalizeCsvNullMode(settings.csvNullMode),
     redisKeyTemplates: normalizeRedisKeyTemplates(settings.redisKeyTemplates),
+    redisValuePreviewLimitKiB: normalizeRedisValuePreviewLimitKiB(settings.redisValuePreviewLimitKiB),
     redisDatabaseDisplayLimit:
       typeof settings.redisDatabaseDisplayLimit === "number" && settings.redisDatabaseDisplayLimit >= REDIS_DATABASE_DISPLAY_LIMIT_MIN && settings.redisDatabaseDisplayLimit <= REDIS_DATABASE_DISPLAY_LIMIT_MAX
         ? Math.round(settings.redisDatabaseDisplayLimit)
@@ -3073,6 +3078,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.applyColumnFormattersOnExport !== undefined) editorSettings.value.applyColumnFormattersOnExport = partial.applyColumnFormattersOnExport === true;
     if (partial.csvQuoteMode !== undefined) editorSettings.value.csvQuoteMode = normalizeCsvQuoteMode(partial.csvQuoteMode);
     if (partial.csvNullMode !== undefined) editorSettings.value.csvNullMode = normalizeCsvNullMode(partial.csvNullMode);
+    if (partial.redisValuePreviewLimitKiB !== undefined) editorSettings.value.redisValuePreviewLimitKiB = normalizeRedisValuePreviewLimitKiB(partial.redisValuePreviewLimitKiB);
     if (partial.redisKeyTemplates !== undefined) editorSettings.value.redisKeyTemplates = normalizeRedisKeyTemplates(partial.redisKeyTemplates);
     if (partial.redisDatabaseDisplayLimit !== undefined) editorSettings.value.redisDatabaseDisplayLimit = Math.min(REDIS_DATABASE_DISPLAY_LIMIT_MAX, Math.max(REDIS_DATABASE_DISPLAY_LIMIT_MIN, Math.round(partial.redisDatabaseDisplayLimit)));
     if (partial.exportRowLimitEnabled !== undefined) editorSettings.value.exportRowLimitEnabled = partial.exportRowLimitEnabled;

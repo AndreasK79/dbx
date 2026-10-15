@@ -57,6 +57,7 @@ export type ShortcutActionId =
   | "reopenClosedTab"
   | "closeOtherTabs"
   | "closeAllTabs"
+  | "saveAllTabs"
   | "closeWindow"
   | "focusSearch"
   | "focusDatabaseSelect"
@@ -523,6 +524,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     // registry doesn't have, so this action ships unbound and stays optional.
     id: "closeAllTabs",
     labelKey: "contextMenu.closeAllTabs",
+    scope: "global",
+    defaultShortcut: "",
+  },
+  {
+    id: "saveAllTabs",
+    labelKey: "contextMenu.saveAllTabs",
     scope: "global",
     defaultShortcut: "",
   },
