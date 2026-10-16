@@ -76,8 +76,23 @@ import type { PluginCenterFocus } from "@/lib/plugins/pluginCenterNavigation";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { isWindows } from "@/lib/backend/platform";
 import { applyMeilisearchBasePathToExternalConfig, applyParsedConnectionUrl, normalizeMongoConnectionString, parseConnectionUrl } from "@/lib/connection/connectionUrl";
+import { hasGbase8cConnectionDatabase } from "@/lib/connection/gbase8cDatabase";
+import { type GbaseProfile, gbaseProfileFromConfig, isGbaseProfile } from "@/lib/connection/gbaseProfiles";
+import { loadVisibleDatabasesPickerNames } from "@/lib/connection/visibleDatabasesPickerLoad";
 import { hasXuguConnectionDatabase } from "@/lib/connection/xuguDatabase";
-import { DEFAULT_QUERY_TIMEOUT_SECS, MAX_CONNECT_TIMEOUT_SECS, MAX_IDLE_TIMEOUT_SECS, MAX_QUERY_TIMEOUT_SECS, supportsIdleTimeout } from "@/lib/connection/timeoutLimits";
+import {
+  DEFAULT_IDLE_DISCONNECT_ENABLED_SECS,
+  DEFAULT_MANUAL_TRANSACTION_TIMEOUT_SECS,
+  DEFAULT_QUERY_TIMEOUT_SECS,
+  MAX_CONNECT_TIMEOUT_SECS,
+  MAX_IDLE_DISCONNECT_SECS,
+  MAX_IDLE_TIMEOUT_SECS,
+  MAX_MANUAL_TRANSACTION_TIMEOUT_SECS,
+  MAX_QUERY_TIMEOUT_SECS,
+  MIN_MANUAL_TRANSACTION_TIMEOUT_SECS,
+  normalizeManualTransactionTimeoutSecs,
+  supportsIdleTimeout,
+} from "@/lib/connection/timeoutLimits";
 import { buildOracleTnsConnectionString, normalizeOracleTnsAdminPath, parseOracleTnsConnectionString } from "@/lib/connection/oracleTnsConnection";
 import { applyConnectionDeepLinkUpdate, resolveConnectionDeepLinkUpdate } from "@/lib/connection/connectionDeepLinkUpdate";
 import { connectionDeepLinkServiceHydrationValue, parseConnectionDeepLink, parseConnectionDeepLinkUpdate, parseServiceConnectionUrl, type ConnectionDeepLinkDraft, type ConnectionDeepLinkUpdate } from "@/lib/connection/connectionDeepLink";
@@ -114,7 +129,7 @@ import { postgresLegacyTlsEnabled, postgresTlsModeForForm, setPostgresLegacyTlsE
 import { buildMqKafkaConnectionExtra, mqKafkaConnectionTarget, resolveMqKafkaConnectionSource, type MqKafkaConnectionSource } from "@/lib/connection/mqKafkaConnection";
 import { assertCompleteDatabaseCategories, databaseSelectionForCategory } from "@/lib/connection/databaseCategoryOptions";
 import { loadConnectionPickerView, saveConnectionPickerView, type DbPickerView } from "@/lib/connection/connectionPickerViewPreference";
-import { normalizeRocketmqNamesrvAddr } from "@/lib/connection/rocketmqNamesrv";
+import { buildRocketMqConfig, hydrateRocketMqConfig, isRocketMqConfigValid, rocketMqConnectionTarget } from "@/lib/connection/rocketmqConfig";
 import { normalizeRabbitmqAddresses, parseRabbitmqAddress } from "@/lib/connection/rabbitmqAddresses";
 import { pluginFieldIsRequired, pluginFieldIsVisible } from "@/lib/plugins/pluginFieldConditions";
 import { detectMqUiAuthKind, isMqAuthKindAllowedForSystem, type MqUiAuthKind } from "@/lib/connection/mqAuth";
@@ -156,7 +171,7 @@ import {
 import { buildDraftVisibleDatabasesConnectionId, connectionCanChooseVisibleDatabases, initialVisibleDatabaseSelection, visibleObjectFiltersNeedReset } from "@/lib/connection/connectionVisibleDatabases";
 import { resolveVisibleDatabaseSaveAction } from "@/components/sidebar/visibleDatabasesDialogState";
 import { canSaveVisibleDatabaseSelection, connectionUsesVisibleSchemaFilter, filterDatabaseNamesForVisiblePicker, filterSchemaNamesForVisiblePicker, buildDraftVisibleSchemasConnectionId, normalizeVisibleSchemaSelection } from "@/lib/database/visibleDatabases";
-import { isSchemaAware, isSingleDatabase, supportsDataDictionary } from "@/lib/database/databaseFeatureSupport";
+import { isSchemaAware, isSingleDatabase, supportsDataDictionary, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
 import { normalizeConnectionScope, normalizeConnectionTimeouts } from "@/lib/connection/connectionSubmitNormalization";
 import { databaseConnectionFormKind, databaseManifestEntry } from "@/lib/database/databaseDriverManifest";
 import VisibleSchemasDialog from "@/components/sidebar/VisibleSchemasDialog.vue";
@@ -423,6 +438,9 @@ const defaultForm = (): ConnectionForm => ({
   query_timeout_secs: settingsStore.editorSettings.globalQueryTimeoutSecs,
   query_timeout_inherit: true,
   idle_timeout_secs: 60,
+  manual_transaction_timeout_secs: DEFAULT_MANUAL_TRANSACTION_TIMEOUT_SECS,
+  // 空闲自动断开默认不启用（0）。
+  idle_disconnect_secs: 0,
   keepalive_interval_secs: 30,
   ssl: false,
   ca_cert_path: "",
@@ -796,6 +814,30 @@ const keepaliveEnabled = computed({
     }
   },
 });
+
+const idleDisconnectEnabled = computed({
+  get: () => Number(form.value.idle_disconnect_secs) > 0,
+  set: (enabled: boolean) => {
+    if (enabled) {
+      const current = Number(form.value.idle_disconnect_secs);
+      form.value.idle_disconnect_secs = Number.isFinite(current) && current > 0 ? current : DEFAULT_IDLE_DISCONNECT_ENABLED_SECS;
+    } else {
+      form.value.idle_disconnect_secs = 0;
+    }
+  },
+});
+
+/**
+ * 「空闲自动断开」的软校验：开启后阈值若不大于「保持连接间隔」，保活探测还没来得及跑一次，
+ * 连接就已经被关掉了，等于保活白开。这里只提示、不阻止保存——两者相等或更短的组合仍有
+ * 合理场景（例如用户只是不想要保活），不该把配置挡在门外。
+ */
+const idleDisconnectKeepaliveWarning = computed(() => {
+  const idle = Number(form.value.idle_disconnect_secs);
+  const keepalive = Number(form.value.keepalive_interval_secs);
+  return idle > 0 && keepalive > 0 && idle <= keepalive;
+});
+
 const selectedTransportLayerId = ref<string | null>(null);
 const draggedTransportLayerId = ref<string | null>(null);
 const selectedType = ref("mysql");
@@ -925,6 +967,18 @@ const mqSystemKind = ref<MqSystemKind>("pulsar");
 const mqKafkaConnectionSource = ref<MqKafkaConnectionSource>("bootstrap");
 const mqRocketmqNamesrvAddr = ref("127.0.0.1:9876");
 const mqRocketmqClusterName = ref("");
+const mqRocketmqConnectionMode = ref<"remoting" | "proxy">("remoting");
+const mqRocketmqProxyEndpoint = ref("");
+const mqRocketmqProxyTls = ref(true);
+const mqRocketmqManagementEnabled = ref(false);
+const rocketMqFormFields = () => ({
+  connectionMode: mqRocketmqConnectionMode.value,
+  proxyEndpoint: mqRocketmqProxyEndpoint.value,
+  proxyTls: mqRocketmqProxyTls.value,
+  managementEnabled: mqRocketmqManagementEnabled.value,
+  namesrvAddr: mqRocketmqNamesrvAddr.value,
+  clusterName: mqRocketmqClusterName.value,
+});
 const mqRabbitmqAddresses = ref("127.0.0.1:5672");
 const mqRabbitmqVirtualHost = ref("/");
 const mqKafkaBootstrapServers = ref("127.0.0.1:9092");
@@ -1237,7 +1291,7 @@ function selectedProfile() {
       icon: "plugin",
     };
   }
-  const profile = selectedType.value === "gbase" && (form.value.driver_profile === "gbase8a" || form.value.driver_profile === "gbase8s") ? form.value.driver_profile : selectedType.value;
+  const profile = selectedType.value === "gbase" ? gbaseProfileFromConfig(form.value) : selectedType.value;
   return driverProfiles[profile] ?? driverProfiles.mysql;
 }
 
@@ -1292,8 +1346,13 @@ function resetMqFields(config?: Partial<MqAdminConfig>) {
   mqKafkaConnectionSource.value = resolveMqKafkaConnectionSource(extra);
   mqKafkaBootstrapServers.value = mqExtraString(extra, "bootstrapServers") || "127.0.0.1:9092";
   mqKafkaZooKeeperServers.value = mqExtraString(extra, "zookeeperServers");
-  mqRocketmqNamesrvAddr.value = mqExtraString(extra, "namesrvAddr") || mqExtraString(extra, "namesrv_addr") || "127.0.0.1:9876";
-  mqRocketmqClusterName.value = mqExtraString(extra, "clusterName") || mqExtraString(extra, "cluster_name");
+  const rocketmq = hydrateRocketMqConfig(config);
+  mqRocketmqNamesrvAddr.value = rocketmq.namesrvAddr;
+  mqRocketmqClusterName.value = rocketmq.clusterName;
+  mqRocketmqConnectionMode.value = rocketmq.connectionMode;
+  mqRocketmqProxyEndpoint.value = rocketmq.proxyEndpoint;
+  mqRocketmqProxyTls.value = rocketmq.proxyTls;
+  mqRocketmqManagementEnabled.value = rocketmq.managementEnabled;
   mqRabbitmqAddresses.value = mqExtraString(extra, "addresses") || "127.0.0.1:5672";
   mqRabbitmqVirtualHost.value = mqExtraString(extra, "virtualHost") || "/";
   mqKafkaSecurityProtocol.value = mqExtraString(extra, "securityProtocol") || MQ_KAFKA_SECURITY_PROTOCOL_AUTO;
@@ -2082,20 +2141,7 @@ function buildMqAdminConfig(): MqAdminConfig {
   }
 
   if (systemKind === "rocketmq") {
-    const namesrvAddr = normalizeRocketmqNamesrvAddr(mqRocketmqNamesrvAddr.value);
-    const extra: Record<string, unknown> = { namesrvAddr };
-    if (mqRocketmqClusterName.value.trim()) extra.clusterName = mqRocketmqClusterName.value.trim();
-    if (mqAuthKind.value === "basic") {
-      extra.accessKey = mqBasicUsername.value.trim();
-      extra.secretKey = mqBasicPassword.value;
-    }
-    return {
-      systemKind: "rocketmq",
-      adminUrl: "",
-      auth: buildMqAuth(),
-      tlsSkipVerify: mqTlsSkipVerify.value || undefined,
-      extra,
-    };
+    return buildRocketMqConfig(rocketMqFormFields(), buildMqAuth(), mqTlsSkipVerify.value);
   }
 
   if (systemKind === "rabbitmq") {
@@ -2617,20 +2663,6 @@ async function testConnectionWithTimeout(config: ConnectionConfig, runId: number
   }
 }
 
-function applyMqRocketmqNamesrv(config: LegacyConnectionConfig, namesrvAddr: string) {
-  const first = normalizeRocketmqNamesrvAddr(namesrvAddr).split(";")[0];
-  if (!first) throw new Error(t("connection.rocketmqNamesrvAddrRequired"));
-  let parsed: URL;
-  try {
-    parsed = new URL(`rocketmq://${first}`);
-  } catch {
-    throw new Error(t("connection.rocketmqNamesrvAddrInvalid"));
-  }
-  config.host = parsed.hostname;
-  config.port = Number(parsed.port) || 9876;
-  config.ssl = false;
-}
-
 function applyMqAdminUrl(config: LegacyConnectionConfig, adminUrl: string) {
   let parsed: URL;
   try {
@@ -3048,7 +3080,9 @@ function switchOceanbaseMode(mode: "mysql" | "oracle") {
   resetTestState();
 }
 
-function switchGbaseProfile(profile: "gbase8a" | "gbase8s") {
+const gbaseFormProfile = computed(() => gbaseProfileFromConfig(form.value));
+
+function switchGbaseProfile(profile: GbaseProfile) {
   applyProfile(profile, false);
   selectedType.value = "gbase";
   resetTestState();
@@ -3120,6 +3154,8 @@ watch(
         query_timeout_secs: config.query_timeout_inherit === true ? settingsStore.editorSettings.globalQueryTimeoutSecs : (config.query_timeout_secs ?? DEFAULT_QUERY_TIMEOUT_SECS),
         query_timeout_inherit: config.query_timeout_inherit === true,
         idle_timeout_secs: config.idle_timeout_secs ?? 60,
+        manual_transaction_timeout_secs: normalizeManualTransactionTimeoutSecs(config.manual_transaction_timeout_secs),
+        idle_disconnect_secs: config.idle_disconnect_secs ?? 0,
         keepalive_interval_secs: config.keepalive_interval_secs ?? 30,
         sysdba: config.sysdba || isOracleSysUser(config),
         oracle_oci_nls_lang: config.oracle_oci_nls_lang || "",
@@ -3228,7 +3264,7 @@ watch(
       if (profile === "oceanbase") {
         oceanbaseSubMode.value = oceanbaseMode;
       }
-      if (profile === "gbase8a" || profile === "gbase8s") {
+      if (isGbaseProfile(profile)) {
         selectedType.value = "gbase";
       }
       dremioConnectionMode.value = profile === "dremio" ? dremioConnectionModeForConfig(config) : "legacy";
@@ -3327,6 +3363,7 @@ const databasePlaceholder = computed(() => {
   if (form.value.db_type === "oracle" && form.value.oracle_connection_type === "tns") return t("connection.oracleTnsAliasPlaceholder");
   if (form.value.db_type === "xugu") return t("connection.databasePlaceholderRequired");
   if (form.value.db_type === "kingbase") return t("connection.databasePlaceholderRequired");
+  if (form.value.db_type === "gbase8c") return t("connection.databasePlaceholderRequired");
   const fallback = defaultDatabaseForProfile();
   if (!fallback) return t("connection.databasePlaceholder");
   return t("connection.databasePlaceholderWithDefault", { database: fallback });
@@ -3779,7 +3816,7 @@ function dbCategoryForOption(value: string): DbCategoryKey | undefined {
 
 const selectedDbIcon = computed(() => (isPluginConnection.value ? "plugin" : iconTypeMap[selectedType.value] || selectedProfile().icon || selectedType.value));
 function supportsNativeAgentJdbcDriverConfigType(dbType: DatabaseType): boolean {
-  return dbType === "prestosql" || dbType === "bigquery" || dbType === "dameng" || dbType === "sundb";
+  return dbType === "prestosql" || dbType === "bigquery" || dbType === "dameng" || dbType === "sundb" || dbType === "gbase8c";
 }
 
 const jdbcBackedDatabaseTypes = new Set<DatabaseType>(["jdbc", "prestosql", "bigquery"]);
@@ -3798,6 +3835,7 @@ const supportsNativeAgentJdbcDriverConfig = computed(() => supportsNativeAgentJd
 const nativeAgentJdbcDriverHint = computed(() => {
   if (form.value.db_type === "dameng") return t("connection.damengCustomDriverHint");
   if (form.value.db_type === "sundb") return t("connection.sundbCustomDriverHint");
+  if (form.value.db_type === "gbase8c") return t("connection.gbase8cCustomDriverHint");
   return t("connection.jdbcPluginHint");
 });
 const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionMode.value === "file");
@@ -3856,6 +3894,7 @@ const bareMysqlProfiles = new Set(["doris", "selectdb", "oceanbase"]);
 const supportsMysqlTlsOptions = computed(() => mysqlTlsOptionsSupported(form.value.db_type, selectedType.value));
 const supportsMysqlCleartextPasswordAuth = computed(() => form.value.db_type === "mysql" && !bareMysqlProfiles.has(selectedType.value));
 const supportsIdleTimeoutSetting = computed(() => supportsIdleTimeout(form.value.db_type));
+const supportsManualTransactionTimeoutSetting = computed(() => supportsTransaction(form.value.db_type));
 const supportsDoltSystemTables = computed(() => isDoltDriverProfile(form.value.driver_profile));
 const showDoltSystemTables = computed({
   get: () => doltSystemTablesVisible(form.value),
@@ -4383,7 +4422,7 @@ const hasRequiredConnectionTarget = computed(() => {
   }
   if (form.value.db_type === "mq") {
     if (mqSystemKind.value === "kafka") return mqKafkaConnectionSource.value === "zookeeper" ? !!mqKafkaZooKeeperServers.value.trim() : !!mqKafkaBootstrapServers.value.trim();
-    if (mqSystemKind.value === "rocketmq") return !!mqRocketmqNamesrvAddr.value.trim();
+    if (mqSystemKind.value === "rocketmq") return isRocketMqConfigValid(rocketMqFormFields());
     if (mqSystemKind.value === "rabbitmq") return !!mqRabbitmqAddresses.value.trim();
     return !!mqAdminUrl.value.trim();
   }
@@ -4628,6 +4667,8 @@ function applyConnectionUrlToForm(input: string): boolean {
     if (parsed.driverProfile === "oceanbase-oracle") {
       oceanbaseSubMode.value = "oracle";
       selectedType.value = "oceanbase";
+    } else if (isGbaseProfile(parsed.driverProfile)) {
+      selectedType.value = "gbase";
     } else {
       selectedType.value = parsed.driverProfile;
     }
@@ -4846,6 +4887,8 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.query_timeout_secs = form.value.query_timeout_secs;
     config.query_timeout_inherit = form.value.query_timeout_inherit;
     config.idle_timeout_secs = form.value.idle_timeout_secs;
+    config.manual_transaction_timeout_secs = normalizeManualTransactionTimeoutSecs(form.value.manual_transaction_timeout_secs);
+    config.idle_disconnect_secs = form.value.idle_disconnect_secs;
     config.keepalive_interval_secs = form.value.keepalive_interval_secs;
     config.read_only = form.value.read_only;
     config.save_password = form.value.save_password;
@@ -4877,6 +4920,12 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.database = config.database?.trim() || undefined;
     if (!config.database) {
       throw new Error(t("connection.kingbaseDatabaseRequired"));
+    }
+  }
+  if (config.db_type === "gbase8c") {
+    config.database = config.database?.trim() || undefined;
+    if (!hasGbase8cConnectionDatabase(config.database, config.connection_string)) {
+      throw new Error(t("connection.gbase8cDatabaseRequired"));
     }
   }
   if (config.db_type === "dynamodb") {
@@ -4979,8 +5028,7 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
       const extra = mqExtraRecord(mqConfig);
       applyMqKafkaConnectionTarget(config, extra);
     } else if (mqConfig.systemKind === "rocketmq") {
-      const extra = mqExtraRecord(mqConfig);
-      applyMqRocketmqNamesrv(config, mqExtraString(extra, "namesrvAddr") || mqExtraString(extra, "namesrv_addr"));
+      Object.assign(config, rocketMqConnectionTarget(mqConfig));
     } else if (mqConfig.systemKind === "rabbitmq") {
       const extra = mqExtraRecord(mqConfig);
       applyMqRabbitmqAddresses(config, mqExtraString(extra, "addresses"));
@@ -5688,12 +5736,15 @@ async function preloadVisibleDatabaseNames() {
       id: draftId,
       one_time: true,
     };
-    await api.connectDb(draftConfig);
-    visibleDatabaseNames.value = await loadVisibleDatabaseNames(draftId, draftConfig);
+    visibleDatabaseNames.value = await loadVisibleDatabasesPickerNames({
+      connect: () => api.connectDb(draftConfig),
+      listNames: () => loadVisibleDatabaseNames(draftId, draftConfig),
+      disconnect: () => api.disconnectDb(draftId),
+      queryTimeoutSecs: form.value.query_timeout_secs,
+    });
   } catch {
     // silently fail
   } finally {
-    await api.disconnectDb(draftId).catch(() => undefined);
     isLoadingVisibleDatabases.value = false;
   }
 }
@@ -5713,8 +5764,12 @@ async function openVisibleDatabasesPicker() {
       id: draftId,
       one_time: true,
     };
-    await api.connectDb(draftConfig);
-    const names = await loadVisibleDatabaseNames(draftId, draftConfig);
+    const names = await loadVisibleDatabasesPickerNames({
+      connect: () => api.connectDb(draftConfig),
+      listNames: () => loadVisibleDatabaseNames(draftId, draftConfig),
+      disconnect: () => api.disconnectDb(draftId),
+      queryTimeoutSecs: form.value.query_timeout_secs,
+    });
     visibleDatabaseNames.value = names;
     visibleDatabaseShowSystem.value = false;
     const configuredSchemas = visibleSchemaObjectSelection.value;
@@ -5730,7 +5785,6 @@ async function openVisibleDatabasesPicker() {
     testResult.value = { ok: false, message: visibleDatabaseError.value };
     showVisibleDatabasesDialog.value = true;
   } finally {
-    await api.disconnectDb(draftId).catch(() => undefined);
     isLoadingVisibleDatabases.value = false;
   }
 }
@@ -6287,7 +6341,7 @@ function applyConnectionDraftToForm(draft: ConnectionDeepLinkDraft) {
     oceanbaseSubMode.value = "oracle";
     selectedType.value = "oceanbase";
   }
-  if (draft.driverProfile === "gbase8a" || draft.driverProfile === "gbase8s") {
+  if (isGbaseProfile(draft.driverProfile)) {
     selectedType.value = "gbase";
   }
   customDriverName.value = isCustomCompatibleProfile() ? draft.driverLabel : "";
@@ -6611,6 +6665,15 @@ function clampIdleTimeoutInput(event: Event) {
   if (!Number.isFinite(value) || value <= MAX_IDLE_TIMEOUT_SECS) return;
   input.value = String(MAX_IDLE_TIMEOUT_SECS);
   form.value.idle_timeout_secs = MAX_IDLE_TIMEOUT_SECS;
+}
+
+function clampIdleDisconnectInput(event: Event) {
+  const input = event.target as HTMLInputElement;
+  if (input.value === "") return;
+  const value = Number(input.value);
+  if (!Number.isFinite(value) || value <= MAX_IDLE_DISCONNECT_SECS) return;
+  input.value = String(MAX_IDLE_DISCONNECT_SECS);
+  form.value.idle_disconnect_secs = MAX_IDLE_DISCONNECT_SECS;
 }
 
 async function persistGlobalTimeoutDrafts() {
@@ -7346,8 +7409,9 @@ function openExternalUrl(url: string) {
                 <div v-if="selectedType === 'gbase'" class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelSmallClass">{{ t("connection.version") }}</Label>
                   <div class="col-span-3 flex gap-2">
-                    <Button size="sm" :variant="form.driver_profile === 'gbase8s' ? 'outline' : 'default'" @click="switchGbaseProfile('gbase8a')"> GBase 8a </Button>
-                    <Button size="sm" :variant="form.driver_profile === 'gbase8s' ? 'default' : 'outline'" @click="switchGbaseProfile('gbase8s')"> GBase 8s </Button>
+                    <Button size="sm" :variant="gbaseFormProfile === 'gbase8a' ? 'default' : 'outline'" @click="switchGbaseProfile('gbase8a')"> GBase 8a </Button>
+                    <Button size="sm" :variant="gbaseFormProfile === 'gbase8s' ? 'default' : 'outline'" @click="switchGbaseProfile('gbase8s')"> GBase 8s </Button>
+                    <Button size="sm" :variant="gbaseFormProfile === 'gbase8c' ? 'default' : 'outline'" @click="switchGbaseProfile('gbase8c')"> GBase 8c </Button>
                   </div>
                 </div>
 
@@ -7781,10 +7845,35 @@ function openExternalUrl(url: string) {
                     </template>
                     <template v-else-if="mqSystemKind === 'rocketmq'">
                       <div class="grid grid-cols-4 items-center gap-4">
+                        <Label :class="connectionLabelClass">{{ t("connection.rocketmqConnectionMode") }}</Label>
+                        <Select v-model="mqRocketmqConnectionMode">
+                          <SelectTrigger class="col-span-3"><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="remoting">Remoting</SelectItem>
+                            <SelectItem value="proxy">Proxy (gRPC)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <template v-if="mqRocketmqConnectionMode === 'proxy'">
+                        <div class="grid grid-cols-4 items-center gap-4">
+                          <Label :class="connectionLabelClass">{{ t("connection.rocketmqProxyEndpoint") }}</Label>
+                          <Input v-model="mqRocketmqProxyEndpoint" class="col-span-3" placeholder="proxy.example.com:8081" />
+                        </div>
+                        <div class="grid grid-cols-4 items-center gap-4">
+                          <Label :class="connectionLabelClass">{{ t("connection.rocketmqProxyTls") }}</Label>
+                          <input v-model="mqRocketmqProxyTls" type="checkbox" />
+                        </div>
+                        <div class="grid grid-cols-4 items-center gap-4">
+                          <Label :class="connectionLabelClass">{{ t("connection.rocketmqManagementEnabled") }}</Label>
+                          <input v-model="mqRocketmqManagementEnabled" type="checkbox" />
+                        </div>
+                        <p class="text-xs text-muted-foreground">{{ t("connection.rocketmqProxyHint") }}</p>
+                      </template>
+                      <div v-if="mqRocketmqConnectionMode === 'remoting' || mqRocketmqManagementEnabled" class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.rocketmqNamesrvAddr") }}</Label>
                         <Input v-model="mqRocketmqNamesrvAddr" class="col-span-3" :placeholder="t('connection.rocketmqNamesrvAddrPlaceholder')" />
                       </div>
-                      <div class="grid grid-cols-4 items-center gap-4">
+                      <div v-if="mqRocketmqConnectionMode === 'remoting' || mqRocketmqManagementEnabled" class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.rocketmqClusterName") }}</Label>
                         <Input v-model="mqRocketmqClusterName" class="col-span-3" :placeholder="t('connection.rocketmqClusterNamePlaceholder')" />
                       </div>
@@ -9152,7 +9241,7 @@ function openExternalUrl(url: string) {
                       <Input v-model="elasticsearchIndexGroupingPattern" class="col-span-3" :placeholder="t('connection.elasticsearchIndexGroupingPatternPlaceholder')" @input="resetTestState" />
                     </div>
 
-                    <div v-if="form.driver_profile === 'gbase8s'" class="grid grid-cols-4 items-center gap-4">
+                    <div v-if="form.db_type === 'gbase8s'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.gbaseServer") }}</Label>
                       <div class="col-span-3 space-y-1">
                         <Input v-model="form.gbase_server" placeholder="gbase01" />
@@ -10322,6 +10411,29 @@ function openExternalUrl(url: string) {
                   <div class="col-span-3 space-y-1">
                     <Input v-model.number="form.idle_timeout_secs" type="number" min="0" :max="MAX_IDLE_TIMEOUT_SECS" step="1" @input="clampIdleTimeoutInput($event)" />
                     <p class="text-xs leading-5 text-muted-foreground">{{ t("connection.idleTimeoutHint") }}</p>
+                  </div>
+                </div>
+                <div v-show="supportsManualTransactionTimeoutSetting" class="grid grid-cols-4 items-start gap-4">
+                  <Label :class="connectionLabelSmallPaddedClass">{{ t("connection.manualTransactionTimeout") }}</Label>
+                  <div class="col-span-3 space-y-1">
+                    <Input v-model.number="form.manual_transaction_timeout_secs" type="number" :min="MIN_MANUAL_TRANSACTION_TIMEOUT_SECS" :max="MAX_MANUAL_TRANSACTION_TIMEOUT_SECS" step="1" />
+                    <p class="text-xs leading-5 text-muted-foreground">{{ t("connection.manualTransactionTimeoutHint", { min: MIN_MANUAL_TRANSACTION_TIMEOUT_SECS, max: MAX_MANUAL_TRANSACTION_TIMEOUT_SECS }) }}</p>
+                  </div>
+                </div>
+                <!-- 空闲自动断开由后端在连接池层面实现，所有方言均适用，故不做方言门控：
+                     即使上面的「空闲超时」被 v-show 隐藏，这里也要展示。 -->
+                <div class="grid grid-cols-4 items-start gap-4">
+                  <Label :class="connectionLabelSmallPaddedClass">
+                    <span class="inline-flex items-center gap-1">{{ t("connection.idleDisconnect") }} <HelpTooltip :label="t('connection.idleDisconnectHint')" content-class="max-w-[280px]" /></span>
+                  </Label>
+                  <div class="col-span-3 space-y-1">
+                    <div class="flex items-center gap-2">
+                      <Switch v-model="idleDisconnectEnabled" />
+                      <Input v-model.number="form.idle_disconnect_secs" type="number" min="1" :max="MAX_IDLE_DISCONNECT_SECS" step="1" class="flex-1" :disabled="!idleDisconnectEnabled" @input="clampIdleDisconnectInput($event)" />
+                    </div>
+                    <p v-if="idleDisconnectKeepaliveWarning" class="rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs leading-5 text-amber-700 dark:text-amber-400">
+                      {{ t("connection.idleDisconnectKeepaliveWarning") }}
+                    </p>
                   </div>
                 </div>
                 <div class="grid grid-cols-4 items-center gap-4">

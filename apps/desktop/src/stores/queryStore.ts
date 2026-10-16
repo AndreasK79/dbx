@@ -90,6 +90,7 @@ import { isDataTabMetadataLifecycleStale } from "@/lib/sidebar/dataTabOpenPolicy
 import type { SqlInsertMode } from "@/lib/export/sqlInsertMode";
 import { csvNullLiteralForMode } from "@/lib/export/csvNullMode";
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
+import { formatMetadataColumnTypeLabel } from "@/lib/dataGrid/dataGridColumnType";
 import { getCachedTableMetadata, loadTableColumns, loadTableIndexes, loadTableMetadata, tableMetadataToDataTabMeta, updateCachedTableMetadataType, type TableMetadataRequest } from "@/lib/metadata/tableMetadataCache";
 import { loadObjectDdl } from "@/lib/metadata/objectDdlCache";
 import { MetadataTaskLimiter } from "@/lib/metadata/metadataTaskLimiter";
@@ -194,7 +195,8 @@ export interface EditorWorkspacePersistState {
   sizes: number[];
 }
 
-export type QueryMetadataPatch = Pick<QueryTab, "queryAnalysis" | "querySourceColumns" | "queryWriteTargets" | "queryEditabilityReason" | "tableMeta" | "resultColumnComments" | "queryDisplaySourceColumns">;
+export type QueryMetadataPatch = Pick<QueryTab, "queryAnalysis" | "querySourceColumns" | "queryWriteTargets" | "queryEditabilityReason" | "tableMeta" | "resultColumnComments" | "resultColumnTypeLabels" | "queryDisplaySourceColumns">;
+type QueryDisplayMetadataReady = Pick<QueryMetadataPatch, "resultColumnComments" | "resultColumnTypeLabels" | "queryDisplaySourceColumns">;
 
 interface BatchSqlResumeOptions {
   batch: BatchSqlExecution;
@@ -1887,6 +1889,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.querySourceColumns = undefined;
     tab.queryWriteTargets = undefined;
     tab.resultColumnComments = undefined;
+    tab.resultColumnTypeLabels = undefined;
     tab.queryDisplaySourceColumns = undefined;
     tab.queryEditabilityReason = undefined;
     tab.mongoEditTarget = undefined;
@@ -1969,6 +1972,7 @@ export const useQueryStore = defineStore("query", () => {
     run.querySourceColumns = undefined;
     run.queryWriteTargets = undefined;
     run.resultColumnComments = undefined;
+    run.resultColumnTypeLabels = undefined;
     run.queryDisplaySourceColumns = undefined;
     run.queryEditabilityReason = undefined;
     run.mongoEditTarget = undefined;
@@ -2019,6 +2023,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.querySourceColumns = run.querySourceColumns;
     tab.queryWriteTargets = run.queryWriteTargets;
     tab.resultColumnComments = run.resultColumnComments;
+    tab.resultColumnTypeLabels = run.resultColumnTypeLabels;
     tab.queryDisplaySourceColumns = run.queryDisplaySourceColumns;
     tab.queryEditabilityReason = run.queryEditabilityReason;
     tab.mongoEditTarget = run.mongoEditTarget;
@@ -2317,6 +2322,7 @@ export const useQueryStore = defineStore("query", () => {
         querySourceColumns: run.querySourceColumns,
         queryWriteTargets: run.queryWriteTargets,
         resultColumnComments: run.resultColumnComments,
+        resultColumnTypeLabels: run.resultColumnTypeLabels,
         queryDisplaySourceColumns: run.queryDisplaySourceColumns,
         queryEditabilityReason: run.queryEditabilityReason,
         tableMeta: run.tableMeta,
@@ -2410,6 +2416,7 @@ export const useQueryStore = defineStore("query", () => {
       querySourceColumns: tab.querySourceColumns,
       queryWriteTargets: tab.queryWriteTargets,
       resultColumnComments: tab.resultColumnComments,
+      resultColumnTypeLabels: tab.resultColumnTypeLabels,
       queryDisplaySourceColumns: tab.queryDisplaySourceColumns,
       queryEditabilityReason: tab.queryEditabilityReason,
       mongoEditTarget: tab.mongoEditTarget,
@@ -2520,6 +2527,7 @@ export const useQueryStore = defineStore("query", () => {
       querySourceColumns: tab.querySourceColumns,
       queryWriteTargets: tab.queryWriteTargets,
       resultColumnComments: tab.resultColumnComments,
+      resultColumnTypeLabels: tab.resultColumnTypeLabels,
       queryDisplaySourceColumns: tab.queryDisplaySourceColumns,
       queryEditabilityReason: tab.queryEditabilityReason,
       mongoEditTarget: tab.mongoEditTarget,
@@ -5107,6 +5115,7 @@ export const useQueryStore = defineStore("query", () => {
       querySourceColumns: original.querySourceColumns ? [...original.querySourceColumns] : undefined,
       queryWriteTargets: original.queryWriteTargets?.map((target) => ({ ...target, sourceColumns: [...target.sourceColumns] })),
       resultColumnComments: original.resultColumnComments ? [...original.resultColumnComments] : undefined,
+      resultColumnTypeLabels: original.resultColumnTypeLabels ? [...original.resultColumnTypeLabels] : undefined,
       queryDisplaySourceColumns: original.queryDisplaySourceColumns ? [...original.queryDisplaySourceColumns] : undefined,
       queryEditabilityReason: original.queryEditabilityReason,
       resultEvicted: undefined,
@@ -6584,7 +6593,7 @@ export const useQueryStore = defineStore("query", () => {
    * identifiers keep exact casing. Ambiguous or unresolved columns yield
    * `undefined` (no comment) instead of first-source-wins on a shared name.
    */
-  function resolveResultColumnInfo(dbType: string, analysis: EditableQueryInfo, resultColumns: string[], loadedSources: LoadedEditableSource[]): { comments: Array<string | undefined>; mapping: Array<QueryResultSourceColumnRef | undefined> } {
+  function resolveResultColumnInfo(dbType: string, analysis: EditableQueryInfo, resultColumns: string[], loadedSources: LoadedEditableSource[]): { comments: Array<string | undefined>; typeLabels: Array<string | undefined>; mapping: Array<QueryResultSourceColumnRef | undefined> } {
     const refs = resolveSourceColumnsByOrdinal(
       dbType,
       analysis,
@@ -6592,16 +6601,29 @@ export const useQueryStore = defineStore("query", () => {
       resultColumns.length,
     );
     const comments: Array<string | undefined> = [];
+    const typeLabels: Array<string | undefined> = [];
     const mapping: Array<QueryResultSourceColumnRef | undefined> = [];
     for (const ref of refs) {
       if (!ref) {
         comments.push(undefined);
+        typeLabels.push(undefined);
         mapping.push(undefined);
         continue;
       }
       const loaded = loadedSources.find((entry) => entry.source.key === ref.sourceKey);
-      const comment = loaded?.tableMeta.columns.find((column) => column.name === ref.sourceColumn)?.comment?.trim();
+      const column = loaded?.tableMeta.columns.find((candidate) => candidate.name === ref.sourceColumn);
+      const comment = column?.comment?.trim();
       comments.push(comment || undefined);
+      typeLabels.push(
+        column
+          ? formatMetadataColumnTypeLabel({
+              dataType: column.data_type,
+              characterMaximumLength: column.character_maximum_length,
+              numericPrecision: column.numeric_precision,
+              numericScale: column.numeric_scale,
+            }) || undefined
+          : undefined,
+      );
       mapping.push({
         ...ref,
         database: loaded?.tableMeta.database,
@@ -6609,7 +6631,7 @@ export const useQueryStore = defineStore("query", () => {
         tableName: loaded?.tableMeta.tableName,
       });
     }
-    return { comments, mapping };
+    return { comments, typeLabels, mapping };
   }
 
   function mysqlColumnIsGenerated(column: { extra: string | null }): boolean {
@@ -6672,6 +6694,12 @@ export const useQueryStore = defineStore("query", () => {
     return databaseType !== "oracle" || !!loaded.tableMeta.tableType?.trim();
   }
 
+  function applyQueryDisplayMetadata(tab: QueryTab, display: QueryDisplayMetadataReady) {
+    if (display.resultColumnComments !== undefined) tab.resultColumnComments = display.resultColumnComments;
+    if (display.resultColumnTypeLabels !== undefined) tab.resultColumnTypeLabels = display.resultColumnTypeLabels;
+    if (display.queryDisplaySourceColumns !== undefined) tab.queryDisplaySourceColumns = display.queryDisplaySourceColumns;
+  }
+
   function applyQueryMetadataPatch(tab: QueryTab, patch: QueryMetadataPatch, databaseType?: DatabaseType, database?: string) {
     tab.queryAnalysis = patch.queryAnalysis;
     tab.querySourceColumns = patch.querySourceColumns;
@@ -6680,6 +6708,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.mongoEditTarget = undefined;
     tab.tableMeta = patch.tableMeta;
     tab.resultColumnComments = patch.resultColumnComments;
+    tab.resultColumnTypeLabels = patch.resultColumnTypeLabels;
     tab.queryDisplaySourceColumns = patch.queryDisplaySourceColumns;
 
     if (patch.tableMeta?.tableName && tab.result?.sourceStatement && tab.result.sourceLabel) {
@@ -6846,6 +6875,51 @@ export const useQueryStore = defineStore("query", () => {
       elapsed: elapsed?.(),
     });
     return loadedEditableSourceFromMetadata(target, loadedMetadata.metadata);
+  }
+
+  /**
+   * Load JOIN/source table metadata in two phases so result headers can show
+   * comments and declared type lengths as soon as columns return, without
+   * waiting for index discovery / editability.
+   */
+  async function loadEditableSourcesWithEarlyDisplay(
+    tab: QueryTab,
+    analysis: EditableQueryInfo,
+    sources: EditableQuerySource[],
+    conn: ConnectionConfig | undefined,
+    dbType: string,
+    executionDatabase: string,
+    traceId: string | undefined,
+    elapsed: (() => string) | undefined,
+    onDisplayReady?: (display: QueryDisplayMetadataReady) => void,
+  ): Promise<LoadedEditableSource[]> {
+    const targets = sources.map((source) => resolveEditableSourceMetadataTarget(tab, analysis, source, conn, dbType, executionDatabase));
+    const limiterScope = `${GROUPED_DISPLAY_LIMITER_SCOPE_PREFIX}${tab.connectionId}`;
+
+    const columnSources = await Promise.all(
+      targets.map((target) =>
+        groupedDisplayMetadataLimiter.run(limiterScope, "query-column-comments", async () => {
+          const loadedColumns = await loadTableColumns({
+            ...target.request,
+            traceLogger: (event) => queryExecutionLog("debug", "metadata:table-columns-trace", { sourceTraceId: traceId, ...event }),
+          });
+          return loadedEditableSourceFromColumns(target, loadedColumns);
+        }),
+      ),
+    );
+
+    if (onDisplayReady && tab.result?.columns.length) {
+      const displayInfo = resolveResultColumnInfo(dbType, analysis, tab.result.columns, columnSources);
+      onDisplayReady({
+        resultColumnComments: displayInfo.comments,
+        resultColumnTypeLabels: displayInfo.typeLabels,
+        queryDisplaySourceColumns: displayInfo.mapping,
+      });
+    }
+
+    // Columns are warm in the shared cache; full loads only pay for indexes /
+    // primary-key resolution needed by editability. Multi-source stays bounded.
+    return Promise.all(sources.map((source) => groupedDisplayMetadataLimiter.run(limiterScope, "query-table-metadata", async () => loadEditableQuerySource(tab, analysis, source, conn, dbType, executionDatabase, traceId, elapsed))));
   }
 
   function missingPrimaryKeysForSource(databaseType: DatabaseType, primaryKeys: string[], analysis: EditableQueryInfo, sourceKey: string): string[] {
@@ -7087,17 +7161,16 @@ export const useQueryStore = defineStore("query", () => {
       // coordinator deduplicates identical tables across concurrent callers,
       // so this path issues no indexes requests and never loads full editable
       // metadata.
-      const loadedSources: LoadedEditableSource[] = [];
       const targets = sources.map((source) => resolveEditableSourceMetadataTarget(tab, analysis, source, conn, dbType, executionDatabase));
       const limiterScope = `${GROUPED_DISPLAY_LIMITER_SCOPE_PREFIX}${tab.connectionId}`;
-      await Promise.all(
+      const loadedSources = await Promise.all(
         targets.map((target) =>
           groupedDisplayMetadataLimiter.run(limiterScope, "query-column-comments", async () => {
             const loadedColumns = await loadTableColumns({
               ...target.request,
               traceLogger: (event) => queryExecutionLog("debug", "metadata:table-columns-trace", { sourceTraceId: traceId, ...event }),
             });
-            loadedSources.push(loadedEditableSourceFromColumns(target, loadedColumns));
+            return loadedEditableSourceFromColumns(target, loadedColumns);
           }),
         ),
       );
@@ -7108,6 +7181,7 @@ export const useQueryStore = defineStore("query", () => {
         queryEditabilityReason: readOnlyReason,
         tableMeta: undefined,
         resultColumnComments: displayInfo.comments,
+        resultColumnTypeLabels: displayInfo.typeLabels,
         queryDisplaySourceColumns: displayInfo.mapping,
       };
       if (!allowMysqlEditing || dbType !== "mysql" || (conn?.driver_profile || conn?.db_type) !== "mysql") return readOnlyPatch;
@@ -7156,6 +7230,7 @@ export const useQueryStore = defineStore("query", () => {
         queryEditabilityReason: undefined,
         tableMeta: target.tableMeta,
         resultColumnComments: displayInfo.comments,
+        resultColumnTypeLabels: displayInfo.typeLabels,
         queryDisplaySourceColumns: displayInfo.mapping,
       };
     } catch (err) {
@@ -7167,7 +7242,16 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  async function buildQueryMetadataPatch(tab: QueryTab, sql: string, executionDatabase: string, traceId?: string, elapsed?: () => string, hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = [], connection?: ConnectionConfig): Promise<QueryMetadataPatch | undefined> {
+  async function buildQueryMetadataPatch(
+    tab: QueryTab,
+    sql: string,
+    executionDatabase: string,
+    traceId?: string,
+    elapsed?: () => string,
+    hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = [],
+    connection?: ConnectionConfig,
+    onDisplayReady?: (display: QueryDisplayMetadataReady) => void,
+  ): Promise<QueryMetadataPatch | undefined> {
     if (tab.mode !== "query") return;
     if (!tab.result || !tab.result.columns.length) {
       return {
@@ -7223,11 +7307,8 @@ export const useQueryStore = defineStore("query", () => {
     const conn = connection ?? useConnectionStore().getConfig(tab.connectionId);
     const dbType = conn?.db_type || "";
     const sources = editableQuerySources(analysis);
-    const loadedSources: LoadedEditableSource[] = [];
     try {
-      for (const source of sources) {
-        loadedSources.push(await loadEditableQuerySource(tab, analysis, source, conn, dbType, executionDatabase, traceId, elapsed));
-      }
+      const loadedSources = await loadEditableSourcesWithEarlyDisplay(tab, analysis, sources, conn, dbType, executionDatabase, traceId, elapsed, onDisplayReady);
 
       const allSourceColumns = loadedSources.map((source) => ({ source: source.source, columns: source.tableMeta.columns }));
       // Match DBeaver's safety model: a joined result is writable only when one
@@ -7272,6 +7353,7 @@ export const useQueryStore = defineStore("query", () => {
             queryEditabilityReason: "no-primary-key",
             tableMeta: loaded.tableMeta,
             resultColumnComments: displaySourceInfo.comments,
+            resultColumnTypeLabels: displaySourceInfo.typeLabels,
             queryDisplaySourceColumns: displaySourceInfo.mapping,
           };
         }
@@ -7283,6 +7365,7 @@ export const useQueryStore = defineStore("query", () => {
             querySourceColumns: undefined,
             queryEditabilityReason: "primary-key-not-returned",
             tableMeta: loaded.tableMeta,
+            resultColumnTypeLabels: displaySourceInfo.typeLabels,
             queryDisplaySourceColumns: displaySourceInfo.mapping,
           };
         }
@@ -7293,6 +7376,7 @@ export const useQueryStore = defineStore("query", () => {
             querySourceColumns: undefined,
             queryEditabilityReason: "aliased-columns",
             tableMeta: loaded.tableMeta,
+            resultColumnTypeLabels: displaySourceInfo.typeLabels,
             queryDisplaySourceColumns: displaySourceInfo.mapping,
           };
         }
@@ -7303,6 +7387,9 @@ export const useQueryStore = defineStore("query", () => {
           queryEditabilityReason: undefined,
           tableMeta: primaryKeys === loaded.tableMeta.primaryKeys ? loaded.tableMeta : { ...loaded.tableMeta, primaryKeys },
           resultColumnComments: primaryKeys.length === 0 ? displaySourceInfo.comments : undefined,
+          // Single-table editable results already expose declared types via
+          // tableMeta; keep ordinal labels only when comments also use that path.
+          resultColumnTypeLabels: primaryKeys.length === 0 ? displaySourceInfo.typeLabels : undefined,
           queryDisplaySourceColumns: displaySourceInfo.mapping,
         };
       }
@@ -7320,6 +7407,7 @@ export const useQueryStore = defineStore("query", () => {
           queryEditabilityReason: loadedSources.some((loaded) => loaded.tableMeta.primaryKeys.length > 0) ? "primary-key-not-returned" : "no-primary-key",
           tableMeta: undefined,
           resultColumnComments: multiSourceInfo?.comments,
+          resultColumnTypeLabels: multiSourceInfo?.typeLabels,
           queryDisplaySourceColumns: multiSourceInfo?.mapping,
         };
       }
@@ -7336,6 +7424,7 @@ export const useQueryStore = defineStore("query", () => {
           queryEditabilityReason: undefined,
           tableMeta: target.tableMeta,
           resultColumnComments: multiSourceInfo?.comments,
+          resultColumnTypeLabels: multiSourceInfo?.typeLabels,
           queryDisplaySourceColumns: multiSourceInfo?.mapping,
         };
       }
@@ -7358,6 +7447,7 @@ export const useQueryStore = defineStore("query", () => {
         queryEditabilityReason: undefined,
         tableMeta: target.tableMeta,
         resultColumnComments: multiSourceInfo?.comments,
+        resultColumnTypeLabels: multiSourceInfo?.typeLabels,
         queryDisplaySourceColumns: multiSourceInfo?.mapping,
       };
     } catch (err) {
@@ -7379,9 +7469,16 @@ export const useQueryStore = defineStore("query", () => {
       const tab = tabs.value.find((t) => t.id === tabId);
       if (!tab || tab.result !== result) return;
       queryExecutionLog("info", "metadata:start", { traceId, elapsed: elapsed() });
+      const applyDisplayReady = (display: QueryDisplayMetadataReady) => {
+        const current = tabs.value.find((t) => t.id === tabId);
+        if (!current || current.result !== result) return;
+        applyQueryDisplayMetadata(current, display);
+        syncActiveResultRunFromDisplayed(current);
+        queryExecutionLog("info", "metadata:display-ready", { traceId, elapsed: elapsed() });
+      };
       // Metadata requests outlive the displayed result when another query starts
       // or a retained run is selected. Analyze this result, not the live tab.
-      const patch = await buildQueryMetadataPatch({ ...tab, result }, sql, executionDatabase, traceId, elapsed, hiddenPrimaryKeys, connection);
+      const patch = await buildQueryMetadataPatch({ ...tab, result }, sql, executionDatabase, traceId, elapsed, hiddenPrimaryKeys, connection, applyDisplayReady);
       if (patch?.queryAnalysis && hasHiddenPhysicalRowKey(databaseType, hiddenPrimaryKeys)) {
         patch.queryAnalysis = { ...patch.queryAnalysis, allowInsert: false };
       }
@@ -7844,6 +7941,7 @@ export const useQueryStore = defineStore("query", () => {
               current.queryAnalysis = undefined;
               current.querySourceColumns = undefined;
               current.resultColumnComments = undefined;
+              current.resultColumnTypeLabels = undefined;
               current.queryDisplaySourceColumns = undefined;
               current.mongoEditTarget = undefined;
               if (!producedResult) {
@@ -7912,6 +8010,7 @@ export const useQueryStore = defineStore("query", () => {
           current.querySourceColumns = undefined;
           current.queryWriteTargets = undefined;
           current.resultColumnComments = undefined;
+          current.resultColumnTypeLabels = undefined;
           current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = undefined;
@@ -8380,6 +8479,7 @@ export const useQueryStore = defineStore("query", () => {
           current.querySourceColumns = undefined;
           current.queryWriteTargets = undefined;
           current.resultColumnComments = undefined;
+          current.resultColumnTypeLabels = undefined;
           current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = mongoCommands.length === 1 ? mongoEditTarget : undefined;
@@ -8453,6 +8553,7 @@ export const useQueryStore = defineStore("query", () => {
           current.querySourceColumns = undefined;
           current.queryWriteTargets = undefined;
           current.resultColumnComments = undefined;
+          current.resultColumnTypeLabels = undefined;
           current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = undefined;
@@ -8764,15 +8865,20 @@ export const useQueryStore = defineStore("query", () => {
             } catch (error) {
               if (effectiveDbType === "sqlserver" || options?.pagination?.sessionId || manualTransactionRecoveryAttempted || !isManualTransactionSessionExpired(error)) throw error;
               if (tab.executionId !== executionId || tab.autoCommit !== false || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) throw error;
+              // Only a session that ran proven read-only statements lost nothing to
+              // the idle rollback and can be rebuilt transparently. Otherwise
+              // uncommitted work was discarded (or we cannot prove it was not), and
+              // replaying this statement into a fresh transaction would silently
+              // act on state that no longer exists. Stop here: the outer handler
+              // clears the dead session and shows the rollback notice, and the
+              // user decides whether to run the statement again.
+              if (manualTransactionRollbackNoticeRequired(tab, effectiveDbType)) throw error;
               manualTransactionRecoveryAttempted = true;
-              // A session that only ever ran proven read-only statements lost
-              // nothing to the idle rollback, so it restarts without the notice.
-              const rollbackNoticeRequired = manualTransactionRollbackNoticeRequired(tab, effectiveDbType);
               // The expired session was discarded by the backend; the replacement
               // session starts fresh, so the old sticky state resets with it.
               clearTxnPossiblyDirty(tab);
               tab.txnSessionId = undefined;
-              tab.txnAutoRolledBack = rollbackNoticeRequired;
+              tab.txnAutoRolledBack = false;
               queryExecutionLog("info", "manual-txn:expired-recover", { traceId, elapsed: elapsed() });
               const refreshedSessionId = await ensureManualTransactionSession(id, executionDatabase, executionSchema, executionCatalog);
               if (tab.executionId !== executionId || tab.autoCommit !== false || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) {
@@ -9092,7 +9198,7 @@ export const useQueryStore = defineStore("query", () => {
         reportSqlServerTransactionError(tab, e);
       } else if (tab.autoCommit === false) {
         const errMsg: string = e?.message ?? String(e);
-        const idleTimeout = /5 minutes of inactivity/i.test(errMsg) || errMsg.includes("5 分钟无操作") || errMsg.includes("已自动回滚");
+        const idleTimeout = isManualTransactionSessionExpired(e) || errMsg.includes("已自动回滚");
         if (idleTimeout) {
           // Backend session was removed and rolled back after idle expiry: clear
           // the sticky dirty state together with the session. Same rule as the
@@ -9151,6 +9257,7 @@ export const useQueryStore = defineStore("query", () => {
         current.querySourceColumns = undefined;
         current.queryWriteTargets = undefined;
         current.resultColumnComments = undefined;
+        current.resultColumnTypeLabels = undefined;
         current.queryDisplaySourceColumns = undefined;
         current.queryEditabilityReason = undefined;
         current.mongoEditTarget = undefined;
@@ -9804,6 +9911,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.querySourceColumns = undefined;
     tab.queryWriteTargets = undefined;
     tab.resultColumnComments = undefined;
+    tab.resultColumnTypeLabels = undefined;
     tab.queryDisplaySourceColumns = undefined;
     tab.queryEditabilityReason = undefined;
     tab.mongoEditTarget = undefined;
@@ -9936,6 +10044,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.querySourceColumns = snapshot.querySourceColumns;
     tab.queryWriteTargets = snapshot.queryWriteTargets;
     tab.resultColumnComments = snapshot.resultColumnComments;
+    tab.resultColumnTypeLabels = snapshot.resultColumnTypeLabels;
     tab.queryDisplaySourceColumns = snapshot.queryDisplaySourceColumns;
     tab.queryEditabilityReason = snapshot.queryEditabilityReason;
     tab.mongoEditTarget = snapshot.mongoEditTarget;

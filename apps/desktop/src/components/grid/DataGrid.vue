@@ -122,7 +122,7 @@ import { buildAddConstraintSql } from "@/lib/table/constraintSql";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind, type CellValueGenerationOptions } from "@/lib/dataGrid/cellValueGeneration";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue, mongoDocumentGridNumericValue, mongoDocumentRelaxedExtendedJson } from "@/lib/mongo/mongoDocumentValues";
-import { compactHeaderColumnType, formatMetadataColumnTypeLabel, isNumericColumnType, resolveDataGridTypeVisualKind, resolveHeaderColumnType, resolveResultColumnType } from "@/lib/dataGrid/dataGridColumnType";
+import { compactHeaderColumnType, formatMetadataColumnTypeLabel, isNumericColumnType, resolveDataGridTypeVisualKind, resolveHeaderColumnType, resolveResultColumnType, shortHeaderTypeName } from "@/lib/dataGrid/dataGridColumnType";
 import { dataGridCellTextClass, dataGridTypeVisualClass } from "@/lib/dataGrid/dataGridCellTextVisual";
 import { DATA_GRID_TYPE_COLOR_KEYS, resolveActiveDataGridTypeColors } from "@/lib/dataGrid/dataGridTypeColorScheme";
 import {
@@ -208,7 +208,7 @@ import {
 import { adjacentDataGridDetailIndex, type DataGridDetailNavigationDelta } from "@/lib/dataGrid/dataGridDetailNavigation";
 import { applyColumnFormatter, DataGridDateTimePatterns, displayTimeZoneOption, formatIoTDBTimestampEditorValue, iotdbTimestampFractionDigits, iotdbTimestampPrecision, parseIoTDBTimestampEditorValue, type ColumnFormatterConfig } from "@/lib/dataGrid/columnFormatter";
 import { temporalCellEditorConfig, type TemporalCellEditorConfig } from "@/lib/dataGrid/dataGridTemporalEditor";
-import { BOOLEAN_CELL_EDITOR_VALUES, booleanCellEditorValue, isBooleanCellValue, isBooleanColumnType, isPointInBooleanCheckbox, nextBooleanCellValue, normalizeBooleanCellValue, parseBooleanCellEditorValue } from "@/lib/dataGrid/dataGridBooleanColumn";
+import { BOOLEAN_CELL_EDITOR_VALUES, booleanCellDisplayText, booleanCellEditorValue, isBooleanCellValue, isBooleanColumnType, isPointInBooleanCheckbox, nextBooleanCellValue, normalizeBooleanCellValue, parseBooleanCellEditorValue } from "@/lib/dataGrid/dataGridBooleanColumn";
 import { resolveDataGridColumnNullability, resolveDataGridColumnsByResultIndex } from "@/lib/dataGrid/dataGridColumnMetadata";
 import { resolveDataGridNewRowCellPlaceholder } from "@/lib/dataGrid/dataGridDefaultPlaceholder";
 import {
@@ -274,7 +274,7 @@ import {
 } from "@/lib/dataGrid/canvasDataGridRenderer";
 import { resolveDataGridRowNumberLabel } from "@/lib/dataGrid/dataGridRowNumber";
 import { resolveCrosshairTarget, type CrosshairTarget } from "@/lib/dataGrid/crosshairHighlight";
-import { DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG, dataGridActiveRowBackground } from "@/lib/dataGrid/dataGridPaintTheme";
+import { DATA_GRID_DARK_NEW_ROW_BG, DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_NEW_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG, dataGridActiveRowBackground } from "@/lib/dataGrid/dataGridPaintTheme";
 import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
 import { dataGridPreviewLabelKey, dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
 import { buildDataGridSavedRowRefreshPlan, dataGridSavedRowRefreshPatches } from "@/lib/dataGrid/dataGridSavedRowRefresh";
@@ -477,6 +477,7 @@ const multiRowTranspose = computed(() => settingsStore.editorSettings.dataGridMu
 const hideNullColumns = computed(() => settingsStore.editorSettings.dataGridHideNullColumns);
 const hideEmptyColumns = computed(() => settingsStore.editorSettings.dataGridHideEmptyColumns);
 const booleanCellsUseCheckbox = computed(() => settingsStore.editorSettings.dataGridBooleanDisplayMode === "checkbox");
+const booleanCellValueStyle = computed(() => settingsStore.editorSettings.dataGridBooleanValueStyle);
 const booleanDisplayMode = computed(() => settingsStore.editorSettings.dataGridBooleanDisplayMode);
 const colorizeDataGridCellTypes = computed(() => settingsStore.editorSettings.colorizeDataGridCellTypes);
 const { isDark, themePalette } = useTheme();
@@ -535,6 +536,11 @@ interface DataGridProps {
    * or computed) — the grid shows no comment instead of a wrong one.
    */
   resultColumnComments?: Array<string | undefined>;
+  /**
+   * Display-only type labels from multi-source enrichment (by result ordinal),
+   * carrying declared length/precision when ResultSet column_types omit them.
+   */
+  resultColumnTypeLabels?: Array<string | undefined>;
   /**
    * Display-only result-column -> source mapping for multi-source results,
    * indexed by result-column ordinal; each entry carries the source identity
@@ -923,6 +929,7 @@ function headerColumnType(column: string, actualColIdx: number): string {
   if (!showColumnTypesInHeader.value) return "";
   const resolved = resolveHeaderColumnType({
     tableColumnType: columnTypeMap.value.get(column),
+    displayColumnType: props.resultColumnTypeLabels?.[actualColIdx],
     resultColumnTypes: props.result.column_types,
     actualColIdx,
   });
@@ -938,18 +945,6 @@ const reserveColumnTypeLine = computed(() => reserveDataGridHeaderLine(showColum
 const reserveColumnCommentLine = computed(() => reserveDataGridHeaderLine(showColumnCommentsInHeader.value, props.result.columns, (column, index) => headerColumnComment(column, index)));
 
 function shortTypeName(t: string): string {
-  const s = t.toLowerCase();
-  if (s === "character varying") return "varchar";
-  if (s === "character") return "char";
-  if (s === "double precision") return "double";
-  if (s === "timestamp without time zone") return "timestamp";
-  if (s === "timestamp with time zone") return "timestamptz";
-  if (s === "time without time zone") return "time";
-  if (s === "time with time zone") return "timetz";
-  if (s === "boolean") return "bool";
-  if (s === "integer") return "int";
-  if (s === "smallint") return "int2";
-  if (s === "real") return "float4";
   // GaussDB M mode uses MySQL-style type names
   if (resolvedDatabaseType.value === "gaussdb") {
     const conn = resolvedConnectionConfig.value;
@@ -957,7 +952,7 @@ function shortTypeName(t: string): string {
       return gaussdbMTypeDisplayName(t);
     }
   }
-  return t;
+  return shortHeaderTypeName(t);
 }
 
 function gaussdbMColumnType(dataType: string): string {
@@ -3576,6 +3571,7 @@ let loadAllRowsLoopActive = false;
 // Set when a "load all" reloads a jumped-to discrete page from the first row;
 // the replacing result must still land the view on the last row (#11940).
 let loadAllRowsReloadPending = false;
+let loadAllRowsReloadLimit: number | undefined;
 const loadAllRowsActive = ref(false);
 // Tracks whether the current loading cycle was triggered by a refresh/rollback
 // (as opposed to a normal paginate). Used to decide whether to auto-redirect
@@ -4125,6 +4121,7 @@ function startLoadAllRows(segment: { offset: number; limit: number }, reloadFrom
   loadAllRowsActive.value = true;
   loadAllRowsLoopActive = !reloadFromFirstRow;
   loadAllRowsReloadPending = reloadFromFirstRow;
+  loadAllRowsReloadLimit = reloadFromFirstRow ? segment.limit : undefined;
   infiniteScrollAllLoaded = false;
   // A reload-from-first-row run replaces the page through the normal (non-
   // append) execution path; the append watcher must not treat it as one of
@@ -4217,6 +4214,7 @@ function changePageSize(size: number) {
   loadAllRowsActive.value = false;
   loadAllRowsLoopActive = false;
   loadAllRowsReloadPending = false;
+  loadAllRowsReloadLimit = undefined;
   infiniteScrollPositions = new WeakMap();
   resetGridVerticalScroll(true);
   emit("paginate", 0, normalizedSize, currentWhereInput(), effectiveOrderBy());
@@ -4632,6 +4630,7 @@ const {
   applyCellValue,
   stageCellReplacements,
   restoreCellValue,
+  cancelUntouchedPendingRow,
   cancelEdit,
   onEditKeydown,
   addRowsInBatches: addEditorRowsInBatches,
@@ -5156,6 +5155,7 @@ function resetInfiniteScrollState() {
   loadAllRowsActive.value = false;
   loadAllRowsLoopActive = false;
   loadAllRowsReloadPending = false;
+  loadAllRowsReloadLimit = undefined;
   infiniteScrollPositions = new WeakMap();
   resetGridVerticalScroll(true);
 }
@@ -7685,6 +7685,8 @@ function formatCell(value: CellValue, columnIndex?: number, originalBytes?: numb
   if (arrayDisplay !== undefined) return arrayDisplay;
   const binaryDisplay = formatter ? null : binaryCellDisplayText(value, columnIndex === undefined ? undefined : allColumnTypes.value[columnIndex], originalBytes, resolvedDatabaseType.value);
   if (binaryDisplay !== null) return binaryDisplay;
+  const booleanDisplay = formatter ? undefined : booleanCellDisplayText(value, booleanCellValueStyle.value);
+  if (booleanDisplay !== undefined) return booleanDisplay;
   const s = applyColumnFormatter(value, formatter);
   return limitDisplay ? limitDataGridCellDisplay(s, resolvedDatabaseType.value === "sqlserver" ? SQLSERVER_DATA_GRID_CELL_DISPLAY_MAX_LENGTH : undefined) : s;
 }
@@ -7788,22 +7790,25 @@ function rowCellsUseSelectionVisual(rowId: number): boolean {
 function dataGridRowStyle(item: RowItem): CSSProperties {
   const dark = isDark.value || (typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
   const activeRowBg = dataGridActiveRowBackground(dark);
+  // 新增行/斑马纹行底色走 CSS 变量：DOM 与 Canvas（canvasDataGridRenderer 的 theme.rowNew /
+  // theme.rowMuted）共用同一色源，避免两侧各写一份字面色后悄悄漂移。
+  const newRowBg = `var(--data-grid-row-new-bg, ${dark ? DATA_GRID_DARK_NEW_ROW_BG : DATA_GRID_LIGHT_NEW_ROW_BG})`;
+  const mutedRowBg = `var(--data-grid-row-muted-bg, ${dark ? DATA_GRID_DARK_STRIPED_ROW_BG : DATA_GRID_LIGHT_STRIPED_ROW_BG})`;
+  // 待插入行底色优先于活动行底色（isRowActive 会排除 isNew）：光标总落在刚新增的那一行上
+  // （新增后立即进入编辑），若让活动行底色盖掉它，「这行还没保存」恰好在这时看不见（#11634）。
+  // 光标位置仍由行号列的活动色与选中单元格表达。Canvas 侧同序（resolveCanvasDataGridRowFill）。
   const rowBg = item.isDeleted
     ? dark
       ? "rgb(55, 31, 32)"
       : "rgb(255, 244, 244)"
-    : isRowActive(item.displayIndex)
+    : isRowActive(item.displayIndex) && !item.isNew
       ? activeRowBg
       : item.isNew
-        ? dark
-          ? "rgb(51, 51, 55)"
-          : "rgb(243, 243, 243)"
+        ? newRowBg
         : item.isDraft
-          ? dark
-            ? "rgb(51, 51, 55)"
-            : "rgb(243, 243, 243)"
+          ? mutedRowBg
           : dataGridStripedRows.value && item.displayIndex % 2 === 1
-            ? settingsStore.editorSettings.dataGridZebraRowBg?.trim() || `var(--data-grid-row-muted-bg, ${dark ? DATA_GRID_DARK_STRIPED_ROW_BG : DATA_GRID_LIGHT_STRIPED_ROW_BG})`
+            ? settingsStore.editorSettings.dataGridZebraRowBg?.trim() || mutedRowBg
             : "var(--data-grid-background)";
   const rowNumberBg =
     item.isNew && item.status === "clean"
@@ -8694,6 +8699,12 @@ watch(showDataGridTopbar, () => nextTick(observeDataGridTopbarWidth), {
 });
 watch(columnAligns, () => scheduleCanvasDraw());
 watch(booleanDisplayMode, () => scheduleCanvasDraw());
+// The value style is baked into the cached cell text, so flipping it must drop
+// the cache as well as repaint; canvas otherwise keeps the stale TRUE/FALSE.
+watch(booleanCellValueStyle, () => {
+  clearCellFormatCache();
+  scheduleCanvasDraw();
+});
 watch(flatteningMultiLineEnabled, () => scheduleCanvasDraw());
 watch(showWhitespaceEnabled, () => scheduleCanvasDraw());
 watch(dataGridStripedRows, () => scheduleCanvasDraw());
@@ -10777,6 +10788,44 @@ function openCellDetailSearch(): boolean {
   return getDetailEditor()?.openSearch() || cellDetailPanelRef.value?.openSearch() || false;
 }
 
+// #11634：光标停在当前显示的最后一行时，再按一次下键 = 「新增行」（固定追加到结果末尾，
+// 不跟随工具栏的插入位置设置）。只有「本来就会被 clamp 成空操作」的那次下键会走到这里，
+// 所以已有的移动语义（含 Shift 扩展、转置、多格选区）完全不受影响。
+function addRowFromArrowDown(): boolean {
+  // gridClipboardActive 与 insertRows → prepareGridRows 的准入条件保持一致：网格非活动（KeepAlive 隐藏）
+  // 时不消费按键，避免出现「吃掉了下键却没有新增」的情况。
+  if (!canInsertRows.value || isSaving.value || isConditionalUpdateActive.value || rowPreparationController || !gridClipboardActive) return false;
+  if (isTransposeMode.value || editingCell.value) return false;
+  if (hasRowSelection.value || hasColumnSelection.value || selectedCellCount.value !== 1) return false;
+  const position = currentSelectedCellPosition();
+  if (!position || position.rowIndex !== displayRowCount.value - 1) return false;
+  // 快速录入的草稿行本身就在末尾，它已经是「待录入行」；再加一行会凭空多出第二个空行。
+  // 注意：草稿行不进 selectedCellCount（useDataGridSelection 的计数语义会跳过 draft 行），
+  // 所以上面「单格选中」的条件通常已经拦住了它；这里保留一次显式判定作为第二道保险，
+  // 避免将来放宽选择语义后下键突然在草稿行上追加 pending 行。
+  if (displayItemAt(position.rowIndex)?.isDraft) return false;
+  void insertRows(1, "end");
+  return true;
+}
+
+// #11634：网格焦点下的 Esc（单元格编辑器内的 Esc 由 cancelEdit 处理，两段式）。
+// 顺序对齐 DBeaver 的 ESC = Reset cell changes：先撤掉「刚新增且从未写入」的整行，
+// 再把单格的待保存改动回退为原值。多格 / 整行 / 整列选区不参与：一次 Esc 不应抹掉一整片改动。
+function cancelPendingRowOrRestoreCell(): boolean {
+  if (isTransposeMode.value || editingCell.value || !props.editable) return false;
+  // 保存进行中不得改动待提交状态：这一轮保存的快照已经捕获了当前值，此刻回退只会让用户以为
+  // 改动被撤销，数据库仍会写入（同层的 stageCellReplacements / rowPreparationIsCurrent 都做了
+  // 同样的 !isSaving 门槛）。
+  if (isSaving.value) return false;
+  if (hasRowSelection.value || hasColumnSelection.value || selectedCellCount.value !== 1) return false;
+  const position = currentSelectedCellPosition();
+  if (!position) return false;
+  const item = displayItemAt(position.rowIndex);
+  if (!item || item.isDeleted) return false;
+  if (cancelUntouchedPendingRow(item.id)) return true;
+  return restoreCellValue(item.id, actualColumnIndex(position.colIndex));
+}
+
 async function onGridKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented) return;
 
@@ -10882,6 +10931,18 @@ async function onGridKeydown(event: KeyboardEvent) {
       event.preventDefault();
       return;
     }
+  }
+  // 两者都只在该按键本来是空操作/无绑定时才消费（下键在最后一行被 clamp；Esc 在网格上原本无绑定），
+  // 因此不会与上面的可配置快捷键、转置分支以及下面的常规移动产生竞争。
+  if (event.key === "ArrowDown" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && addRowFromArrowDown()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (event.key === "Escape" && cancelPendingRowOrRestoreCell()) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
   }
   if (event.key === "ArrowUp" && moveSelectedCell(-1, 0, event.shiftKey)) {
     event.preventDefault();
@@ -11815,21 +11876,25 @@ watch(
     filterValueSuggestionLoader.reset({ clearCache: true });
     // A non-append result replaces the whole data set, so a running "load all" is over.
     const reloadedFromFirstRow = loadAllRowsReloadPending;
+    const reloadLimit = loadAllRowsReloadLimit ?? infiniteScrollMaxRows.value;
     loadAllRowsReloadPending = false;
+    loadAllRowsReloadLimit = undefined;
     loadAllRowsActive.value = false;
     loadAllRowsLoopActive = false;
     if (reloadedFromFirstRow) {
-      // A capped/truncated reload must not claim completeness — that would
-      // block the #10752 continuation past the cap; only an uncapped full
-      // reload marks the end (#11940).
-      if (!props.result.truncated && props.result.has_more !== true) {
-        infiniteScrollAllLoaded = true;
+      if (props.result.has_more === true && !props.result.truncated) {
+        loadAllRowsActive.value = true;
+        loadAllRowsLoopActive = true;
+        nextTick(() => {
+          if (loadAllRowsLoopActive && !finishOrContinueLoadAllRun(0, reloadLimit)) selectAndRevealLastLoadedRow();
+        });
+      } else {
+        if (!props.result.truncated && props.result.has_more !== true && (props.result.has_more === false || props.result.rows.length < reloadLimit)) {
+          infiniteScrollAllLoaded = true;
+        }
+        selectAndRevealLastLoadedRow();
       }
-      selectAndRevealLastLoadedRow();
     } else {
-      // The replacement also invalidates the all-loaded marker: a filter change or
-      // page jump swaps in a fresh first page whose remaining segments must be
-      // re-derived instead of being silently skipped.
       infiniteScrollAllLoaded = false;
     }
     if (getResetScrollAfterResult()) {
@@ -11905,6 +11970,35 @@ function copyHeaderColumnOrSelected() {
     return;
   }
   void copyHeaderColumn();
+}
+
+// 「复制列注释」的目标列：显式多选时按选中列，否则用右键命中的那列。
+function contextCommentActualColumnIndexes(): number[] {
+  if (contextHeaderColumnIndex.value === null) return [];
+  const visibleIdx = contextHeaderVisibleColIdx.value;
+  if (visibleIdx !== null && selectedColumnIndexes.value.has(visibleIdx) && selectedColumnIndexes.value.size > 1) {
+    return [...selectedColumnIndexes.value].map(actualColumnIndex);
+  }
+  return [contextHeaderColumnIndex.value];
+}
+
+// 只有解析到非空注释才提供入口：无元数据或聚合/别名列的注释为空，给一个永远复制空的菜单项只会误导。
+const contextCopyableColumnComments = computed(() =>
+  contextCommentActualColumnIndexes()
+    .map((actualIdx) => resolvedColumnComment(props.result.columns[actualIdx] ?? "", actualIdx))
+    .filter((comment): comment is string => !!comment),
+);
+
+async function copyContextColumnComment() {
+  const comments = contextCopyableColumnComments.value;
+  if (comments.length === 0) return;
+  await copyText(comments.join("\n"));
+}
+
+async function copyColumnHeaderComment(column: string, actualIdx: number) {
+  const comment = resolvedColumnComment(column, actualIdx);
+  if (!comment) return;
+  await copyText(comment);
 }
 
 const canCopyAlterColumnSql = computed(() => {
@@ -13306,6 +13400,8 @@ onUnmounted(() => {
   onSqlPreviewResizeEnd();
   finishCellSelection();
   loadAllRowsLoopActive = false;
+  loadAllRowsReloadPending = false;
+  loadAllRowsReloadLimit = undefined;
   clearTimeout(highlightedColumnTimer);
   stopLoadingElapsedTimer();
 });
@@ -13974,6 +14070,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
       headerColumn: !!contextHeaderColumn.value,
       contextColumn: !!contextColumn.value,
       canCopyAlterSql: canCopyAlterColumnSql.value,
+      canCopyComment: contextCopyableColumnComments.value.length > 0,
       canFilter: canUseWhereSearch.value,
       hasSort: !!sortCol.value,
       sortMode: localSortMode.value,
@@ -13992,6 +14089,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
                 count: selectedColumnNamesForCopy.value.length,
               })
             : t("grid.copyColumnName"),
+        copyComment: t("grid.copyColumnComment"),
         copyNames: t("grid.copyColumnNames"),
         details: t("grid.openColumnDetailsDialog"),
         copyAlterSql: t("grid.copyAlterColumnSql"),
@@ -14020,6 +14118,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
       },
       actions: {
         copyName: copyHeaderColumnOrSelected,
+        copyComment: copyContextColumnComment,
         copyNames: openCopyAllColumnNamesDialog,
         details: openContextColumnDetailDialog,
         copyAlterSql: copyAlterColumnSql,
@@ -14907,6 +15006,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                     :drag-class="columnHeaderDragClass(col.visibleColIdx)"
                     :column-style="columnHeaderStyle(col.visibleColIdx)"
                     :copy-column-name-label="t('grid.copyColumnName')"
+                    :copy-column-comment-label="t('grid.copyColumnComment')"
                     :column-name-label="t('grid.columnName')"
                     :column-type-label="t('grid.columnType')"
                     :column-comment-label="t('grid.columnComment')"
@@ -14929,6 +15029,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                     @resize-start="startColumnHeaderResize(col.visibleColIdx, $event)"
                     @auto-fit="autoFitColumn(col.visibleColIdx)"
                     @copy-name="copyText(col.name)"
+                    @copy-comment="copyColumnHeaderComment(col.name, col.actualColIdx)"
                   >
                     <template #actions>
                       <span
@@ -16589,7 +16690,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 [data-grid-root] {
   --data-grid-background: var(--background-solid, var(--background));
   --data-grid-row-muted-bg: rgb(240, 240, 240);
-  --data-grid-row-new-bg: rgb(243, 243, 243);
+  --data-grid-row-new-bg: rgb(231, 248, 242);
   --data-grid-row-deleted-bg: rgb(255, 244, 244);
   --data-grid-cell-active-bg: rgb(219, 234, 254);
   --data-grid-cell-crosshair-row-bg: rgb(174, 195, 224);
@@ -16623,7 +16724,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 [data-grid-root].data-grid--dark,
 :global(.dark) [data-grid-root] {
   --data-grid-row-muted-bg: rgb(40, 40, 43);
-  --data-grid-row-new-bg: rgb(51, 51, 55);
+  --data-grid-row-new-bg: rgb(19, 37, 33);
   --data-grid-row-deleted-bg: rgb(55, 31, 32);
   --data-grid-cell-active-bg: rgb(27, 46, 70);
   --data-grid-cell-crosshair-row-bg: rgb(75, 84, 98);
@@ -16658,7 +16759,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 @supports (background: color-mix(in oklab, white 50%, transparent)) {
   [data-grid-root] {
     --data-grid-row-muted-bg: color-mix(in oklab, var(--muted) 99%, var(--foreground));
-    --data-grid-row-new-bg: color-mix(in oklab, var(--primary) 5%, transparent);
+    --data-grid-row-new-bg: color-mix(in oklab, rgb(16 185 129) 10%, var(--background));
     --data-grid-row-deleted-bg: color-mix(in oklab, var(--destructive) 5%, transparent);
     --data-grid-cell-dirty-bg: color-mix(in oklab, rgb(240 177 0) 10%, transparent);
     --data-grid-cell-crosshair-row-bg: color-mix(in srgb, var(--primary) 34%, var(--background));
