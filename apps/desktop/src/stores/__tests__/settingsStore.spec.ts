@@ -639,6 +639,8 @@ describe("normalizeEditorSettings", () => {
     expect(configured.dsv.quotePolicy).toBe("always");
     expect(configured.sql.insertMode).toBe("row-by-row");
     expect(configured.json.pretty).toBe(false);
+    // mod 42：类型感知的 strings 引号策略可持久化（字符串加引号，数值/布尔裸写）。
+    expect(normalizeEditorSettings({ dataGridExtractorOptions: { dsv: { ...defaults.dsv, quotePolicy: "strings" } } }).dataGridExtractorOptions.dsv.quotePolicy).toBe("strings");
   });
 
   it("migrates the legacy NULL clipboard sentinel once", () => {

@@ -6221,10 +6221,14 @@ function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?:
       const boostByLabel = computeBoost(snippet.label, prefix);
       const matchesByPrefix = matchesPrefix(snippet.prefix, prefix);
       const isExactCustomTrigger = !shouldFormatBuiltinSnippet(snippet) && snippet.prefix.toLowerCase() === prefix.toLowerCase();
-      // When the user types past the snippet prefix (e.g. "sele" vs prefix "sel"),
-      // they are likely typing the actual keyword — reduce the base boost so
-      // the real keyword can rank higher.
-      const baseBoost = matchesByPrefix ? 4000 : 0;
+      // Snippets sit below identifiers, not between them: tables and columns
+      // carry +1000/+2000 relevance boosts on top of their match score, so a
+      // partial snippet prefix must not outrank the table or column the user is
+      // typing (frequent accidental snippet inserts). 400 keeps snippets above
+      // plain keywords while an equal-quality table/column match wins; typing
+      // past the snippet prefix ("sele" vs "sel") still drops the boost to 0,
+      // and an exact custom trigger keeps its dedicated large bonus below.
+      const baseBoost = matchesByPrefix ? 400 : 0;
       // Placeholder replacement runs on the original (UPPER-case) body first,
       // then keyword casing is applied to both variants uniformly.
       const resolvedBody = resolveSqlSnippetBodyForDatabase(snippet, databaseType);

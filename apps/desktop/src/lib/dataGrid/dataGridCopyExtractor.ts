@@ -57,7 +57,7 @@ export const DATA_GRID_COPY_EXTRACTOR_DESCRIPTORS: Record<DataGridCopyExtractorI
 };
 
 export type DataGridSelectionKind = "cells" | "rows" | "columns";
-export type DataGridQuotePolicy = "always" | "minimal" | "never";
+export type DataGridQuotePolicy = "always" | "minimal" | "never" | "strings";
 export type DataGridExtractorOptionsError = "column-separator-empty" | "row-separator-empty" | "separator-too-long" | "null-text-too-long" | "separators-overlap" | "invalid-quote" | "quote-conflicts";
 
 /** Extractors that emit relational SQL predicates not supported by some stores.
@@ -183,7 +183,7 @@ export function normalizeDataGridExtractorOptions(value: unknown): DataGridExtra
       rowSeparator: separator(dsv.rowSeparator, DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dsv.rowSeparator),
       nullText: typeof dsv.nullText === "string" && unicodeCodePointLength(dsv.nullText) <= 64 ? dsv.nullText : DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS.dsv.nullText,
       quote,
-      quotePolicy: dsv.quotePolicy === "always" || dsv.quotePolicy === "never" ? dsv.quotePolicy : "minimal",
+      quotePolicy: dsv.quotePolicy === "always" || dsv.quotePolicy === "never" || dsv.quotePolicy === "strings" ? dsv.quotePolicy : "minimal",
       includeColumnHeader: dsv.includeColumnHeader === true,
       includeRowHeader: dsv.includeRowHeader === true,
     },

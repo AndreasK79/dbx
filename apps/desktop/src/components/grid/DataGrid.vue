@@ -11,6 +11,7 @@ import { useI18n } from "vue-i18n";
 import { RecycleScroller } from "vue-virtual-scroller";
 import {
   ArrowUp,
+  ArrowLeft,
   ArrowDown,
   ArrowUpDown,
   ArrowUpRight,
@@ -331,6 +332,7 @@ import {
   type ForeignKeyAssociation,
   type ForeignKeyAssociationCell,
 } from "@/lib/dataGrid/dataGridForeignKeyNavigation";
+import { foreignKeyDrillBackEntryMatchesTab, markForeignKeyDrillBackPendingArrival, peekForeignKeyDrillBack, popForeignKeyDrillBack } from "@/lib/dataGrid/foreignKeyDrillBack";
 import {
   collectForeignKeyDisplayValues,
   createForeignKeyDisplayRequestCoordinator,
@@ -484,7 +486,7 @@ function fetchForeignKeys() {
   return tableMetadataLoaderFetchForeignKeys();
 }
 // 外键单元格跳转复用导航入口；对话框引用传 stub（同 AiAssistant 模式）
-const { openTableTarget, executeTableTargetInQueryTab } = useNavigationTargets({
+const { openTableTarget, executeTableTargetInQueryTab, executeSqlInQueryTabResults } = useNavigationTargets({
   showFieldLineageDialog: ref(false),
   showDatabaseSearchDialog: ref(false),
   showDiagramDialog: ref(false),
@@ -10760,6 +10762,14 @@ async function onGridKeydown(event: KeyboardEvent) {
     event.stopPropagation();
     return;
   }
+  // Alt+←：外键跳转返回（mod 43）。仅在网格持有可返回条目时消费；未命中时
+  // 不拦截——箭头键的单元格移动与全局标签历史快捷键保持原行为。
+  if (!targetAllowsNativeClipboard && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === "ArrowLeft" && foreignKeyDrillBackTarget.value) {
+    event.preventDefault();
+    event.stopPropagation();
+    await goForeignKeyDrillBack();
+    return;
+  }
   if (!targetAllowsNativeClipboard && handleGridPaginationShortcut(event)) return;
   if (isFocusSearchShortcut(event) && !isGoToColumnShortcut(event, settingsStore.editorSettings.shortcuts)) {
     event.preventDefault();
@@ -12996,16 +13006,55 @@ async function navigateToForeignKeyCell(rowIndex: number, actualColIdx: number) 
       whereInput: condition,
     });
     // 同面板跳转：data tab 原地换目标（不安全状态由 canReuseActiveDataTab
-    // 拒绝后回退新建），query tab 在结果面板内执行（编辑器 SQL 不动）
+    // 拒绝后回退新建），query tab 在结果面板内执行（编辑器 SQL 不动）；
+    // drillBack 让导航入口在改写面板前记录返回点（mod 43）
     if (props.foreignKeyNavigationTabId && props.context === "table-data") {
-      await openTableTarget(navigationTarget, { reuseTabId: props.foreignKeyNavigationTabId });
+      await openTableTarget(navigationTarget, { reuseTabId: props.foreignKeyNavigationTabId, drillBack: true });
     } else if (props.foreignKeyNavigationTabId && props.context === "results") {
-      await executeTableTargetInQueryTab(navigationTarget, { tabId: props.foreignKeyNavigationTabId });
+      await executeTableTargetInQueryTab(navigationTarget, { tabId: props.foreignKeyNavigationTabId, drillBack: true });
     } else {
       await openTableTarget(navigationTarget);
     }
   } catch (e: any) {
     toast(String(e?.message || e), 5000);
+  }
+}
+
+// ---- 外键跳转返回（mod 43）----
+
+const foreignKeyDrillBackBusy = ref(false);
+
+/** 下一个可返回点：跳转链未被其它导航打破时才非空（失配的过期条目在窥视时丢弃） */
+const foreignKeyDrillBackTarget = computed(() => {
+  const tabId = props.foreignKeyNavigationTabId;
+  if (!tabId || foreignKeyDrillBackBusy.value) return null;
+  const tab = queryStore.tabs.find((item) => item.id === tabId);
+  if (!tab) return null;
+  return peekForeignKeyDrillBack(tabId, (entry) => foreignKeyDrillBackEntryMatchesTab(entry, tab));
+});
+
+async function goForeignKeyDrillBack() {
+  const tabId = props.foreignKeyNavigationTabId;
+  if (!tabId || foreignKeyDrillBackBusy.value) return;
+  const entry = foreignKeyDrillBackTarget.value;
+  if (!entry) return;
+  foreignKeyDrillBackBusy.value = true;
+  try {
+    const popped = popForeignKeyDrillBack(tabId, (candidate) => candidate === entry);
+    if (!popped) return;
+    // 返回途中 tab 内容被改写（旧表元数据/旧结果短暂残留），把弹出后的新
+    // 栈顶标记为等待落地，避免 computed 在过渡期把它当失配条目丢弃，链式
+    // 返回（A→B→C 连按两次返回）才走得通。
+    markForeignKeyDrillBackPendingArrival(tabId);
+    if (popped.restore.kind === "tableTarget") {
+      await openTableTarget(popped.restore.target, { reuseTabId: tabId });
+    } else {
+      await executeSqlInQueryTabResults(tabId, popped.restore.sql);
+    }
+  } catch (e: any) {
+    toast(String(e?.message || e), 5000);
+  } finally {
+    foreignKeyDrillBackBusy.value = false;
   }
 }
 
@@ -14259,6 +14308,17 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             @wheel="onDataGridTopbarFixedActionWheel"
           >
             <template #leading>
+              <Tooltip v-if="foreignKeyDrillBackTarget">
+                <TooltipTrigger as-child>
+                  <Button data-toolbar-action="foreignKeyDrillBack" variant="ghost" size="sm" class="data-grid-topbar-action-button h-5 shrink-0 px-1.5 text-xs" :disabled="foreignKeyDrillBackBusy" @click="goForeignKeyDrillBack">
+                    <ArrowLeft class="data-grid-topbar-action-icon h-3 w-3" />
+                    <span class="data-grid-topbar-action-label">{{ t("grid.foreignKeyDrillBack") }}</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {{ foreignKeyDrillBackTarget.restore.kind === "tableTarget" ? t("grid.foreignKeyDrillBackTable", { table: foreignKeyDrillBackTarget.label ?? foreignKeyDrillBackTarget.restore.target.tableName }) : t("grid.foreignKeyDrillBackResult") }}
+                </TooltipContent>
+              </Tooltip>
               <slot v-if="hasResultToolbarActionsSlot" name="result-toolbar-actions" :compact="compactDataGridToolbarActions" />
               <DataGridVirtualRowIdentifier
                 v-if="showVirtualRowIdentifierControl"

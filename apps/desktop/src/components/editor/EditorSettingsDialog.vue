@@ -9783,6 +9783,7 @@ onUnmounted(() => {
                     <SelectContent>
                       <SelectItem value="all">{{ t("settings.csvQuoteModeAll") }}</SelectItem>
                       <SelectItem value="necessary">{{ t("settings.csvQuoteModeNecessary") }}</SelectItem>
+                      <SelectItem value="strings">{{ t("settings.csvQuoteModeStrings") }}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

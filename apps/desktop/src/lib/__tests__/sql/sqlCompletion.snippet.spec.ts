@@ -144,6 +144,38 @@ describe("buildSnippetItems", () => {
     expect(items.indexOf(snippet!)).toBeGreaterThan(0);
   });
 
+  it("ranks a prefix-matching table ahead of a partially typed snippet prefix", () => {
+    // Typing "us" toward the users table must not land on a snippet whose
+    // trigger merely starts with the same letters (accidental snippet inserts).
+    const sql = "SELECT * FROM us";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-usr", label: "users export", prefix: "usr", body: "SELECT *\nFROM users;" }],
+      tables: [{ name: "users", type: "table" }],
+      columnsByTable: new Map(),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "users", type: "table" }));
+    const snippet = items.find((item) => item.type === "snippet" && item.label === "users export");
+    expect(snippet).toBeDefined();
+    expect(items.indexOf(snippet!)).toBeGreaterThan(0);
+  });
+
+  it("ranks a matching column ahead of a partially typed snippet prefix", () => {
+    const sql = "SELECT * FROM users WHERE cust";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-cust", label: "customer lookup", prefix: "cu", body: "customer_id = 1" }],
+      tables: [{ name: "users", type: "table" }],
+      columnsByTable: new Map([["users", [{ name: "customer_id", table: "users" }]]]),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "customer_id", type: "column" }));
+    const snippet = items.find((item) => item.type === "snippet" && item.label === "customer lookup");
+    expect(snippet).toBeDefined();
+    expect(items.indexOf(snippet!)).toBeGreaterThan(0);
+  });
+
   it("ranks an exactly typed column name ahead of a snippet with the same trigger", () => {
     const sql = "SELECT * FROM users WHERE uid";
     const items = buildSqlCompletionItems(sql, sql.length, {

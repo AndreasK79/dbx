@@ -195,6 +195,7 @@ function save() {
                     <SelectItem value="minimal">{{ t("grid.copyExtractorQuoteMinimal") }}</SelectItem>
                     <SelectItem value="always">{{ t("grid.copyExtractorQuoteAlways") }}</SelectItem>
                     <SelectItem value="never">{{ t("grid.copyExtractorQuoteNever") }}</SelectItem>
+                    <SelectItem value="strings">{{ t("grid.copyExtractorQuoteStrings") }}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

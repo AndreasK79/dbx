@@ -155,9 +155,11 @@ where
                         cancel: &cancel,
                     }))?;
                 cell_file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-                let quoted = json
-                    || request.quote_mode == dbx_formats::csv_export::CsvQuoteMode::All
-                    || csv_needs_quotes(CancelableReader { reader: &mut cell_file, cancel: &cancel })?;
+                let quoted =
+                    json || matches!(
+                        request.quote_mode,
+                        dbx_formats::csv_export::CsvQuoteMode::All | dbx_formats::csv_export::CsvQuoteMode::Strings
+                    ) || csv_needs_quotes(CancelableReader { reader: &mut cell_file, cancel: &cancel })?;
                 cell_file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
                 if quoted {
                     output.write_all(b"\"").map_err(|e| e.to_string())?;
@@ -498,6 +500,36 @@ mod tests {
                     &["ID".into(), "PAYLOAD".into()],
                     &[vec![Value::from(1), Value::from(value)]],
                     dbx_formats::csv_export::CsvQuoteMode::Necessary,
+                    Some("\\N")
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn strings_quote_mode_quotes_streamed_text_cells_like_all() {
+        // mod 42：流式大单元格走 quoted 判定时 Strings 与 All 同为「总是加引号」，
+        // 输出必须与 format_query_result_csv_with_options 的 Strings 语义一致。
+        for value in ["plain", "-000000000000000000001", " =cmd", "a,b"] {
+            let mut req = request("csv");
+            req.quote_mode = dbx_formats::csv_export::CsvQuoteMode::Strings;
+            let mut file = tempfile::tempfile().unwrap();
+            write_snapshot_export_with_fetch(req, &mut file, None, |_| {
+                std::future::ready(Ok(serde_json::json!({
+                    "status":"ok","data":value,"next_offset":value.chars().count(),"eof":true,"value_kind":"text"
+                })))
+            })
+            .await
+            .unwrap();
+            file.seek(SeekFrom::Start(0)).unwrap();
+            let mut output = String::new();
+            file.read_to_string(&mut output).unwrap();
+            assert_eq!(
+                output,
+                dbx_formats::csv_export::format_query_result_csv_with_options(
+                    &["ID".into(), "PAYLOAD".into()],
+                    &[vec![Value::from(1), Value::from(value)]],
+                    dbx_formats::csv_export::CsvQuoteMode::Strings,
                     Some("\\N")
                 )
             );

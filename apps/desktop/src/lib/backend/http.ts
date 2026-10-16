@@ -1660,7 +1660,7 @@ export interface SnapshotExportRequest {
   columns: string[];
   rows: unknown[][];
   cells: Array<{ rowIndex: number; columnIndex: number; valueRef: string }>;
-  quoteMode?: "all" | "necessary";
+  quoteMode?: CsvQuoteMode;
   nullLiteral?: string | null;
 }
 

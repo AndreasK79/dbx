@@ -10,6 +10,11 @@ pub enum CsvQuoteMode {
     All,
     Necessary,
     Never,
+    /// 类型感知引号（mod 42）：字符串值一律加引号，数值/布尔裸写。
+    /// 到达 [`push_csv_field_with_format`] 的都是文本（表头、字符串单元格、
+    /// JSON 化的对象/数组），与 [`CsvQuoteMode::All`] 同路径；数值/布尔在
+    /// [`push_csv_value_formatted`] 的类型分发里根本不会走到这里。
+    Strings,
 }
 
 /// CSV 里 NULL 的默认字面量（`\N`，MySQL `SELECT ... INTO OUTFILE` 惯例）。
@@ -209,7 +214,9 @@ pub fn push_csv_field(out: &mut String, value: &str, quote_mode: CsvQuoteMode) {
 pub fn push_csv_field_with_format(out: &mut String, value: &str, format: &CsvTextFormat) {
     match format.quote_mode {
         // 守卫前缀写在引号内：`"'-total"` 是合法的带引号字段，`'"-total"'` 不是
-        CsvQuoteMode::All => {
+        // Strings（mod 42）与 All 同路径：进入这里的值都是文本，一律加引号；
+        // 数值/布尔裸写的分流在 push_csv_value_formatted 的类型分发里。
+        CsvQuoteMode::All | CsvQuoteMode::Strings => {
             out.push(format.quote_char);
             push_formula_guard(out, value);
             push_csv_escaped_content(out, value, format.quote_char);
@@ -662,6 +669,31 @@ mod tests {
     #[test]
     fn csv_quote_mode_defaults_to_all_for_backward_compatibility() {
         assert_eq!(CsvQuoteMode::default(), CsvQuoteMode::All);
+    }
+
+    #[test]
+    fn strings_quote_mode_quotes_text_values_headers_and_json_but_not_numbers_or_booleans() {
+        // mod 42：类型感知引号——字符串/表头/JSON 化对象加引号，数值/布尔裸写，
+        // NULL 字面量保持 necessary 的裸写语义（`\N` 带引号后回读端不再识别）。
+        let out = format_csv_with_options(
+            &["id".to_string(), "note".to_string(), "flag".to_string()],
+            &[
+                vec![json!(1), json!("0123"), json!(true)],
+                vec![json!(2.5), json!("say \"hi\""), json!(false)],
+                vec![json!(3), serde_json::Value::Null, json!("[1, 2]")],
+            ],
+            CsvQuoteMode::Strings,
+            Some(DEFAULT_CSV_NULL_LITERAL),
+        );
+        assert_eq!(
+            out,
+            concat!(
+                "\"id\",\"note\",\"flag\"\n",
+                "1,\"0123\",true\n",
+                "2.5,\"say \"\"hi\"\"\",false\n",
+                "3,\\N,\"[1, 2]\""
+            )
+        );
     }
 
     #[test]
