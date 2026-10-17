@@ -109,6 +109,7 @@ import {
   type UpdateDownloadSource,
   type CsvQuoteMode,
   type CsvNullMode,
+  type QueryResultExportFileNameSource,
   type CustomThemeColors,
   type CustomTheme,
   DEFAULT_CUSTOM_THEMES,
@@ -831,6 +832,7 @@ const editDataGridKeepFilterEditorExpanded = ref(settingsStore.editorSettings.da
 const dataGridFilterViewPreviewExpanded = ref(true);
 const editDataGridTextFilterPanelHeight = ref(settingsStore.editorSettings.dataGridTextFilterPanelHeight);
 const editDefaultAutoKeepResults = ref(settingsStore.editorSettings.defaultAutoKeepResults);
+const editPinResultTabOnClick = ref(settingsStore.editorSettings.pinResultTabOnClick);
 const editMultiStatementDefaultView = ref<MultiStatementDefaultView>(settingsStore.editorSettings.multiStatementDefaultView);
 const editDefaultExplainView = ref<DefaultExplainView>(settingsStore.editorSettings.defaultExplainView);
 const editDataGridAutoTransposeSingleRow = ref(settingsStore.editorSettings.dataGridAutoTransposeSingleRow);
@@ -968,6 +970,7 @@ const tableHoverLookupModeDescription = computed(() => {
   return t(key);
 });
 const editClickTableNavigationTarget = ref<ClickTableNavigationTarget>(settingsStore.editorSettings.clickTableNavigationTarget);
+const editObjectBrowserAutoOpenDetailPanel = ref(settingsStore.editorSettings.objectBrowserAutoOpenDetailPanel);
 const editAutoUpdateApp = ref(settingsStore.editorSettings.autoUpdateApp);
 const editAutoUpdateDrivers = ref(settingsStore.editorSettings.autoUpdateDrivers);
 const editAutoUpdateJdbc = ref(settingsStore.editorSettings.autoUpdateJdbc);
@@ -991,6 +994,7 @@ const editAutoOpenExportFolder = ref(settingsStore.editorSettings.autoOpenExport
 const editApplyColumnFormattersOnExport = ref(settingsStore.editorSettings.applyColumnFormattersOnExport);
 const editCsvQuoteMode = ref<CsvQuoteMode>(settingsStore.editorSettings.csvQuoteMode);
 const editCsvNullMode = ref<CsvNullMode>(settingsStore.editorSettings.csvNullMode);
+const editQueryResultExportFileNameSource = ref<QueryResultExportFileNameSource>(settingsStore.editorSettings.queryResultExportFileNameSource);
 const editGlobalDateTimeDisplayFormat = ref(settingsStore.editorSettings.globalDateTimeDisplayFormat);
 const editGlobalDateTimeExportFormat = ref(settingsStore.editorSettings.globalDateTimeExportFormat);
 const editGlobalDateTimeImportFormat = ref(settingsStore.editorSettings.globalDateTimeImportFormat);
@@ -1274,6 +1278,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     dataGridKeepFilterEditorExpanded: editDataGridKeepFilterEditorExpanded.value,
     dataGridTextFilterPanelHeight: editDataGridTextFilterPanelHeight.value,
     defaultAutoKeepResults: editDefaultAutoKeepResults.value,
+    pinResultTabOnClick: editPinResultTabOnClick.value,
     multiStatementDefaultView: editMultiStatementDefaultView.value,
     defaultExplainView: editDefaultExplainView.value,
     dataGridAutoTransposeSingleRow: editDataGridAutoTransposeSingleRow.value,
@@ -1348,6 +1353,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     applyColumnFormattersOnExport: editApplyColumnFormattersOnExport.value,
     csvQuoteMode: editCsvQuoteMode.value,
     csvNullMode: editCsvNullMode.value,
+    queryResultExportFileNameSource: editQueryResultExportFileNameSource.value,
     globalDateTimeDisplayFormat: editGlobalDateTimeDisplayFormat.value,
     globalDateTimeExportFormat: editGlobalDateTimeExportFormat.value,
     globalDateTimeImportFormat: editGlobalDateTimeImportFormat.value,
@@ -1362,6 +1368,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     sqlVariableSubstitutionEnabled: editSqlVariableSubstitutionEnabled.value,
     sqlVariableSyntaxOverrides: editSqlVariableSyntaxOverrides.value,
     clickTableNavigationTarget: editClickTableNavigationTarget.value,
+    objectBrowserAutoOpenDetailPanel: editObjectBrowserAutoOpenDetailPanel.value,
   };
 }
 
@@ -2102,6 +2109,7 @@ function syncEditorSettingsDraftFromStore() {
   editDataGridKeepFilterEditorExpanded.value = settingsStore.editorSettings.dataGridKeepFilterEditorExpanded;
   editDataGridTextFilterPanelHeight.value = settingsStore.editorSettings.dataGridTextFilterPanelHeight;
   editDefaultAutoKeepResults.value = settingsStore.editorSettings.defaultAutoKeepResults;
+  editPinResultTabOnClick.value = settingsStore.editorSettings.pinResultTabOnClick;
   editMultiStatementDefaultView.value = settingsStore.editorSettings.multiStatementDefaultView;
   editDefaultExplainView.value = settingsStore.editorSettings.defaultExplainView;
   editDataGridAutoTransposeSingleRow.value = settingsStore.editorSettings.dataGridAutoTransposeSingleRow;
@@ -2176,6 +2184,7 @@ function syncEditorSettingsDraftFromStore() {
   editApplyColumnFormattersOnExport.value = settingsStore.editorSettings.applyColumnFormattersOnExport;
   editCsvQuoteMode.value = settingsStore.editorSettings.csvQuoteMode;
   editCsvNullMode.value = settingsStore.editorSettings.csvNullMode;
+  editQueryResultExportFileNameSource.value = settingsStore.editorSettings.queryResultExportFileNameSource;
   editGlobalDateTimeDisplayFormat.value = settingsStore.editorSettings.globalDateTimeDisplayFormat;
   editGlobalDateTimeExportFormat.value = settingsStore.editorSettings.globalDateTimeExportFormat;
   editGlobalDateTimeImportFormat.value = settingsStore.editorSettings.globalDateTimeImportFormat;
@@ -2190,6 +2199,7 @@ function syncEditorSettingsDraftFromStore() {
   editSqlVariableSubstitutionEnabled.value = settingsStore.editorSettings.sqlVariableSubstitutionEnabled;
   editSqlVariableSyntaxOverrides.value = normalizeSqlVariableSyntaxOverrides(settingsStore.editorSettings.sqlVariableSyntaxOverrides);
   editClickTableNavigationTarget.value = settingsStore.editorSettings.clickTableNavigationTarget;
+  editObjectBrowserAutoOpenDetailPanel.value = settingsStore.editorSettings.objectBrowserAutoOpenDetailPanel;
   editEditorSettingsBase.value = editorSettingsDraftFromSettings(settingsStore.editorSettings);
   hasImportedSettingsPendingApply.value = false;
 }
@@ -2267,6 +2277,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   dataGridKeepFilterEditorExpanded: editDataGridKeepFilterEditorExpanded,
   dataGridTextFilterPanelHeight: editDataGridTextFilterPanelHeight,
   defaultAutoKeepResults: editDefaultAutoKeepResults,
+  pinResultTabOnClick: editPinResultTabOnClick,
   multiStatementDefaultView: editMultiStatementDefaultView,
   defaultExplainView: editDefaultExplainView,
   dataGridAutoTransposeSingleRow: editDataGridAutoTransposeSingleRow,
@@ -2339,6 +2350,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   applyColumnFormattersOnExport: editApplyColumnFormattersOnExport,
   csvQuoteMode: editCsvQuoteMode,
   csvNullMode: editCsvNullMode,
+  queryResultExportFileNameSource: editQueryResultExportFileNameSource,
   exportRowLimitEnabled: editExportRowLimitEnabled,
   exportRowLimit: editExportRowLimit,
   queryExportKeysetOptimizationEnabled: editQueryExportKeysetOptimizationEnabled,
@@ -2354,6 +2366,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   sqlVariableSyntaxOverrides: editSqlVariableSyntaxOverrides,
   continueOnErrorOnBatch: editContinueOnErrorOnBatch,
   clickTableNavigationTarget: editClickTableNavigationTarget,
+  objectBrowserAutoOpenDetailPanel: editObjectBrowserAutoOpenDetailPanel,
   completionTriggerMode: editCompletionTriggerMode,
   excludedCompletionItems: editExcludedCompletionItems,
   defaultTransactionMode: editDefaultTransactionMode,
@@ -2876,6 +2889,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editGenerateSqlQuoteIdentifiers.value = DEFAULT_EDITOR_SETTINGS.generateSqlQuoteIdentifiers;
     editFormatSqlOnSqlFileSave.value = DEFAULT_EDITOR_SETTINGS.formatSqlOnSqlFileSave;
     editClickTableNavigationTarget.value = DEFAULT_EDITOR_SETTINGS.clickTableNavigationTarget;
+    editObjectBrowserAutoOpenDetailPanel.value = DEFAULT_EDITOR_SETTINGS.objectBrowserAutoOpenDetailPanel;
     editSidebarObjectInfoMode.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectInfoMode;
     editSidebarAllowHorizontalScroll.value = DEFAULT_EDITOR_SETTINGS.sidebarAllowHorizontalScroll;
     editSidebarShowTooltips.value = DEFAULT_EDITOR_SETTINGS.sidebarShowTooltips;
@@ -2907,6 +2921,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editDataGridKeepFilterEditorExpanded.value = DEFAULT_EDITOR_SETTINGS.dataGridKeepFilterEditorExpanded;
     editDataGridTextFilterPanelHeight.value = DEFAULT_EDITOR_SETTINGS.dataGridTextFilterPanelHeight;
     editDefaultAutoKeepResults.value = DEFAULT_EDITOR_SETTINGS.defaultAutoKeepResults;
+    editPinResultTabOnClick.value = DEFAULT_EDITOR_SETTINGS.pinResultTabOnClick;
     editMultiStatementDefaultView.value = DEFAULT_EDITOR_SETTINGS.multiStatementDefaultView;
     editDefaultExplainView.value = DEFAULT_EDITOR_SETTINGS.defaultExplainView;
     editDataGridAutoTransposeSingleRow.value = DEFAULT_EDITOR_SETTINGS.dataGridAutoTransposeSingleRow;
@@ -2942,6 +2957,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editApplyColumnFormattersOnExport.value = DEFAULT_EDITOR_SETTINGS.applyColumnFormattersOnExport;
     editCsvQuoteMode.value = DEFAULT_EDITOR_SETTINGS.csvQuoteMode;
     editCsvNullMode.value = DEFAULT_EDITOR_SETTINGS.csvNullMode;
+    editQueryResultExportFileNameSource.value = DEFAULT_EDITOR_SETTINGS.queryResultExportFileNameSource;
     editGlobalDateTimeDisplayFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeDisplayFormat;
     editGlobalDateTimeExportFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeExportFormat;
     editGlobalDateTimeImportFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeImportFormat;
@@ -3037,6 +3053,7 @@ function resetAllDefaults() {
   editDataGridKeepFilterEditorExpanded.value = DEFAULT_EDITOR_SETTINGS.dataGridKeepFilterEditorExpanded;
   editDataGridTextFilterPanelHeight.value = DEFAULT_EDITOR_SETTINGS.dataGridTextFilterPanelHeight;
   editDefaultAutoKeepResults.value = DEFAULT_EDITOR_SETTINGS.defaultAutoKeepResults;
+  editPinResultTabOnClick.value = DEFAULT_EDITOR_SETTINGS.pinResultTabOnClick;
   editMultiStatementDefaultView.value = DEFAULT_EDITOR_SETTINGS.multiStatementDefaultView;
   editDefaultExplainView.value = DEFAULT_EDITOR_SETTINGS.defaultExplainView;
   editDataGridAutoTransposeSingleRow.value = DEFAULT_EDITOR_SETTINGS.dataGridAutoTransposeSingleRow;
@@ -3110,6 +3127,7 @@ function resetAllDefaults() {
   editApplyColumnFormattersOnExport.value = DEFAULT_EDITOR_SETTINGS.applyColumnFormattersOnExport;
   editCsvQuoteMode.value = DEFAULT_EDITOR_SETTINGS.csvQuoteMode;
   editCsvNullMode.value = DEFAULT_EDITOR_SETTINGS.csvNullMode;
+  editQueryResultExportFileNameSource.value = DEFAULT_EDITOR_SETTINGS.queryResultExportFileNameSource;
   editGlobalDateTimeDisplayFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeDisplayFormat;
   editGlobalDateTimeExportFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeExportFormat;
   editGlobalDateTimeImportFormat.value = DEFAULT_EDITOR_SETTINGS.globalDateTimeImportFormat;
@@ -6426,6 +6444,7 @@ const aiEditPiAgentCliPath = ref("");
 const aiEditPiAgentCliEnvRows = ref<AiEnvRow[]>([]);
 const aiEditOpenCodeCliPath = ref("");
 const aiEditOpenCodeCliEnvRows = ref<AiEnvRow[]>([]);
+const aiEditOpenCodeCliVersion = ref("auto");
 const aiEditCursorCliPath = ref("");
 const aiEditCursorCliEnvRows = ref<AiEnvRow[]>([]);
 const aiEditGrokCliPath = ref("");
@@ -6719,6 +6738,7 @@ function currentAiEditConfig() {
     piAgentCliEnv: aiIsPiAgentCli.value ? cliEnvFromRows(aiEditPiAgentCliEnvRows.value) : {},
     opencodeCliPath: aiEditOpenCodeCliPath.value.trim() || undefined,
     opencodeCliEnv: aiIsOpenCodeCli.value ? cliEnvFromRows(aiEditOpenCodeCliEnvRows.value) : {},
+    opencodeCliVersion: aiIsOpenCodeCli.value ? aiEditOpenCodeCliVersion.value || undefined : undefined,
     cursorCliPath: aiEditCursorCliPath.value.trim() || undefined,
     cursorCliEnv: aiIsCursorCli.value ? cliEnvFromRows(aiEditCursorCliEnvRows.value) : {},
     grokCliPath: aiEditGrokCliPath.value.trim() || undefined,
@@ -6760,6 +6780,7 @@ function aiSelectProvider(presetId: string) {
   aiEditSkipTlsVerify.value = false;
   aiEditEnableThinking.value = true;
   aiEditReasoningLevel.value = "default";
+  aiEditOpenCodeCliVersion.value = "auto";
   if (CLI_AI_PROVIDERS.has(provider)) void ensureCliMcpStatus();
 }
 
@@ -6811,6 +6832,7 @@ function aiEnterEditMode(configId?: string) {
       aiEditPiAgentCliEnvRows.value = aiEnvRowsFromConfig(config.piAgentCliEnv);
       aiEditOpenCodeCliPath.value = config.opencodeCliPath ?? "";
       aiEditOpenCodeCliEnvRows.value = aiEnvRowsFromConfig(config.opencodeCliEnv);
+      aiEditOpenCodeCliVersion.value = config.opencodeCliVersion ?? "auto";
       aiEditCursorCliPath.value = config.cursorCliPath ?? "";
       aiEditCursorCliEnvRows.value = aiEnvRowsFromConfig(config.cursorCliEnv);
       aiEditGrokCliPath.value = config.grokCliPath ?? "";
@@ -6846,6 +6868,7 @@ function aiEnterEditMode(configId?: string) {
     aiEditPiAgentCliEnvRows.value = [];
     aiEditOpenCodeCliPath.value = "";
     aiEditOpenCodeCliEnvRows.value = [];
+    aiEditOpenCodeCliVersion.value = "auto";
     aiEditCursorCliPath.value = "";
     aiEditCursorCliEnvRows.value = [];
     aiEditGrokCliPath.value = "";
@@ -9169,6 +9192,16 @@ onUnmounted(() => {
 
                 <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
+                    <Label for="editor-object-browser-auto-open-detail">{{ t("settings.objectBrowserAutoOpenDetailPanel") }}</Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t("settings.objectBrowserAutoOpenDetailPanelDescription") }}
+                    </p>
+                  </div>
+                  <Switch id="editor-object-browser-auto-open-detail" v-model="editObjectBrowserAutoOpenDetailPanel" class="mt-0.5" />
+                </div>
+
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="space-y-1">
                     <Label for="editor-prefill-new-query">{{ t("settings.prefillNewQueryWithSelect") }}</Label>
                     <p class="text-xs text-muted-foreground">
                       {{ t("settings.prefillNewQueryWithSelectDescription") }}
@@ -9802,6 +9835,13 @@ onUnmounted(() => {
                   </div>
                   <Switch id="default-auto-keep-results" v-model="editDefaultAutoKeepResults" :aria-label="t('settings.defaultAutoKeepResults')" />
                 </div>
+                <div data-settings-search-id="pin-result-tab-on-click" :class="['settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2', settingsSearchTargetClass('pin-result-tab-on-click')]">
+                  <div class="min-w-0 space-y-1">
+                    <Label for="pin-result-tab-on-click">{{ t("settings.pinResultTabOnClick") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.pinResultTabOnClickDescription") }}</p>
+                  </div>
+                  <Switch id="pin-result-tab-on-click" v-model="editPinResultTabOnClick" :aria-label="t('settings.pinResultTabOnClick')" />
+                </div>
                 <div data-settings-search-id="multi-statement-default-view" :class="['settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2', settingsSearchTargetClass('multi-statement-default-view')]">
                   <div class="min-w-0 space-y-1">
                     <Label for="multi-statement-default-view">{{ t("settings.multiStatementDefaultView") }}</Label>
@@ -10322,6 +10362,23 @@ onUnmounted(() => {
                     <SelectContent>
                       <SelectItem value="marker">{{ t("settings.csvNullModeMarker") }}</SelectItem>
                       <SelectItem value="empty">{{ t("settings.csvNullModeEmpty") }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div data-settings-search-id="data-export-file-name-source" :class="['flex items-start justify-between gap-4', settingsSearchTargetClass('data-export-file-name-source')]">
+                  <div class="min-w-0 space-y-0.5">
+                    <Label for="query-result-export-file-name-source">{{ t("settings.queryResultExportFileNameSource") }}</Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t("settings.queryResultExportFileNameSourceDescription") }}
+                    </p>
+                  </div>
+                  <Select v-model="editQueryResultExportFileNameSource">
+                    <SelectTrigger id="query-result-export-file-name-source" class="h-8 w-56 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="result-label">{{ t("settings.queryResultExportFileNameSourceResultLabel") }}</SelectItem>
+                      <SelectItem value="tab-title">{{ t("settings.queryResultExportFileNameSourceTabTitle") }}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -12006,6 +12063,26 @@ LIMIT 100;</pre
                     </p>
                     <p v-if="aiCliPathError" class="text-[11px] text-destructive">
                       {{ aiCliPathError }}
+                    </p>
+                  </div>
+                </div>
+
+                <!-- OpenCode CLI Version -->
+                <div v-if="!aiIsCcSwitchProvider && aiIsOpenCodeCli" class="grid grid-cols-3 items-start gap-3">
+                  <Label class="pt-2 text-right text-xs">{{ t("ai.openCodeCliVersion") }}</Label>
+                  <div class="col-span-2 space-y-1.5">
+                    <Select v-model="aiEditOpenCodeCliVersion">
+                      <SelectTrigger class="h-8 text-xs">
+                        <SelectValue :placeholder="t('ai.openCodeCliVersionAuto')" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">{{ t("ai.openCodeCliVersionAuto") }}</SelectItem>
+                        <SelectItem value="v2">{{ t("ai.openCodeCliVersionV2") }}</SelectItem>
+                        <SelectItem value="v1">{{ t("ai.openCodeCliVersionV1") }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p class="text-[11px] text-muted-foreground">
+                      {{ t("ai.openCodeCliVersionHint") }}
                     </p>
                   </div>
                 </div>
