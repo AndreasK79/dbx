@@ -313,16 +313,6 @@ function optionCount() {
   return filteredOptions.value.length + (canSelectCustom.value ? 1 : 0);
 }
 
-// Opens the dropdown from outside (e.g. the focusDatabaseSelect shortcut);
-// the open watcher focuses the search input and highlights the selection.
-function openDropdown(): boolean {
-  if (props.disabled) return false;
-  open.value = true;
-  return true;
-}
-
-defineExpose({ openDropdown });
-
 function handleKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.key === "Process" || event.keyCode === 229) return;
   if (event.key === "ArrowDown") {
@@ -363,6 +353,9 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+// Opens the dropdown from outside (toolbar picker shortcuts, and the F3
+// focusDatabaseSelect shortcut); the open watcher focuses the search input
+// and highlights the selection.
 defineExpose({
   openDropdown: () => {
     if (props.disabled) return false;
