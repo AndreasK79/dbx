@@ -5432,7 +5432,15 @@ const sortedRows = computed(() => {
     const rows = props.result.rows;
     indices = indices.filter((sourceIndex) => {
       const data = rows[sourceIndex];
-      return data.some((cell, columnIndex) => cell !== null && rowLowerTextCache.get(data, columnIndex).includes(q));
+      return data.some((cell, columnIndex) => {
+        if (cell === null) return false;
+        const text = rowLowerTextCache.get(data, columnIndex);
+        if (text.includes(q)) return true;
+        // The display cache is truncated at the cell display cap, so a match
+        // past the cut would wrongly hide a row that a WHERE clause finds;
+        // re-check the full raw string value (#11956).
+        return text.endsWith("...") && typeof cell === "string" && cell.toLowerCase().includes(q);
+      });
     });
   }
   return indices;
@@ -13145,6 +13153,10 @@ async function navigateToForeignKeyCell(rowIndex: number, actualColIdx: number) 
       currentSchema: props.tableMeta?.schema || props.schema,
       fk: association.foreignKey,
       whereInput: condition,
+      // 跨库外键（mod 43 合并 upstream v0.6.46+）：连接配置 + 实际库类型
+      // 让目标判定数据库树层级（ref_schema 承载目标库名）还是模式感知
+      connection: connectionStore.getConfig(props.connectionId),
+      databaseType: resolvedDatabaseType.value,
     });
     // 同面板跳转：data tab 原地换目标（不安全状态由 canReuseActiveDataTab
     // 拒绝后回退新建），query tab 在结果面板内执行（编辑器 SQL 不动）；
