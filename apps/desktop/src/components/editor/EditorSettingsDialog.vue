@@ -102,6 +102,7 @@ import {
   type SidebarObjectInfoMode,
   type SqlSemanticDiagnosticsMode,
   type SavedSqlOpenTargetMode,
+  type AiSqlApplyTargetMode,
   type TabGroupMode,
   type TabPlacement,
   type TabSortMode,
@@ -791,6 +792,7 @@ const editContinueOnErrorOnBatch = ref(settingsStore.editorSettings.continueOnEr
 const editConfirmUnsavedSqlClose = ref(settingsStore.editorSettings.confirmUnsavedSqlClose);
 const editAppCloseUnsavedTabsMode = ref<AppCloseUnsavedTabsMode>(settingsStore.editorSettings.appCloseUnsavedTabsMode);
 const editSavedSqlOpenTargetMode = ref<SavedSqlOpenTargetMode>(settingsStore.editorSettings.savedSqlOpenTargetMode);
+const editAiSqlApplyTargetMode = ref<AiSqlApplyTargetMode>(settingsStore.editorSettings.aiSqlApplyTargetMode);
 const editWelcomePageMode = ref<WelcomePageMode>(settingsStore.editorSettings.welcomePageMode);
 const editAppLayout = ref(settingsStore.editorSettings.appLayout);
 const editWebLogoPosition = ref<WebLogoPosition>(settingsStore.editorSettings.webLogoPosition);
@@ -816,12 +818,14 @@ const editSidebarTablePageSize = ref(settingsStore.desktopSettings.sidebar_table
 const debugLogCopied = ref(false);
 const debugLogDownloaded = ref(false);
 const editShowColumnCommentsInHeader = ref(settingsStore.editorSettings.showColumnCommentsInHeader);
+const editDataGridColumnCommentsInInfoArea = ref(settingsStore.editorSettings.dataGridColumnCommentsInInfoArea);
 const editShowColumnTypesInHeader = ref(settingsStore.editorSettings.showColumnTypesInHeader);
 const editShowColumnHeaderTooltips = ref(settingsStore.editorSettings.showColumnHeaderTooltips);
 const editShowResultSourceDatabase = ref(settingsStore.editorSettings.showResultSourceDatabase);
 const editResultTabNamingMode = ref<ResultTabNamingMode>(settingsStore.editorSettings.resultTabNamingMode);
 const editResultTabPreferComments = ref(settingsStore.editorSettings.resultTabPreferComments);
 const editDataGridShowTransposeFieldMetadata = ref(settingsStore.editorSettings.dataGridShowTransposeFieldMetadata);
+const editDataGridTransposeMetadataInInfoColumn = ref(settingsStore.editorSettings.dataGridTransposeMetadataInInfoColumn);
 const editColorizeDataGridCellTypes = ref(settingsStore.editorSettings.colorizeDataGridCellTypes);
 const editShowIndexIndicatorsInHeader = ref(settingsStore.editorSettings.showIndexIndicatorsInHeader);
 const editCompactColumnHeaderActions = ref(settingsStore.editorSettings.compactColumnHeaderActions);
@@ -1251,6 +1255,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     confirmUnsavedSqlClose: editConfirmUnsavedSqlClose.value,
     appCloseUnsavedTabsMode: editAppCloseUnsavedTabsMode.value,
     savedSqlOpenTargetMode: editSavedSqlOpenTargetMode.value,
+    aiSqlApplyTargetMode: editAiSqlApplyTargetMode.value,
     welcomePageMode: editWelcomePageMode.value,
     appLayout: editAppLayout.value,
     webLogoPosition: editWebLogoPosition.value,
@@ -1261,12 +1266,14 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     tabSortMode: editTabSortMode.value,
     tabMaxWidth: editTabMaxWidth.value,
     showColumnCommentsInHeader: editShowColumnCommentsInHeader.value,
+    dataGridColumnCommentsInInfoArea: editDataGridColumnCommentsInInfoArea.value,
     showColumnTypesInHeader: editShowColumnTypesInHeader.value,
     showColumnHeaderTooltips: editShowColumnHeaderTooltips.value,
     showResultSourceDatabase: editShowResultSourceDatabase.value,
     resultTabNamingMode: editResultTabNamingMode.value,
     resultTabPreferComments: editResultTabPreferComments.value,
     dataGridShowTransposeFieldMetadata: editDataGridShowTransposeFieldMetadata.value,
+    dataGridTransposeMetadataInInfoColumn: editDataGridTransposeMetadataInInfoColumn.value,
     colorizeDataGridCellTypes: editColorizeDataGridCellTypes.value,
     dataGridTypeColorSchemes: editDataGridTypeColorSchemes.value,
     activeDataGridTypeColorSchemeId: editActiveDataGridTypeColorSchemeId.value,
@@ -2082,6 +2089,7 @@ function syncEditorSettingsDraftFromStore() {
   editConfirmUnsavedSqlClose.value = settingsStore.editorSettings.confirmUnsavedSqlClose;
   editAppCloseUnsavedTabsMode.value = settingsStore.editorSettings.appCloseUnsavedTabsMode;
   editSavedSqlOpenTargetMode.value = settingsStore.editorSettings.savedSqlOpenTargetMode;
+  editAiSqlApplyTargetMode.value = settingsStore.editorSettings.aiSqlApplyTargetMode;
   editWelcomePageMode.value = settingsStore.editorSettings.welcomePageMode;
   editAppLayout.value = settingsStore.editorSettings.appLayout;
   editWebLogoPosition.value = settingsStore.editorSettings.webLogoPosition;
@@ -2092,12 +2100,14 @@ function syncEditorSettingsDraftFromStore() {
   editTabSortMode.value = settingsStore.editorSettings.tabSortMode;
   editTabMaxWidth.value = settingsStore.editorSettings.tabMaxWidth;
   editShowColumnCommentsInHeader.value = settingsStore.editorSettings.showColumnCommentsInHeader;
+  editDataGridColumnCommentsInInfoArea.value = settingsStore.editorSettings.dataGridColumnCommentsInInfoArea;
   editShowColumnTypesInHeader.value = settingsStore.editorSettings.showColumnTypesInHeader;
   editShowColumnHeaderTooltips.value = settingsStore.editorSettings.showColumnHeaderTooltips;
   editShowResultSourceDatabase.value = settingsStore.editorSettings.showResultSourceDatabase;
   editResultTabNamingMode.value = settingsStore.editorSettings.resultTabNamingMode;
   editResultTabPreferComments.value = settingsStore.editorSettings.resultTabPreferComments;
   editDataGridShowTransposeFieldMetadata.value = settingsStore.editorSettings.dataGridShowTransposeFieldMetadata;
+  editDataGridTransposeMetadataInInfoColumn.value = settingsStore.editorSettings.dataGridTransposeMetadataInInfoColumn;
   editColorizeDataGridCellTypes.value = settingsStore.editorSettings.colorizeDataGridCellTypes;
   editDataGridTypeColorSchemes.value = cloneDataGridTypeColorSchemes(settingsStore.editorSettings.dataGridTypeColorSchemes);
   editActiveDataGridTypeColorSchemeId.value = settingsStore.editorSettings.activeDataGridTypeColorSchemeId;
@@ -2250,6 +2260,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   confirmUnsavedSqlClose: editConfirmUnsavedSqlClose,
   appCloseUnsavedTabsMode: editAppCloseUnsavedTabsMode,
   savedSqlOpenTargetMode: editSavedSqlOpenTargetMode,
+  aiSqlApplyTargetMode: editAiSqlApplyTargetMode,
   welcomePageMode: editWelcomePageMode,
   appLayout: editAppLayout,
   webLogoPosition: editWebLogoPosition,
@@ -2260,12 +2271,14 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   tabSortMode: editTabSortMode,
   tabMaxWidth: editTabMaxWidth,
   showColumnCommentsInHeader: editShowColumnCommentsInHeader,
+  dataGridColumnCommentsInInfoArea: editDataGridColumnCommentsInInfoArea,
   showColumnTypesInHeader: editShowColumnTypesInHeader,
   showColumnHeaderTooltips: editShowColumnHeaderTooltips,
   showResultSourceDatabase: editShowResultSourceDatabase,
   resultTabNamingMode: editResultTabNamingMode,
   resultTabPreferComments: editResultTabPreferComments,
   dataGridShowTransposeFieldMetadata: editDataGridShowTransposeFieldMetadata,
+  dataGridTransposeMetadataInInfoColumn: editDataGridTransposeMetadataInInfoColumn,
   colorizeDataGridCellTypes: editColorizeDataGridCellTypes,
   dataGridTypeColorSchemes: editDataGridTypeColorSchemes,
   activeDataGridTypeColorSchemeId: editActiveDataGridTypeColorSchemeId,
@@ -2835,6 +2848,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editConfirmUnsavedSqlClose.value = DEFAULT_EDITOR_SETTINGS.confirmUnsavedSqlClose;
     editAppCloseUnsavedTabsMode.value = DEFAULT_EDITOR_SETTINGS.appCloseUnsavedTabsMode;
     editSavedSqlOpenTargetMode.value = DEFAULT_EDITOR_SETTINGS.savedSqlOpenTargetMode;
+    editAiSqlApplyTargetMode.value = DEFAULT_EDITOR_SETTINGS.aiSqlApplyTargetMode;
     editShowTableDdlHoverPreview.value = DEFAULT_EDITOR_SETTINGS.showTableDdlHoverPreview;
     editTableHoverLookupMode.value = DEFAULT_EDITOR_SETTINGS.tableHoverLookupMode;
     editExternalSqlEditorMaxMb.value = DEFAULT_EDITOR_SETTINGS.externalSqlEditorMaxMb;
@@ -2904,12 +2918,14 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     historyRetention.reset();
     mcpHistoryRetention.reset();
     editShowColumnCommentsInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnCommentsInHeader;
+    editDataGridColumnCommentsInInfoArea.value = DEFAULT_EDITOR_SETTINGS.dataGridColumnCommentsInInfoArea;
     editShowColumnTypesInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnTypesInHeader;
     editShowColumnHeaderTooltips.value = DEFAULT_EDITOR_SETTINGS.showColumnHeaderTooltips;
     editShowResultSourceDatabase.value = DEFAULT_EDITOR_SETTINGS.showResultSourceDatabase;
     editResultTabNamingMode.value = DEFAULT_EDITOR_SETTINGS.resultTabNamingMode;
     editResultTabPreferComments.value = DEFAULT_EDITOR_SETTINGS.resultTabPreferComments;
     editDataGridShowTransposeFieldMetadata.value = DEFAULT_EDITOR_SETTINGS.dataGridShowTransposeFieldMetadata;
+    editDataGridTransposeMetadataInInfoColumn.value = DEFAULT_EDITOR_SETTINGS.dataGridTransposeMetadataInInfoColumn;
     editColorizeDataGridCellTypes.value = DEFAULT_EDITOR_SETTINGS.colorizeDataGridCellTypes;
     // Back to the built-in palette, but keep the user's saved schemes available.
     editActiveDataGridTypeColorSchemeId.value = DEFAULT_EDITOR_SETTINGS.activeDataGridTypeColorSchemeId;
@@ -3024,6 +3040,7 @@ function resetAllDefaults() {
   editConfirmUnsavedSqlClose.value = DEFAULT_EDITOR_SETTINGS.confirmUnsavedSqlClose;
   editAppCloseUnsavedTabsMode.value = DEFAULT_EDITOR_SETTINGS.appCloseUnsavedTabsMode;
   editSavedSqlOpenTargetMode.value = DEFAULT_EDITOR_SETTINGS.savedSqlOpenTargetMode;
+  editAiSqlApplyTargetMode.value = DEFAULT_EDITOR_SETTINGS.aiSqlApplyTargetMode;
   editSqlVariableSubstitutionEnabled.value = DEFAULT_EDITOR_SETTINGS.sqlVariableSubstitutionEnabled;
   editSqlVariableSyntaxOverrides.value = normalizeSqlVariableSyntaxOverrides(DEFAULT_EDITOR_SETTINGS.sqlVariableSyntaxOverrides);
   editWelcomePageMode.value = DEFAULT_EDITOR_SETTINGS.welcomePageMode;
@@ -3039,9 +3056,11 @@ function resetAllDefaults() {
   editDuckDbWorkerMaxProcesses.value = DEFAULT_DESKTOP_SETTINGS.duckdb_worker_max_processes;
   editSidebarTablePageSize.value = DEFAULT_SIDEBAR_TABLE_PAGE_SIZE;
   editShowColumnCommentsInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnCommentsInHeader;
+  editDataGridColumnCommentsInInfoArea.value = DEFAULT_EDITOR_SETTINGS.dataGridColumnCommentsInInfoArea;
   editShowColumnTypesInHeader.value = DEFAULT_EDITOR_SETTINGS.showColumnTypesInHeader;
   editShowColumnHeaderTooltips.value = DEFAULT_EDITOR_SETTINGS.showColumnHeaderTooltips;
   editDataGridShowTransposeFieldMetadata.value = DEFAULT_EDITOR_SETTINGS.dataGridShowTransposeFieldMetadata;
+  editDataGridTransposeMetadataInInfoColumn.value = DEFAULT_EDITOR_SETTINGS.dataGridTransposeMetadataInInfoColumn;
   editColorizeDataGridCellTypes.value = DEFAULT_EDITOR_SETTINGS.colorizeDataGridCellTypes;
   // Reset the selection only; saved schemes survive a full settings reset.
   editActiveDataGridTypeColorSchemeId.value = DEFAULT_EDITOR_SETTINGS.activeDataGridTypeColorSchemeId;
@@ -8225,6 +8244,25 @@ onUnmounted(() => {
                   </Select>
                 </div>
 
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2 md:col-span-2">
+                  <div class="min-w-0 space-y-1">
+                    <Label for="editor-ai-sql-apply-target">{{ t("settings.aiSqlApplyTarget") }}</Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ editAiSqlApplyTargetMode === "current" ? t("settings.aiSqlApplyTargetCurrentDescription") : editAiSqlApplyTargetMode === "first" ? t("settings.aiSqlApplyTargetFirstDescription") : t("settings.aiSqlApplyTargetNewDescription") }}
+                    </p>
+                  </div>
+                  <Select v-model="editAiSqlApplyTargetMode">
+                    <SelectTrigger id="editor-ai-sql-apply-target" class="h-8 w-44 shrink-0 px-2 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="current">{{ t("settings.aiSqlApplyTargetCurrent") }}</SelectItem>
+                      <SelectItem value="first">{{ t("settings.aiSqlApplyTargetFirst") }}</SelectItem>
+                      <SelectItem value="new">{{ t("settings.aiSqlApplyTargetNew") }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
                 <div class="settings-item rounded-md border bg-muted/20 p-3 md:col-span-2" data-editor-unsaved-sql-settings>
                   <div class="grid gap-4 md:grid-cols-2">
                     <div class="flex min-w-0 items-start justify-between gap-4">
@@ -9931,7 +9969,14 @@ onUnmounted(() => {
                       {{ t("settings.showColumnCommentsInHeaderDescription") }}
                     </p>
                   </div>
-                  <Switch id="show-column-comments-in-header" v-model="editShowColumnCommentsInHeader" />
+                  <Switch id="show-column-comments-in-header" v-model="editShowColumnCommentsInHeader" :disabled="editDataGridColumnCommentsInInfoArea" />
+                </div>
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="min-w-0 space-y-1">
+                    <Label for="column-comments-in-info-area">{{ t("settings.dataGridColumnCommentsInInfoArea") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.dataGridColumnCommentsInInfoAreaDescription") }}</p>
+                  </div>
+                  <Switch id="column-comments-in-info-area" v-model="editDataGridColumnCommentsInInfoArea" class="shrink-0" />
                 </div>
                 <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
@@ -10002,7 +10047,14 @@ onUnmounted(() => {
                       {{ t("settings.dataGridShowTransposeFieldMetadataDescription") }}
                     </p>
                   </div>
-                  <Switch id="data-grid-show-transpose-field-metadata" v-model="editDataGridShowTransposeFieldMetadata" />
+                  <Switch id="data-grid-show-transpose-field-metadata" v-model="editDataGridShowTransposeFieldMetadata" :disabled="editDataGridTransposeMetadataInInfoColumn" />
+                </div>
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="min-w-0 space-y-1">
+                    <Label for="data-grid-transpose-metadata-in-info-column">{{ t("settings.dataGridTransposeMetadataInInfoColumn") }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t("settings.dataGridTransposeMetadataInInfoColumnDescription") }}</p>
+                  </div>
+                  <Switch id="data-grid-transpose-metadata-in-info-column" v-model="editDataGridTransposeMetadataInInfoColumn" class="shrink-0" />
                 </div>
                 <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
@@ -11621,6 +11673,40 @@ LIMIT 100;</pre
                     </p>
                   </div>
                   <Switch id="ai-restore-last-conversation" :model-value="settingsStore.restoreLastConversation" @update:model-value="(value) => settingsStore.setRestoreLastConversation(Boolean(value))" />
+                </div>
+              </div>
+
+              <!-- AI SQL Apply Target (list mode, global) -->
+              <div v-if="aiConfigListMode === 'list'" class="space-y-3">
+                <Separator />
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="min-w-0 space-y-1">
+                    <Label for="ai-sql-apply-target">
+                      {{ t("settings.aiSqlApplyTarget") }}
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ editAiSqlApplyTargetMode === "current" ? t("settings.aiSqlApplyTargetCurrentDescription") : editAiSqlApplyTargetMode === "first" ? t("settings.aiSqlApplyTargetFirstDescription") : t("settings.aiSqlApplyTargetNewDescription") }}
+                    </p>
+                  </div>
+                  <Select
+                    :model-value="editAiSqlApplyTargetMode"
+                    @update:model-value="
+                      (value) => {
+                        const mode = value as AiSqlApplyTargetMode;
+                        editAiSqlApplyTargetMode = mode;
+                        void settingsStore.updateEditorSettingsAndPersist({ aiSqlApplyTargetMode: mode });
+                      }
+                    "
+                  >
+                    <SelectTrigger id="ai-sql-apply-target" class="h-8 w-44 shrink-0 px-2 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="current">{{ t("settings.aiSqlApplyTargetCurrent") }}</SelectItem>
+                      <SelectItem value="first">{{ t("settings.aiSqlApplyTargetFirst") }}</SelectItem>
+                      <SelectItem value="new">{{ t("settings.aiSqlApplyTargetNew") }}</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 

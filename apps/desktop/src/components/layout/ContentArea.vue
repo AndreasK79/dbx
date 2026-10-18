@@ -210,7 +210,7 @@ import { loadQueryResultTransferSourceDdl } from "@/components/transfer/queryRes
 import { formatDdlForDisplay } from "@/lib/sql/ddlDisplay";
 import { sqlObjectNavigationTypeFromTableType } from "@/lib/sql/sqlNavigation";
 import type { CustomSaveHandler } from "@/composables/useDataGridEditor";
-import type { QueryMessage, QueryResult, QueryTab, RedisResultViewMode, TableInfoTab, TreeNode, VectorCollectionMeta } from "@/types/database";
+import type { QueryMessage, QueryResult, QueryTab, RedisResultViewMode, TableInfoTab, TabOutputView, TreeNode, VectorCollectionMeta } from "@/types/database";
 import type { SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import { sqlFormatDialectForDbType, type SqlFormatDialect } from "@/lib/sql/sqlFormatter";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
@@ -881,6 +881,14 @@ function setRedisResultViewMode(mode: RedisResultViewMode) {
   queryStore.updateTabUiState(props.activeTab.id, { redisResultViewMode: mode });
 }
 
+function selectOutputView(tabId: string, view: TabOutputView) {
+  queryStore.updateTabUiState(tabId, {
+    activeOutputView: view,
+    autoSwitchedToMessagesDuringExecution: false,
+  });
+  emit("update:activeOutputView", tabId, view);
+}
+
 function observeStandaloneResultToolbar() {
   standaloneResultToolbarResizeObserver?.disconnect();
   standaloneResultToolbarResizeObserver = undefined;
@@ -1116,6 +1124,10 @@ watch(
   () => props.activeTab.liveQueryMessages?.length ?? 0,
   (count, previousCount) => {
     if (count > 0 && !previousCount && props.activeTab.isExecuting && !props.editorOnly && !hasTabularResult.value && (props.activeOutputView === "result" || props.activeOutputView === "summary")) {
+      queryStore.updateTabUiState(props.activeTab.id, {
+        activeOutputView: "messages",
+        autoSwitchedToMessagesDuringExecution: true,
+      });
       emit("update:activeOutputView", props.activeTab.id, "messages");
     }
   },
@@ -1136,6 +1148,7 @@ watch(
     if (hasExecutionSummary.value && (!hasTabularResult.value || props.activeTab.result?.server_message === true) && props.activeOutputView === "result") {
       const result = props.activeTab.result;
       emit("update:activeOutputView", props.activeTab.id, result ? defaultViewForResult(result) : "summary");
+      return;
     }
   },
   { immediate: true },
@@ -2557,7 +2570,7 @@ defineExpose({
                 :message-count="resultMessageCount"
                 :error-count="summaryErrorCount"
                 :compact="standaloneResultToolbarCompact"
-                @select-view="emit('update:activeOutputView', activeTab.id, $event)"
+                @select-view="selectOutputView(activeTab.id, $event)"
                 @select-result-mode="setRedisResultViewMode"
               />
               <QueryResultToolbarActions
@@ -2569,8 +2582,8 @@ defineExpose({
                 :archive-exporting="resultArchiveExporting"
                 :compact="standaloneResultToolbarCompact"
                 :has-result="!!activeTab.result"
-                @select-explain="emit('update:activeOutputView', activeTab.id, 'explain')"
-                @select-profile="emit('update:activeOutputView', activeTab.id, 'profile')"
+                @select-explain="selectOutputView(activeTab.id, 'explain')"
+                @select-profile="selectOutputView(activeTab.id, 'profile')"
                 @export-archive="exportResultArchive"
                 @open-result-view="openPluginResultView"
               />
@@ -2829,7 +2842,7 @@ defineExpose({
                     :message-count="resultMessageCount"
                     :error-count="summaryErrorCount"
                     :compact="compact"
-                    @select-view="emit('update:activeOutputView', activeTab.id, $event)"
+                    @select-view="selectOutputView(activeTab.id, $event)"
                     @select-result-mode="setRedisResultViewMode"
                   />
                   <template v-if="activeElasticsearchRawBody">
@@ -2851,7 +2864,7 @@ defineExpose({
                       class="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-2 text-xs leading-none transition-colors"
                       :class="activeOutputView === 'profile' ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground hover:text-foreground'"
                       :aria-pressed="activeOutputView === 'profile'"
-                      @click="emit('update:activeOutputView', activeTab.id, activeOutputView === 'profile' ? 'result' : 'profile')"
+                      @click="selectOutputView(activeTab.id, activeOutputView === 'profile' ? 'result' : 'profile')"
                     >
                       <Gauge class="h-3.5 w-3.5" />
                       {{ t("profile.title") }}
@@ -2867,8 +2880,8 @@ defineExpose({
                     :archive-exporting="resultArchiveExporting"
                     :compact="compact"
                     :has-result="!!activeTab.result"
-                    @select-explain="emit('update:activeOutputView', activeTab.id, 'explain')"
-                    @select-profile="emit('update:activeOutputView', activeTab.id, 'profile')"
+                    @select-explain="selectOutputView(activeTab.id, 'explain')"
+                    @select-profile="selectOutputView(activeTab.id, 'profile')"
                     @export-archive="exportResultArchive"
                     @open-result-view="openPluginResultView"
                   />

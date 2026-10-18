@@ -278,7 +278,7 @@ import { resolveCrosshairTarget, type CrosshairTarget } from "@/lib/dataGrid/cro
 import { DATA_GRID_DARK_NEW_ROW_BG, DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_NEW_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG, dataGridActiveRowBackground } from "@/lib/dataGrid/dataGridPaintTheme";
 import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
 import { dataGridPreviewLabelKey, dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
-import { buildDataGridSavedRowRefreshPlan, dataGridSavedRowRefreshPatches } from "@/lib/dataGrid/dataGridSavedRowRefresh";
+import { buildDataGridSavedRowRefreshPlan, dataGridSavedRowRefreshPatches, executeDataGridSavedRowRefreshQuery } from "@/lib/dataGrid/dataGridSavedRowRefresh";
 import type { QueryEditabilityReason } from "@/lib/sql/sqlAnalysis";
 import { sqlWithoutCommentsForCopy } from "@/lib/sql/sqlWithoutCommentsForCopy";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
@@ -867,10 +867,13 @@ const dataGridTopbarOverflowCompact = ref(false);
 const dataGridTopbarOverflowActionCount = ref(0);
 const dataGridTopbarExpandedRequiredWidth = ref(0);
 const dataGridFilterExpandedRequiredWidth = ref(0);
-const showColumnCommentsInHeader = computed(() => settingsStore.editorSettings.showColumnCommentsInHeader);
+const columnCommentsInInfoArea = computed(() => settingsStore.editorSettings.dataGridColumnCommentsInInfoArea);
+const showColumnCommentsInHeader = computed(() => settingsStore.editorSettings.showColumnCommentsInHeader && !columnCommentsInInfoArea.value);
 const showColumnTypesInHeader = computed(() => settingsStore.editorSettings.showColumnTypesInHeader);
 const showColumnHeaderTooltips = computed(() => settingsStore.editorSettings.showColumnHeaderTooltips !== false);
-const showTransposeFieldMetadata = computed(() => settingsStore.editorSettings.dataGridShowTransposeFieldMetadata);
+const transposeMetadataInInfoColumn = computed(() => settingsStore.editorSettings.dataGridTransposeMetadataInInfoColumn);
+const showTransposeFieldMetadata = computed(() => settingsStore.editorSettings.dataGridShowTransposeFieldMetadata && !transposeMetadataInInfoColumn.value);
+const showTransposeColumnComments = computed(() => settingsStore.editorSettings.showColumnCommentsInHeader);
 const showIndexIndicatorsInHeader = computed(() => settingsStore.editorSettings.showIndexIndicatorsInHeader !== false);
 const indexes = ref<IndexInfo[]>([]);
 const indexesLoaded = ref(false);
@@ -4472,6 +4475,7 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
     identityConditions.push(`(${conditions.join(" AND ")})`);
   }
 
+  const largeValuePreviewOptions = tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value);
   const sql = await buildTableSelectSql({
     databaseType: resolvedDatabaseType.value,
     driverProfile: connectionStore.getConfig(connectionId)?.driver_profile,
@@ -4485,16 +4489,21 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
     columns: tableMeta.columns.map((column) => column.name),
     includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
     primaryKeys: tableMeta.primaryKeys,
-    ...tableDataLargeValuePreviewOptions(resolvedDatabaseType.value, tableMeta.columns, tableMeta.primaryKeys, pageSize.value),
+    ...largeValuePreviewOptions,
     whereInput: identityConditions.join(" OR "),
     limit: planResult.plan.sourceIndexes.length + 1,
     includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
   });
-  const refreshed = await api.executeQuery(connectionId, props.executionDatabase ?? props.database ?? "", sql, tableMeta.schema ?? props.schema, undefined, {
-    maxRows: planResult.plan.sourceIndexes.length + 1,
-    fetchSize: planResult.plan.sourceIndexes.length + 1,
-    pageSize: planResult.plan.sourceIndexes.length + 1,
+  const refreshed = await executeDataGridSavedRowRefreshQuery(api, {
+    connectionId,
+    database: props.executionDatabase ?? props.database ?? "",
+    schema: tableMeta.schema ?? props.schema,
+    sql,
+    rowLimit: planResult.plan.sourceIndexes.length + 1,
+    primaryKeys: tableMeta.primaryKeys,
+    largeValuePreview: "largeValuePreviewSize" in largeValuePreviewOptions,
   });
+  if (!refreshed) return false;
   const patches = dataGridSavedRowRefreshPatches(planResult.plan, request.columns, props.sourceColumns, refreshed.columns, refreshed.rows);
   if (!patches) return false;
 
@@ -6996,6 +7005,20 @@ const activeCellDetail = computed(() => {
   return cell ? cellDetailFor(cell.rowIndex, cell.col) : null;
 });
 
+function columnInfoText(actualColIdx: number, includeName = true): string {
+  const column = props.result.columns[actualColIdx];
+  if (column === undefined) return "";
+  const metadata = tableColumnForGridColumn(actualColIdx);
+  return [includeName ? column : undefined, allColumnTypes.value[actualColIdx], metadata ? `${t("structureEditor.nullable")}: ${t(metadata.is_nullable ? "structureEditor.yes" : "structureEditor.no")}` : undefined, resolvedColumnComment(column, actualColIdx)].filter(Boolean).join(" · ");
+}
+
+const selectedColumnInfo = computed(() => {
+  if (!columnCommentsInInfoArea.value || hasRowSelection.value) return "";
+  const visibleIndex = hasColumnSelection.value ? [...selectedColumnIndexes.value][0] : selectionFocus.value?.colIndex;
+  const actualIndex = visibleIndex === undefined ? undefined : visibleColumnIndexes.value[visibleIndex];
+  return actualIndex === undefined ? "" : columnInfoText(actualIndex);
+});
+
 const canShowMongoJsonPreview = computed(() => props.databaseType === "mongodb" && !!props.result.mongo_documents && props.result.mongo_documents.length === props.result.rows.length);
 const mongoJsonPreviewOpen = computed(() => showMongoJsonPreview.value && canShowMongoJsonPreview.value);
 const activeMongoJsonDocument = computed(() => {
@@ -7380,6 +7403,23 @@ function closeCellDetails() {
   resetDetailEdit();
   showCellDetail.value = false;
   detailCell.value = null;
+}
+
+function escapeCellDetails() {
+  // Portalled overlays may keep focus in the grid. Let their own Escape handlers win.
+  // Context menus close during capture, but remain mounted until Vue's next update.
+  if (document.querySelector("[data-dbx-context-menu], [data-slot='dialog-content'][data-state='open'], [data-slot='popover-content'][data-state='open'], [data-slot='dropdown-menu-content'][data-state='open']")) return false;
+  // Preserve the editors' existing Escape behavior even when a toolbar button has focus.
+  if (isEditingDetail.value) {
+    if (activeCellDetailTab.value === "valueEditor") {
+      if (detailTemporalEditorConfig.value) cancelValueEditorEdit();
+      else restoreDetailOriginalValue();
+    } else cancelDetailEdit();
+    return true;
+  }
+  closeCellDetails();
+  nextTick(() => gridRef.value?.focus({ preventScroll: true }));
+  return true;
 }
 
 function toggleMongoJsonPreview() {
@@ -9412,6 +9452,8 @@ function showCellDetails(rowIndex: number, colIndex: number) {
   activeCellDetailTab.value = defaultCellDetailTab();
   showCellDetail.value = true;
   hydrateCellDetailTarget(detailCell.value);
+  // Move focus off the trigger so Escape can close the newly opened panel.
+  gridRef.value?.focus({ preventScroll: true });
 }
 
 function showCellDetailsForVisibleCell(rowIndex: number, visibleColIdx: number, actualColIdx: number) {
@@ -10851,6 +10893,15 @@ function cancelPendingRowOrRestoreCell(): boolean {
 async function onGridKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented) return;
 
+  const target = event.target;
+  if (event.key === "Escape" && !event.isComposing && showCellDetail.value && target instanceof Element && (target === gridRef.value || target.closest("[data-cell-detail-panel]"))) {
+    if (escapeCellDetails()) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    return;
+  }
+
   if (isFocusWhereShortcut(event, settingsStore.editorSettings.shortcuts) && focusWhere()) {
     event.preventDefault();
     event.stopPropagation();
@@ -11470,6 +11521,7 @@ const transposePinnedWidth = computed(
     }),
 );
 const transposeEndSpacerWidth = computed(() => {
+  if (transposeMetadataInInfoColumn.value) return 0;
   if (!transposeScopeRecordIndexes.value.length) return 0;
   return transposeEndAlignmentSpacerWidth({
     viewportWidth: transposeViewportWidth.value,
@@ -11513,10 +11565,11 @@ const transposeRows = computed(() => {
   });
 });
 const transposeReserveTypeLine = computed(() => showTransposeFieldMetadata.value && showColumnTypesInHeader.value && transposeRows.value.some((row) => row.type));
-const transposeReserveCommentLine = computed(() => showTransposeFieldMetadata.value && showColumnCommentsInHeader.value && transposeRows.value.some((row) => row.comment));
+const transposeReserveCommentLine = computed(() => showTransposeFieldMetadata.value && showTransposeColumnComments.value && transposeRows.value.some((row) => row.comment));
 const transposeRowHeight = computed(() => 30 + (transposeReserveTypeLine.value ? 14 : 0) + (transposeReserveCommentLine.value ? 14 : 0));
 const isTransposeMode = computed(() => showTranspose.value && transposeRows.value.length > 0);
-const transposeTotalWidth = computed(() => transposePinnedWidth.value + transposeRecordOffsets.value[transposeRecordOffsets.value.length - 1] + transposeEndSpacerWidth.value);
+const transposeInfoWidth = computed(() => (transposeMetadataInInfoColumn.value ? 360 : 0));
+const transposeTotalWidth = computed(() => transposePinnedWidth.value + transposeRecordOffsets.value[transposeRecordOffsets.value.length - 1] + transposeEndSpacerWidth.value + transposeInfoWidth.value);
 
 function transposeScrollElement(): HTMLElement | undefined {
   const raw = transposeScrollRef.value;
@@ -11527,7 +11580,7 @@ function transposeScrollElement(): HTMLElement | undefined {
 function transposeFieldTitle(item: { column: string; type: string; comment?: string }): string {
   const details = [item.column];
   if (showTransposeFieldMetadata.value && showColumnTypesInHeader.value && item.type) details.push(`${t("grid.columnType")}: ${item.type}`);
-  if (showTransposeFieldMetadata.value && showColumnCommentsInHeader.value && item.comment) details.push(`${t("grid.columnComment")}: ${item.comment}`);
+  if (showTransposeFieldMetadata.value && showTransposeColumnComments.value && item.comment) details.push(`${t("grid.columnComment")}: ${item.comment}`);
   return details.join("\n");
 }
 
@@ -14773,6 +14826,9 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                         <div class="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-primary/30" @mousedown.stop="onTransposeRecordResizeStart(recordIndex, $event)" @dblclick.stop="autoFitTransposeRecord(recordIndex)" />
                       </div>
                       <div class="shrink-0" :style="{ width: `${transposeAfterSpacerWidth}px` }" />
+                      <div v-if="transposeMetadataInInfoColumn" class="data-grid-header-cell shrink-0 border-r border-border px-3 py-1.5" :style="{ width: `${transposeInfoWidth}px` }">
+                        {{ t("grid.columnInfo") }}
+                      </div>
                     </div>
                   </template>
                   <template #default="{ item }">
@@ -14805,7 +14861,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                               {{ item.type }}
                             </span>
                           </template>
-                          <template v-if="showTransposeFieldMetadata && showColumnCommentsInHeader && item.comment">
+                          <template v-if="showTransposeFieldMetadata && showTransposeColumnComments && item.comment">
                             <span data-grid-transpose-comment-line class="h-3 min-w-0 truncate text-[10px] font-normal leading-3 text-muted-foreground select-none" :title="item.comment">
                               {{ item.comment }}
                             </span>
@@ -14822,7 +14878,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                               <span class="text-muted-foreground">{{ t("grid.columnType") }}</span>
                               <span class="min-w-0 break-all font-mono select-text" :class="typeColorClass(item.type)">{{ item.type }}</span>
                             </template>
-                            <template v-if="showTransposeFieldMetadata && showColumnCommentsInHeader && item.comment">
+                            <template v-if="showTransposeFieldMetadata && showTransposeColumnComments && item.comment">
                               <span class="text-muted-foreground">{{ t("grid.columnComment") }}</span>
                               <span class="min-w-0 whitespace-pre-wrap break-words select-text">{{ item.comment }}</span>
                             </template>
@@ -14988,6 +15044,9 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                         </template>
                       </div>
                       <div class="shrink-0" :style="{ width: `${transposeAfterSpacerWidth}px` }" />
+                      <div v-if="transposeMetadataInInfoColumn" data-grid-transpose-column-info class="flex shrink-0 items-center overflow-hidden border-r border-border/70 px-3 text-muted-foreground" :style="{ width: `${transposeInfoWidth}px` }" :title="columnInfoText(item.columnIndex, false)">
+                        <span class="min-w-0 truncate select-text">{{ columnInfoText(item.columnIndex, false) }}</span>
+                      </div>
                     </div>
                   </template>
                 </RecycleScroller>
@@ -16191,6 +16250,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
           <!-- Cell Detail Drawer -->
           <div
             v-if="showCellDetail && activeCellDetail"
+            data-cell-detail-panel
             class="relative flex flex-col bg-background min-w-0"
             :class="[cellDetailPanelIsBottom ? 'col-start-1 row-start-2 border-t' : 'col-start-4 row-start-1 border-l', { 'detail-drawer-resizing': isResizingDetail }]"
             :style="detailPanelStyle"
@@ -16243,6 +16303,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 @copy-value="copyDetailCurrentValue"
                 @commit="commitDetailEdit"
                 @cancel="cancelDetailEdit"
+                @close="escapeCellDetails"
                 @save="onTemporalCellEditorSave"
                 @set-null="setDetailNull"
                 @copy-column-name="copyDetailColumnName"
@@ -16339,7 +16400,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
     <ErrorBanner v-if="!saveError && saveWarning" variant="card" tone="warning" :title="t('grid.saveZeroRowsWarningTitle')" :message="saveWarning" copy-mode="label" dismissible @dismiss="saveWarning = ''" />
 
     <!-- Bottom status bar -->
-    <div v-if="!isErrorResult" class="grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-2 px-3 py-1 border-t text-xs text-muted-foreground bg-muted/30 shrink-0">
+    <div v-if="!isErrorResult" class="grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-2 px-3 py-1 border-t text-xs text-muted-foreground bg-muted/30 shrink-0" :class="{ 'relative max-sm:pt-7': selectedColumnInfo }">
       <div class="flex min-w-0 items-center gap-2 overflow-hidden">
         <span v-if="hasData" class="shrink-0">
           {{
@@ -16378,7 +16439,10 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
         </template>
       </div>
 
-      <div v-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="min-w-0 max-w-full justify-self-center">
+      <div v-if="selectedColumnInfo" data-grid-column-info class="min-w-0 max-w-full truncate select-text max-sm:absolute max-sm:left-3 max-sm:right-3 max-sm:top-1" :title="selectedColumnInfo">
+        {{ selectedColumnInfo }}
+      </div>
+      <div v-else-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="min-w-0 max-w-full justify-self-center">
         <CustomContextMenu :items="statusSqlContextMenuItems" v-slot="{ onContextMenu }">
           <Tooltip>
             <TooltipTrigger as-child>
