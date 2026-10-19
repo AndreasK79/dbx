@@ -152,6 +152,9 @@ import { importClipboardApiKeyAfterConfirmation, type AiConfigDeepLinkDraft } fr
 import { clearDebugLogs as clearStoredDebugLogs, downloadDebugLogs, getDebugLogBundleText } from "@/lib/backend/debugLog";
 import {
   aiTestConnection,
+  copilotCurrentUser,
+  copilotDevicePoll,
+  copilotDeviceStart,
   loadCcSwitchAiConfigs,
   loadMagpieAiConfigs,
   checkMcpServerStatus,
@@ -265,7 +268,7 @@ import { buildQueryEditorLineNumbersExtension } from "@/lib/editor/queryEditorLi
 import { normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
 import { prepareImportedAiConfigs, validateConfigName, generateId, type AiConfigItem, type ConfigNameValidationResult } from "@/lib/ai/aiConfigList";
 import { aiImportSelectableModels, createAiImportDrafts, normalizeAiImportSourceConfigs, selectedAiImportConfigs, type AiImportDraft } from "@/lib/ai/aiImportSelection";
-import type { CcSwitchImportSkipped } from "@/types/ai";
+import type { CcSwitchImportSkipped, CopilotDevicePollResult } from "@/types/ai";
 import { currentExecutableStatementRange, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
 import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
 import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES, tableColumnTemplateRowsToSettings } from "@/lib/table/tableColumnTemplates";
@@ -6513,6 +6516,26 @@ const aiIsGrokCli = computed(() => aiEditProvider.value === "grok-cli");
 const aiIsCodeBuddyCli = computed(() => aiEditProvider.value === "codebuddy-cli");
 const aiIsQoderCli = computed(() => aiEditProvider.value === "qoder-cli");
 const aiIsCliProvider = computed(() => CLI_AI_PROVIDERS.has(aiEditProvider.value));
+const aiIsGithubCopilot = computed(() => aiEditProvider.value === "github-copilot");
+
+// GitHub Copilot device-flow sign-in state (mirrors the Salesforce device flow
+// in ConnectionDialog). The resulting gho_ token rides aiEditApiKey, so saving
+// needs no extra plumbing.
+type CopilotSignInPhase = "idle" | "starting" | "polling" | "success" | "expired" | "denied" | "error";
+const copilotSignInPhase = ref<CopilotSignInPhase>("idle");
+const copilotSignInUserCode = ref("");
+const copilotSignInVerificationUri = ref("");
+const copilotSignInDeviceCode = ref("");
+const copilotSignInIntervalSecs = ref(5);
+const copilotSignInSecondsLeft = ref(0);
+const copilotSignInError = ref("");
+const copilotSignInUserCodeCopied = ref(false);
+const copilotSignInLogin = ref("");
+const copilotSignInRunning = ref(false);
+
+let copilotSignInPollTimer: ReturnType<typeof setTimeout> | null = null;
+let copilotSignInPollAbortId = 0;
+let copilotSignInExpiresTimer: ReturnType<typeof setInterval> | null = null;
 
 const aiSupportsSkipTlsVerify = computed(() => aiEditProvider.value === "custom" || aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "anthropic-compatible");
 const aiCliProviderLabel = computed(() => selectedAiProviderPreset.value.label);
@@ -6778,6 +6801,165 @@ function syncAiEditState() {
   aiTestErrorCopied.value = false;
 }
 
+function copilotSignInStopPolling() {
+  copilotSignInPollAbortId++;
+  if (copilotSignInPollTimer) {
+    clearTimeout(copilotSignInPollTimer);
+    copilotSignInPollTimer = null;
+  }
+  if (copilotSignInExpiresTimer) {
+    clearInterval(copilotSignInExpiresTimer);
+    copilotSignInExpiresTimer = null;
+  }
+}
+
+function copilotResetSignInState() {
+  copilotSignInStopPolling();
+  copilotSignInPhase.value = "idle";
+  copilotSignInUserCode.value = "";
+  copilotSignInVerificationUri.value = "";
+  copilotSignInDeviceCode.value = "";
+  copilotSignInIntervalSecs.value = 5;
+  copilotSignInSecondsLeft.value = 0;
+  copilotSignInError.value = "";
+  copilotSignInUserCodeCopied.value = false;
+  copilotSignInLogin.value = "";
+  copilotSignInRunning.value = false;
+}
+
+// Close the dialog mid-flow: stop the timers but keep the signed-in display
+// when a token is already stored, so reopening looks unchanged.
+function copilotSuspendSignIn() {
+  copilotSignInStopPolling();
+  if (copilotSignInPhase.value === "starting" || copilotSignInPhase.value === "polling") {
+    copilotSignInPhase.value = aiEditApiKey.value.startsWith("gho_") ? "success" : "idle";
+    copilotSignInUserCode.value = "";
+    copilotSignInDeviceCode.value = "";
+    copilotSignInRunning.value = false;
+  }
+}
+
+watch(settingsVisible, (visible) => {
+  if (!visible) copilotSuspendSignIn();
+});
+
+function copilotSignInStartExpiryCountdown(expiresInSecs: number) {
+  copilotSignInSecondsLeft.value = Math.max(0, Math.floor(expiresInSecs));
+  if (copilotSignInExpiresTimer) clearInterval(copilotSignInExpiresTimer);
+  copilotSignInExpiresTimer = setInterval(() => {
+    copilotSignInSecondsLeft.value = Math.max(0, copilotSignInSecondsLeft.value - 1);
+    if (copilotSignInSecondsLeft.value <= 0 && copilotSignInPhase.value === "polling") {
+      copilotSignInStopPolling();
+      copilotSignInPhase.value = "expired";
+    }
+  }, 1000);
+}
+
+async function copilotResolveLogin(accessToken: string) {
+  try {
+    const user = await copilotCurrentUser(accessToken);
+    copilotSignInLogin.value = user.login;
+  } catch {
+    // Non-fatal: the token still works, we just cannot show the login name.
+    copilotSignInLogin.value = "";
+  }
+}
+
+async function copilotStartSignIn() {
+  if (copilotSignInRunning.value) return;
+  copilotSignInError.value = "";
+  copilotSignInUserCode.value = "";
+  copilotSignInUserCodeCopied.value = false;
+  copilotSignInLogin.value = "";
+  copilotSignInRunning.value = true;
+  copilotSignInPhase.value = "starting";
+  try {
+    const start = await copilotDeviceStart();
+    copilotSignInUserCode.value = start.userCode;
+    copilotSignInVerificationUri.value = start.verificationUri;
+    copilotSignInDeviceCode.value = start.deviceCode;
+    copilotSignInIntervalSecs.value = Math.max(1, start.intervalSecs || 5);
+    copilotSignInPhase.value = "polling";
+    copilotSignInStartExpiryCountdown(start.expiresInSecs);
+    await copilotSignInPollLoop(start.deviceCode, copilotSignInPollAbortId);
+  } catch (e: any) {
+    copilotSignInError.value = e?.message || String(e);
+    copilotSignInPhase.value = "error";
+    copilotSignInStopPolling();
+  } finally {
+    copilotSignInRunning.value = false;
+  }
+}
+
+async function copilotSignInPollLoop(deviceCode: string, abortId: number): Promise<void> {
+  while (copilotSignInPhase.value === "polling" && abortId === copilotSignInPollAbortId) {
+    const intervalSecs = copilotSignInIntervalSecs.value;
+    await new Promise<void>((resolve) => {
+      copilotSignInPollTimer = setTimeout(() => resolve(), intervalSecs * 1000);
+    });
+    if (abortId !== copilotSignInPollAbortId) return;
+    let result: CopilotDevicePollResult;
+    try {
+      result = await copilotDevicePoll(deviceCode, copilotSignInIntervalSecs.value);
+    } catch (e: any) {
+      // Transient network error: keep polling until the code expires.
+      if (copilotSignInSecondsLeft.value <= 0) {
+        copilotSignInPhase.value = "expired";
+        copilotSignInStopPolling();
+        return;
+      }
+      copilotSignInError.value = e?.message || String(e);
+      continue;
+    }
+    if (abortId !== copilotSignInPollAbortId) return;
+    if (result.status === "pending") {
+      // The backend folds slow_down into intervalSecs; the next wait uses it.
+      copilotSignInIntervalSecs.value = Math.max(1, result.intervalSecs || intervalSecs);
+      continue;
+    }
+    copilotSignInStopPolling();
+    if (result.status === "success") {
+      aiEditApiKey.value = result.accessToken;
+      copilotSignInPhase.value = "success";
+      void copilotResolveLogin(result.accessToken);
+      return;
+    }
+    if (result.status === "expired") {
+      copilotSignInPhase.value = "expired";
+      return;
+    }
+    copilotSignInError.value = result.reason || t("ai.copilotDenied");
+    copilotSignInPhase.value = "denied";
+  }
+}
+
+function copilotCancelSignIn() {
+  copilotSignInStopPolling();
+  copilotSignInPhase.value = aiEditApiKey.value.startsWith("gho_") ? "success" : "idle";
+  copilotSignInUserCode.value = "";
+  copilotSignInDeviceCode.value = "";
+  copilotSignInRunning.value = false;
+}
+
+function copilotRetrySignIn() {
+  copilotResetSignInState();
+  void copilotStartSignIn();
+}
+
+async function copilotCopyUserCode() {
+  if (!copilotSignInUserCode.value) return;
+  await copyToClipboard(copilotSignInUserCode.value);
+  copilotSignInUserCodeCopied.value = true;
+  window.setTimeout(() => {
+    copilotSignInUserCodeCopied.value = false;
+  }, 1500);
+}
+
+function copilotSignOut() {
+  aiEditApiKey.value = "";
+  copilotResetSignInState();
+}
+
 function aiSelectProvider(presetId: string) {
   const preset = getAiProviderPresetOption(presetId);
   const provider = preset.provider;
@@ -6785,6 +6967,7 @@ function aiSelectProvider(presetId: string) {
   if (presetId === aiEditProviderPresetId.value) return;
 
   syncAiEditState();
+  copilotResetSignInState();
 
   // CC-SWITCH is a UI-only preset; installation is initiated by its action buttons.
   aiEditProviderPresetId.value = presetId;
@@ -6817,6 +7000,7 @@ function aiEnterListMode() {
 
 function aiEnterEditMode(configId?: string) {
   syncAiEditState();
+  copilotResetSignInState();
   aiConfigListMode.value = "edit";
   aiEditConfigId.value = configId || null;
 
@@ -6860,6 +7044,12 @@ function aiEnterEditMode(configId?: string) {
       aiEditCodeBuddyCliEnvRows.value = aiEnvRowsFromConfig(config.codebuddyCliEnv);
       aiEditQoderCliPath.value = config.qoderCliPath ?? "";
       aiEditQoderCliEnvRows.value = aiEnvRowsFromConfig(config.qoderCliEnv);
+      // Reopening a signed-in Copilot config: show who is signed in without
+      // forcing a re-auth (the stored gho_ token is still in aiEditApiKey).
+      if (aiEditProvider.value === "github-copilot" && aiEditApiKey.value.startsWith("gho_")) {
+        copilotSignInPhase.value = "success";
+        void copilotResolveLogin(aiEditApiKey.value);
+      }
     }
   } else {
     aiEditConfigName.value = "";
@@ -12090,7 +12280,7 @@ LIMIT 100;</pre
                 </div>
 
                 <!-- API Key -->
-                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider" class="grid grid-cols-3 items-center gap-3">
+                <div v-if="!aiIsCcSwitchProvider && !aiIsCliProvider && !aiIsGithubCopilot" class="grid grid-cols-3 items-center gap-3">
                   <Label class="text-right text-xs">{{ aiCredentialLabel }}</Label>
                   <div class="col-span-2 flex min-w-0 items-center gap-2">
                     <PasswordInput v-model="aiEditApiKey" autocomplete="off" class="min-w-0 flex-1" inputClass="h-8 text-xs" :placeholder="aiCredentialPlaceholder" />
@@ -12098,6 +12288,72 @@ LIMIT 100;</pre
                       {{ t("ai.getApiKey") }}
                       <ExternalLink class="h-3.5 w-3.5" />
                     </Button>
+                  </div>
+                </div>
+
+                <!-- GitHub Copilot: device-flow sign-in replaces the API key row -->
+                <div v-if="aiIsGithubCopilot" class="grid grid-cols-3 items-center gap-3">
+                  <Label class="text-right text-xs">{{ t("ai.copilotAccount") }}</Label>
+                  <div class="col-span-2 space-y-1.5">
+                    <template v-if="copilotSignInPhase === 'idle' || copilotSignInPhase === 'starting' || copilotSignInPhase === 'error'">
+                      <div class="flex items-center gap-2">
+                        <Button type="button" :disabled="copilotSignInRunning" @click="copilotStartSignIn">
+                          <Loader2 v-if="copilotSignInRunning" class="mr-2 h-4 w-4 animate-spin" />
+                          {{ t("ai.copilotSignIn") }}
+                        </Button>
+                      </div>
+                      <p class="text-[11px] leading-4 text-muted-foreground">{{ t("ai.copilotSignInHint") }}</p>
+                      <p v-if="copilotSignInPhase === 'error' && copilotSignInError" class="text-[11px] leading-4 text-destructive">
+                        {{ copilotSignInError }}
+                      </p>
+                    </template>
+
+                    <template v-else-if="copilotSignInPhase === 'polling'">
+                      <div class="flex items-center gap-2 rounded-md border border-input bg-muted/40 px-3 py-2">
+                        <span class="font-mono text-base font-semibold tracking-widest">{{ copilotSignInUserCode }}</span>
+                        <Button type="button" variant="ghost" size="icon" class="h-7 w-7" :title="t('common.copy')" :aria-label="t('common.copy')" @click="copilotCopyUserCode">
+                          <Check v-if="copilotSignInUserCodeCopied" class="h-4 w-4 text-emerald-600" />
+                          <Copy v-else class="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div class="flex items-center gap-2 text-xs">
+                        <a class="text-primary underline underline-offset-2 hover:no-underline" href="#" @click.prevent="openExternalUrl(copilotSignInVerificationUri)">{{ t("ai.copilotOpenVerification") }}</a>
+                        <code class="min-w-0 truncate rounded bg-muted px-1 py-0.5 text-[11px]">{{ copilotSignInVerificationUri }}</code>
+                      </div>
+                      <div class="flex items-center gap-3 text-xs text-muted-foreground">
+                        <Loader2 class="h-4 w-4 animate-spin" />
+                        <span>{{ t("ai.copilotPolling") }}</span>
+                        <span v-if="copilotSignInSecondsLeft > 0">· {{ t("ai.copilotSecondsLeft", { seconds: copilotSignInSecondsLeft }) }}</span>
+                        <Button type="button" variant="outline" size="sm" class="ml-auto" @click="copilotCancelSignIn">
+                          {{ t("ai.copilotCancelSignIn") }}
+                        </Button>
+                      </div>
+                    </template>
+
+                    <div v-else-if="copilotSignInPhase === 'success'" class="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+                      <Check class="h-4 w-4 shrink-0" />
+                      <span class="min-w-0 flex-1 truncate">
+                        <template v-if="copilotSignInLogin">{{ t("ai.copilotSignedInAs", { login: copilotSignInLogin }) }}</template>
+                        <template v-else>{{ t("ai.copilotSignedIn") }}</template>
+                      </span>
+                      <Button type="button" variant="outline" size="sm" class="h-7 shrink-0 px-2 text-xs" @click="copilotSignOut">
+                        {{ t("ai.copilotSignOut") }}
+                      </Button>
+                    </div>
+
+                    <div v-else-if="copilotSignInPhase === 'expired'" class="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                      <span class="text-amber-700 dark:text-amber-300">{{ t("ai.copilotExpired") }}</span>
+                      <Button type="button" size="sm" variant="outline" class="self-start" @click="copilotRetrySignIn">
+                        {{ t("ai.copilotTryAgain") }}
+                      </Button>
+                    </div>
+
+                    <div v-else-if="copilotSignInPhase === 'denied'" class="flex flex-col gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
+                      <span class="text-destructive">{{ copilotSignInError || t("ai.copilotDenied") }}</span>
+                      <Button type="button" size="sm" variant="outline" class="self-start" @click="copilotRetrySignIn">
+                        {{ t("ai.copilotTryAgain") }}
+                      </Button>
+                    </div>
                   </div>
                 </div>
 

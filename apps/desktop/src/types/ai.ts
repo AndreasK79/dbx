@@ -96,6 +96,22 @@ export interface AiTestConnectionResult {
   errorCategory?: string;
 }
 
+/** GitHub device-flow kickoff for the Copilot provider. */
+export interface CopilotDeviceStartResult {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  intervalSecs: number;
+  expiresInSecs: number;
+}
+
+/** One device-flow poll; the UI drives the loop so it can cancel. */
+export type CopilotDevicePollResult = { status: "pending"; intervalSecs: number } | { status: "success"; accessToken: string } | { status: "expired" } | { status: "denied"; reason?: string };
+
+export interface CopilotUser {
+  login: string;
+}
+
 export interface AiConfigItem extends AiConfig {
   id: string;
   name: string;

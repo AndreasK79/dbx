@@ -92,7 +92,7 @@ import type { CollectionInfo } from "@/types/database";
 import type { SchemaDiffPreparation, SchemaDiffPreparationOptions, SchemaSyncSqlPlan, SelectedSchemaDiffInput, GenerateSchemaSyncPlanOptions, TableDiff, FunctionDiff, SequenceDiff, RuleDiff, OwnerDiff } from "@/lib/schema/schemaDiff";
 import type { SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
 import type { AiConfig, AiTestConnectionResult } from "@/stores/settingsStore";
-import type { AiChatSelectionState, AiEffortCapability } from "@/types/ai";
+import type { AiChatSelectionState, AiEffortCapability, CopilotDevicePollResult, CopilotDeviceStartResult, CopilotUser } from "@/types/ai";
 import type { SalesforceCurrentUser, SalesforceOAuthAuthorizeParams, SalesforceOAuthDevicePollResult, SalesforceOAuthDeviceStartResult, SalesforceOAuthRefreshResult, SalesforceOAuthToken } from "@/types/salesforce";
 import type {
   AgentDriverInfo,
@@ -2229,6 +2229,18 @@ export async function previewPluginAiTools(pluginId: string): Promise<PluginTool
 
 export async function aiTestConnection(config: AiConfig): Promise<AiTestConnectionResult> {
   return post("/api/ai/test-connection", { config });
+}
+
+export async function copilotDeviceStart(): Promise<CopilotDeviceStartResult> {
+  return post("/api/ai/copilot-device-start", {});
+}
+
+export async function copilotDevicePoll(deviceCode: string, intervalSecs: number): Promise<CopilotDevicePollResult> {
+  return post("/api/ai/copilot-device-poll", { deviceCode, intervalSecs });
+}
+
+export async function copilotCurrentUser(accessToken: string): Promise<CopilotUser> {
+  return post("/api/ai/copilot-current-user", { accessToken });
 }
 
 export async function aiListModels(config: AiConfig): Promise<AiModelInfo[]> {

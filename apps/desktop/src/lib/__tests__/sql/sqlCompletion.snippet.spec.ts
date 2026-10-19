@@ -373,6 +373,75 @@ describe("buildSnippetItems", () => {
     expect(items[0].label).toBe("select all");
   });
 
+  // A completion prefix cannot contain spaces, so a spaced trigger/label must
+  // also match its whitespace-free spelling, and the CodeMirror-facing
+  // filterText must be a word the user can actually type.
+  const SPACED_TRIGGER_SNIPPET: SqlSnippet = { id: "spaced", label: "S item", prefix: "S item", body: "SELECT * FROM ${table};" };
+
+  it("matches a space-containing trigger by its space-free spelling", () => {
+    const items = buildSnippetItemsForTest("sitem", [SPACED_TRIGGER_SNIPPET]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual(
+      expect.objectContaining({
+        label: "S item",
+        filterText: "Sitem",
+        type: "snippet",
+        exactMatch: true,
+      }),
+    );
+  });
+
+  it("still surfaces a space-containing trigger from its first letter", () => {
+    const items = buildSnippetItemsForTest("s", [SPACED_TRIGGER_SNIPPET]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].label).toBe("S item");
+    expect(items[0].filterText).toBe("Sitem");
+  });
+
+  it("matches a spaced label's compact spelling but keeps a space-free trigger as filterText", () => {
+    const items = buildSnippetItemsForTest("sitem", [{ id: "spaced-label", label: "S item", prefix: "si", body: "SELECT 1;" }]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].filterText).toBe("si");
+  });
+
+  it("keeps space-free snippet triggers unchanged", () => {
+    const items = buildSnippetItemsForTest("scgb", [{ id: "plain", label: "scgb", prefix: "scgb", body: "select count(*) from ${table} group by ${column};" }]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].filterText).toBe("scgb");
+  });
+
+  it("ranks an exactly typed space-free spelling ahead of keywords", () => {
+    const sql = "SELECT * FROM sitem";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [SPACED_TRIGGER_SNIPPET],
+      tables: [{ name: "other", type: "table" }],
+      columnsByTable: new Map(),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "S item", type: "snippet", exactMatch: true }));
+  });
+
+  it("ranks an exactly typed table name ahead of a snippet whose trigger only matches without spaces", () => {
+    const sql = "SELECT * FROM orders";
+    const items = buildSqlCompletionItems(sql, sql.length, {
+      snippets: [{ id: "custom-orders", label: "orders export", prefix: "ord ers", body: "SELECT *\nFROM orders;" }],
+      tables: [{ name: "orders", type: "table" }],
+      columnsByTable: new Map(),
+      databaseType: "mysql",
+    });
+
+    expect(items[0]).toEqual(expect.objectContaining({ label: "orders", type: "table", exactMatch: true }));
+    const snippet = items.find((item) => item.type === "snippet" && item.label === "orders export");
+    expect(snippet).toBeDefined();
+    expect(snippet?.exactMatch).toBeFalsy();
+    expect(items.indexOf(snippet!)).toBeGreaterThan(0);
+  });
+
   it("returns empty for no match", () => {
     const items = buildSnippetItemsForTest("zzz", TEST_SNIPPETS);
     expect(items).toEqual([]);

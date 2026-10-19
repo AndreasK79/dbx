@@ -1375,6 +1375,9 @@ async fn serve() -> Result<(), String> {
         .route("/ai/test-connection", post(routes::ai::ai_test_connection))
         .route("/ai/models", post(routes::ai::ai_list_models))
         .route("/ai/model-effort", post(routes::ai::ai_resolve_model_effort))
+        .route("/ai/copilot-device-start", post(routes::ai::copilot_device_start))
+        .route("/ai/copilot-device-poll", post(routes::ai::copilot_device_poll))
+        .route("/ai/copilot-current-user", post(routes::ai::copilot_current_user))
         // Prompt templates
         .route(
             "/prompt-templates",

@@ -6242,20 +6242,44 @@ export function buildSnippetItemsForTest(prefix: string, snippets: SqlSnippet[],
   return buildSnippetItems(prefix, snippets, keywordCase, databaseType);
 }
 
+// Snippet names and triggers may contain spaces ("S item"), but a completion
+// prefix (the word being typed) never can, and CodeMirror's matcher scores the
+// whole option label — an interior space dumps the snippet into its heavily
+// penalized gap tiers, or drops it entirely for single-letter queries that do
+// not start the label. Match the whitespace-free spelling of the trigger and
+// label ("S item" ↔ "sitem") as well, and expose it as filterText so the
+// CodeMirror-facing label starts with a word the user can actually type.
+function snippetCompactText(value: string): string {
+  return value.replace(/\s+/g, "");
+}
+
+function snippetCompactVariants(value: string): string[] {
+  const compact = snippetCompactText(value);
+  // Empty compact text (whitespace-only trigger from an imported pack) keeps
+  // the original surface only.
+  return compact !== value && compact.length > 0 ? [value, compact] : [value];
+}
+
 function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?: SqlKeywordCase, databaseType?: DatabaseType): SqlCompletionItem[] {
   if (!prefix) return [];
   return snippets
     .filter((snippet) => {
       if (snippet.enabled === false) return false;
-      const matchesSnippetPrefix = matchesPrefix(snippet.prefix, prefix);
-      const matchesSnippetLabel = prefix.length > snippet.prefix.length && matchesPrefix(snippet.label, prefix);
-      return matchesSnippetPrefix || matchesSnippetLabel;
+      const prefixVariants = snippetCompactVariants(snippet.prefix);
+      const labelVariants = snippetCompactVariants(snippet.label);
+      // Label matching stays gated on the query outgrowing the trigger so short
+      // triggers keep owning their prefix; the compact spellings join the same
+      // gates as their originals.
+      const labelGate = prefix.length > Math.max(...prefixVariants.map((variant) => variant.length));
+      return prefixVariants.some((variant) => matchesPrefix(variant, prefix)) || (labelGate && labelVariants.some((variant) => matchesPrefix(variant, prefix)));
     })
     .map((snippet) => {
-      const boostByPrefix = computeBoost(snippet.prefix, prefix);
-      const boostByLabel = computeBoost(snippet.label, prefix);
-      const matchesByPrefix = matchesPrefix(snippet.prefix, prefix);
-      const isExactCustomTrigger = !shouldFormatBuiltinSnippet(snippet) && snippet.prefix.toLowerCase() === prefix.toLowerCase();
+      const prefixVariants = snippetCompactVariants(snippet.prefix);
+      const labelVariants = snippetCompactVariants(snippet.label);
+      const boostByPrefix = Math.max(...prefixVariants.map((variant) => computeBoost(variant, prefix)));
+      const boostByLabel = Math.max(...labelVariants.map((variant) => computeBoost(variant, prefix)));
+      const matchesByPrefix = prefixVariants.some((variant) => matchesPrefix(variant, prefix));
+      const isExactCustomTrigger = !shouldFormatBuiltinSnippet(snippet) && prefixVariants.some((variant) => variant.toLowerCase() === prefix.toLowerCase());
       // Snippets sit below identifiers, not between them: tables and columns
       // carry +1000/+2000 relevance boosts on top of their match score, so a
       // partial snippet prefix must not outrank the table or column the user is
@@ -6269,9 +6293,14 @@ function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?:
       const resolvedBody = resolveSqlSnippetBodyForDatabase(snippet, databaseType);
       const body = applyBuiltinSnippetKeywordCase(snippet, resolvedBody, keywordCase);
       const apply = finalizeSnippetCursor(applyBuiltinSnippetKeywordCase(snippet, applyBuiltinSnippetPlaceholders(snippet, resolvedBody), keywordCase));
+      const compactPrefix = snippetCompactText(snippet.prefix);
+      // filterText stays the trigger surface: the compact form when the trigger
+      // itself carries spaces (a completion prefix never can), otherwise the
+      // trigger as-is so exact-trigger and collision handling stay untouched.
+      const filterText = compactPrefix.length > 0 && compactPrefix !== snippet.prefix ? compactPrefix : snippet.prefix;
       return {
         label: snippet.label,
-        filterText: snippet.prefix,
+        filterText,
         type: "snippet" as const,
         detail: body,
         apply,

@@ -1893,6 +1893,17 @@ pub fn maybe_bearer_headers(config: &AiConfig) -> Result<HeaderMap, String> {
     if !api_key.is_empty() {
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| e.to_string())?);
     }
+    if matches!(config.provider, AiProvider::GithubCopilot) {
+        // Copilot's gateway routes on these editor headers (the same shape the
+        // device-flow exchange sends); user-supplied custom headers below can
+        // still override them.
+        headers.insert("editor-version", HeaderValue::from_static(crate::copilot_auth::COPILOT_EDITOR_VERSION));
+        headers.insert(
+            "editor-plugin-version",
+            HeaderValue::from_static(crate::copilot_auth::COPILOT_EDITOR_PLUGIN_VERSION),
+        );
+        headers.insert("user-agent", HeaderValue::from_static(crate::copilot_auth::COPILOT_USER_AGENT));
+    }
     append_custom_headers(&mut headers, config)?;
     Ok(headers)
 }
@@ -2305,6 +2316,15 @@ async fn retain_ollama_completion_models(
 }
 
 pub async fn list_models_core(config: &AiConfig) -> Result<Vec<AiModelInfo>, String> {
+    let mut intercepted;
+    let config = if matches!(config.provider, AiProvider::GithubCopilot) {
+        // Copilot model listing needs the session token too (see `complete`).
+        intercepted = config.clone();
+        crate::copilot_auth::apply_copilot_auth(&mut intercepted).await?;
+        &intercepted
+    } else {
+        config
+    };
     let mut models = match config.provider {
         AiProvider::CodexCli => crate::ai_codex_cli::list_codex_models(config).await?,
         AiProvider::ClaudeCodeCli => crate::ai_claude_code_cli::list_claude_code_models(config).await?,
@@ -3254,6 +3274,9 @@ pub async fn test_connection_core(config: &AiConfig) -> Result<AiTestConnectionR
     }
 
     let mut resolved_config = config.clone();
+    // Copilot first: model resolution below fires network calls, which must
+    // not go out with the raw stored OAuth token.
+    crate::copilot_auth::apply_copilot_auth(&mut resolved_config).await?;
     resolve_test_connection_model(&mut resolved_config).await?;
     let config = &resolved_config;
     validate_config(config)?;
@@ -3733,6 +3756,18 @@ where
 }
 
 pub async fn complete(request: &AiCompletionRequest) -> Result<String, String> {
+    let mut intercepted;
+    let request = if matches!(request.config.provider, AiProvider::GithubCopilot) {
+        // Copilot's stored key is a device-flow OAuth token; swap it (and the
+        // endpoint) for a fresh session token before anything else. The retry
+        // closure below re-clones the original `request`, so the swap must
+        // shadow the parameter itself, not just a local config copy.
+        intercepted = request.clone();
+        crate::copilot_auth::apply_copilot_auth(&mut intercepted.config).await?;
+        &intercepted
+    } else {
+        request
+    };
     validate_config(&request.config)?;
 
     if is_cli_provider(&request.config.provider) {
@@ -3801,6 +3836,16 @@ pub async fn stream(
     cancelled: &Notify,
     on_chunk: impl Fn(AiStreamChunk),
 ) -> Result<(), String> {
+    let mut intercepted;
+    let request = if matches!(request.config.provider, AiProvider::GithubCopilot) {
+        // See `complete` for why this shadows the parameter: the swapped
+        // session token must reach every downstream use of `request`.
+        intercepted = request.clone();
+        crate::copilot_auth::apply_copilot_auth(&mut intercepted.config).await?;
+        &intercepted
+    } else {
+        request
+    };
     validate_config(&request.config)?;
 
     if is_cli_provider(&request.config.provider) {
@@ -5226,6 +5271,16 @@ pub async fn stream_with_tools(
     cancelled: &Notify,
     on_chunk: impl Fn(AiStreamChunk),
 ) -> Result<(Vec<crate::agent_events::ToolCall>, Option<TokenUsage>), String> {
+    let mut intercepted;
+    let (config, request) = if matches!(config.provider, AiProvider::GithubCopilot) {
+        // See `complete` for the shadowing rationale; callers keep `config`
+        // and `request.config` identical, so one owned clone covers both.
+        intercepted = request.clone();
+        crate::copilot_auth::apply_copilot_auth(&mut intercepted.config).await?;
+        (&intercepted.config, &intercepted)
+    } else {
+        (config, request)
+    };
     validate_config(config)?;
     if is_cli_provider(&config.provider) {
         return Err("CLI providers are only supported through the DBX AI agent loop".to_string());
@@ -6950,6 +7005,52 @@ mod tests {
         let provider_json = serde_json::to_string(&AiProvider::GithubCopilot).unwrap();
         assert_eq!(provider_json, r#""github-copilot""#);
         assert!(matches!(serde_json::from_str::<AiProvider>(&provider_json).unwrap(), AiProvider::GithubCopilot));
+    }
+
+    #[test]
+    fn copilot_bearer_headers_carry_editor_identity() {
+        let config = AiConfig {
+            max_output_tokens: None,
+            provider: AiProvider::GithubCopilot,
+            api_key: "sess-token".to_string(),
+            auth_method: AiAuthMethod::Bearer,
+            endpoint: "https://api.githubcopilot.com".to_string(),
+            model: "gpt-4.1".to_string(),
+            ..test_config(AiProvider::GithubCopilot)
+        };
+        let headers = maybe_bearer_headers(&config).unwrap();
+        // Copilot's gateway routes on the editor headers; the Bearer session
+        // token (swapped in by apply_copilot_auth at request time) stays intact.
+        assert_eq!(headers.get("editor-version").unwrap(), "vscode/1.85.1");
+        assert_eq!(headers.get("editor-plugin-version").unwrap(), "copilot/1.155.0");
+        assert_eq!(headers.get("user-agent").unwrap(), "GithubCopilot/1.155.0");
+        assert_eq!(headers.get(AUTHORIZATION).unwrap(), "Bearer sess-token");
+        let other = AiConfig { provider: AiProvider::Openai, ..config };
+        assert!(maybe_bearer_headers(&other).unwrap().get("editor-version").is_none());
+    }
+
+    #[tokio::test]
+    async fn copilot_pat_keys_are_rejected_before_any_request() {
+        let request = AiCompletionRequest {
+            config: AiConfig {
+                max_output_tokens: None,
+                provider: AiProvider::GithubCopilot,
+                api_key: "ghp_rejected".to_string(),
+                auth_method: AiAuthMethod::Bearer,
+                endpoint: "https://api.githubcopilot.com".to_string(),
+                model: "gpt-4.1".to_string(),
+                ..test_config(AiProvider::GithubCopilot)
+            },
+            system_prompt: String::new(),
+            messages: Vec::new(),
+            task_contract: None,
+            max_tokens: None,
+            prompt_cache_key: None,
+        };
+        // If the request-time interception missed, this would hit the real
+        // endpoint with the PAT; instead the sign-in guidance comes back first.
+        let error = complete(&request).await.unwrap_err();
+        assert!(error.contains("rejects personal access tokens"), "{error}");
     }
 
     #[test]

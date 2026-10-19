@@ -121,7 +121,7 @@ import { isTauriCommandUnavailable, normalizeConnectionTestResult } from "@/lib/
 import type { AnnotationFile, SchemaSnapshot } from "@/docs/types";
 import type { CollectionInfo } from "@/types/database";
 import type { SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
-import type { AiChatSelectionState, AiConfig, AiConfigItem, AiEffortCapability, AiEffortLevel, AiTestConnectionResult, CcSwitchImportResult } from "@/types/ai";
+import type { AiChatSelectionState, AiConfig, AiConfigItem, AiEffortCapability, AiEffortLevel, AiTestConnectionResult, CcSwitchImportResult, CopilotDevicePollResult, CopilotDeviceStartResult, CopilotUser } from "@/types/ai";
 import type { SalesforceCurrentUser, SalesforceOAuthAuthorizeParams, SalesforceOAuthDevicePollResult, SalesforceOAuthDeviceStartResult, SalesforceOAuthRefreshResult, SalesforceOAuthToken } from "@/types/salesforce";
 import type { QueryEditability } from "@/lib/sql/sqlAnalysis";
 import { isTerminalTransferProgress } from "@/lib/backend/transferProgress";
@@ -817,6 +817,18 @@ export async function loadAiProviderConfigs(): Promise<Record<string, AiConfig>>
 
 export async function aiTestConnection(config: AiConfig): Promise<AiTestConnectionResult> {
   return invoke("ai_test_connection", { config });
+}
+
+export async function copilotDeviceStart(): Promise<CopilotDeviceStartResult> {
+  return invoke("copilot_device_start");
+}
+
+export async function copilotDevicePoll(deviceCode: string, intervalSecs: number): Promise<CopilotDevicePollResult> {
+  return invoke("copilot_device_poll", { deviceCode, intervalSecs });
+}
+
+export async function copilotCurrentUser(accessToken: string): Promise<CopilotUser> {
+  return invoke("copilot_current_user", { accessToken });
 }
 
 export async function aiListModels(config: AiConfig): Promise<AiModelInfo[]> {
