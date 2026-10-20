@@ -14,7 +14,16 @@ import { setDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { safeLocalStorageGet, safeLocalStorageRemove } from "@/lib/backend/safeStorage";
 import { type ColumnFormatterConfig, type CustomColumnFormatterConfig, normalizeColumnFormatter, normalizeCustomColumnFormatter, normalizeGlobalDateTimePattern } from "@/lib/dataGrid/columnFormatter";
 import { type BooleanCellValueStyle, normalizeBooleanCellValueStyle } from "@/lib/dataGrid/dataGridBooleanColumn";
-import { type DataGridCopyPreference, type DataGridExtractorOptions, DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION, DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, normalizeDataGridCopyPreference, normalizeDataGridExtractorOptions } from "@/lib/dataGrid/dataGridCopyExtractor";
+import {
+  type DataGridCopyPreference,
+  type DataGridCopyExtractorId,
+  type DataGridExtractorOptions,
+  DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
+  DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS,
+  normalizeDataGridCopyPreference,
+  normalizeDataGridExtractorOptions,
+  normalizeVisibleDataGridCopyExtractors,
+} from "@/lib/dataGrid/dataGridCopyExtractor";
 import { DATA_GRID_TEXT_FILTER_PANEL_HEIGHT_DEFAULT, normalizeDataGridTextFilterPanelHeight } from "@/lib/dataGrid/dataGridTextFilterPanel";
 import { DATA_GRID_TYPE_COLOR_SCHEME_AUTO_ID, type DataGridTypeColorScheme, normalizeActiveDataGridTypeColorSchemeId, normalizeDataGridTypeColorSchemes } from "@/lib/dataGrid/dataGridTypeColorScheme";
 import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
@@ -388,7 +397,7 @@ export const AI_PROVIDER_PRESETS: Record<AiProvider, AiProviderPreset> = {
     iconSlug: "minimax",
     provider: "minimax",
     endpoint: "https://api.minimax.io/v1",
-    model: "MiniMax-M3",
+    model: "MiniMax-M3.1-Flash",
     apiStyle: "completions",
     authMethod: "bearer",
     requiresApiKey: true,
@@ -821,6 +830,8 @@ export interface TabGroupCustomization {
 }
 const TAB_SORT_MODES = ["manual", "created-asc", "title-asc"] as const;
 export type TabSortMode = (typeof TAB_SORT_MODES)[number];
+const TAB_GROUP_ROW_MODES = ["single", "two-row"] as const;
+export type TabGroupRowMode = (typeof TAB_GROUP_ROW_MODES)[number];
 const DATA_GRID_RENDER_MODES = ["dom", "canvas"] as const;
 export type DataGridRenderMode = (typeof DATA_GRID_RENDER_MODES)[number];
 const DATA_GRID_SEARCH_MODES = ["filter", "highlight"] as const;
@@ -1030,6 +1041,8 @@ export interface EditorSettings {
   tabSortMode: TabSortMode;
   /** 水平标签页最大显示宽度（像素，0 表示不限制）。 */
   tabMaxWidth: number;
+  /** 分组标签在水平标签栏中的行数：single 为分组与标签混排一行，two-row 为分组独占一行。 */
+  tabGroupRows: TabGroupRowMode;
   appLayout: "separated" | "classic";
   webLogoPosition: WebLogoPosition;
   pageSize: number;
@@ -1108,6 +1121,7 @@ export interface EditorSettings {
   dataGridRowNumberMode: DataGridRowNumberMode;
   dataGridCopyExtractor: DataGridCopyPreference;
   dataGridExtractorOptions: DataGridExtractorOptions;
+  dataGridVisibleCopyExtractors: DataGridCopyExtractorId[];
   dataGridExtractorOptionsMigrationVersion: number;
   resultRunDisplayMode: ResultRunDisplayMode;
   defaultAutoKeepResults: boolean;
@@ -1409,6 +1423,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   tabGroupCustomizations: {},
   tabSortMode: "manual",
   tabMaxWidth: 0,
+  tabGroupRows: "single",
   appLayout: "classic",
   webLogoPosition: "left",
   pageSize: 100,
@@ -1458,6 +1473,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   dataGridRowNumberMode: "view",
   dataGridCopyExtractor: "smart",
   dataGridExtractorOptions: normalizeDataGridExtractorOptions(DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS),
+  dataGridVisibleCopyExtractors: normalizeVisibleDataGridCopyExtractors(undefined),
   dataGridExtractorOptionsMigrationVersion: DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
   resultRunDisplayMode: "tabs",
   defaultAutoKeepResults: false,
@@ -1663,6 +1679,10 @@ export function normalizeTabMaxWidth(value: unknown): number {
     return Math.round(value);
   }
   return DEFAULT_EDITOR_SETTINGS.tabMaxWidth;
+}
+
+function normalizeTabGroupRows(value: unknown): TabGroupRowMode {
+  return TAB_GROUP_ROW_MODES.includes(value as TabGroupRowMode) ? (value as TabGroupRowMode) : DEFAULT_EDITOR_SETTINGS.tabGroupRows;
 }
 
 function normalizeCellDetailPanelLayout(value: unknown): CellDetailPanelLayout {
@@ -1960,9 +1980,9 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     if (!isLegacyExtractorOptions) return normalizedExtractorOptions;
     // v1：旧的 "NULL" 文本迁移为空串
     const nullTextMigrated = normalizedExtractorOptions.dsv.nullText === "NULL" ? { ...normalizedExtractorOptions, dsv: { ...normalizedExtractorOptions.dsv, nullText: "" } } : normalizedExtractorOptions;
-    // v2：复制/导出 SQL 的「包含数据库名称」改为由提取器勾选框决定且默认关闭，
-    // 历史持久化的 true 一并归位到新默认（想带库名/模式名的用户重新勾选即可）
-    return nullTextMigrated.sql.includeDatabaseName ? { ...nullTextMigrated, sql: { ...nullTextMigrated.sql, includeDatabaseName: false } } : nullTextMigrated;
+    // v3：复制/导出 SQL 的「包含数据库名称」默认恢复开启（带库名/模式名，#12146），
+    // 历史在 v2 中被强制归位为 false 的持久化配置重新提升到新默认 true。
+    return !nullTextMigrated.sql.includeDatabaseName ? { ...nullTextMigrated, sql: { ...nullTextMigrated.sql, includeDatabaseName: true } } : nullTextMigrated;
   })();
   // Preserve the explicit intent behind the legacy update controls. Disabling
   // update reminders was a full opt-out; disabling automatic downloads only
@@ -2076,6 +2096,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     tabGroupCustomizations: normalizeTabGroupCustomizations(settings.tabGroupCustomizations),
     tabSortMode: normalizeTabSortMode(settings.tabSortMode),
     tabMaxWidth: normalizeTabMaxWidth(settings.tabMaxWidth),
+    tabGroupRows: normalizeTabGroupRows(settings.tabGroupRows),
     appLayout: settings.appLayout ?? DEFAULT_EDITOR_SETTINGS.appLayout,
     webLogoPosition: normalizeWebLogoPosition(settings.webLogoPosition),
     pageSize: normalizeResultPageSize(settings.pageSize),
@@ -2125,6 +2146,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     dataGridRowNumberMode: normalizeDataGridRowNumberMode(settings.dataGridRowNumberMode),
     dataGridCopyExtractor: normalizeDataGridCopyPreference(settings.dataGridCopyExtractor),
     dataGridExtractorOptions,
+    dataGridVisibleCopyExtractors: normalizeVisibleDataGridCopyExtractors(settings.dataGridVisibleCopyExtractors),
     dataGridExtractorOptionsMigrationVersion: DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
     resultRunDisplayMode: normalizeResultRunDisplayMode(settings.resultRunDisplayMode),
     defaultAutoKeepResults: settings.defaultAutoKeepResults === true,
@@ -2514,12 +2536,12 @@ export const useSettingsStore = defineStore("settings", () => {
           const needsCompactTabTitleDefaultMigration = typeof savedSettings.compactTabTitleDefaultVersion !== "number" || savedSettings.compactTabTitleDefaultVersion < COMPACT_TAB_TITLE_DEFAULT_VERSION;
           const needsTabNavigationShortcutMigration = needsTabNavigationHistoryShortcutMigration(savedSettings.shortcuts);
           const savedNullText = (savedSettings.dataGridExtractorOptions as Partial<DataGridExtractorOptions> | undefined)?.dsv?.nullText;
-          // v2 also resets a historically persisted includeDatabaseName=true, so
+          // v3 also resets a historically persisted includeDatabaseName=false (from v2), so
           // trigger the eager persist for that stale disk value even when the
           // v1 "NULL" marker is already migrated away.
           const savedSqlIncludeDatabaseName = (savedSettings.dataGridExtractorOptions as Partial<DataGridExtractorOptions> | undefined)?.sql?.includeDatabaseName;
           const needsDataGridExtractorOptionsMigration =
-            (typeof savedSettings.dataGridExtractorOptionsMigrationVersion !== "number" || savedSettings.dataGridExtractorOptionsMigrationVersion < DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION) && (savedNullText === "NULL" || savedSqlIncludeDatabaseName === true);
+            (typeof savedSettings.dataGridExtractorOptionsMigrationVersion !== "number" || savedSettings.dataGridExtractorOptionsMigrationVersion < DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION) && (savedNullText === "NULL" || savedSqlIncludeDatabaseName === false);
           const savedUpdateDownloadSource = (saved as { updateDownloadSource?: unknown }).updateDownloadSource;
           if (savedUpdateDownloadSource === "atomgit" || needsExecuteModeDefaultMigration || needsWelcomePageDefaultMigration || needsCompactTabTitleDefaultMigration || needsTabNavigationShortcutMigration || needsSidebarBrowseObjectsMigration || needsDataGridExtractorOptionsMigration) {
             // Persist one-time migrations so removed or unsafe defaults cannot reappear.
@@ -2998,6 +3020,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.tabGroupCustomizations !== undefined) editorSettings.value.tabGroupCustomizations = normalizeTabGroupCustomizations(partial.tabGroupCustomizations);
     if (partial.tabSortMode !== undefined) editorSettings.value.tabSortMode = normalizeTabSortMode(partial.tabSortMode);
     if (partial.tabMaxWidth !== undefined) editorSettings.value.tabMaxWidth = normalizeTabMaxWidth(partial.tabMaxWidth);
+    if (partial.tabGroupRows !== undefined) editorSettings.value.tabGroupRows = normalizeTabGroupRows(partial.tabGroupRows);
     if (partial.appLayout !== undefined) editorSettings.value.appLayout = partial.appLayout;
     if (partial.webLogoPosition !== undefined) editorSettings.value.webLogoPosition = normalizeWebLogoPosition(partial.webLogoPosition);
     if (partial.pageSize !== undefined) editorSettings.value.pageSize = normalizeResultPageSize(partial.pageSize);
@@ -3054,6 +3077,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.dataGridRowNumberMode !== undefined) editorSettings.value.dataGridRowNumberMode = normalizeDataGridRowNumberMode(partial.dataGridRowNumberMode);
     if (partial.dataGridCopyExtractor !== undefined) editorSettings.value.dataGridCopyExtractor = normalizeDataGridCopyPreference(partial.dataGridCopyExtractor);
     if (partial.dataGridExtractorOptions !== undefined) editorSettings.value.dataGridExtractorOptions = normalizeDataGridExtractorOptions(partial.dataGridExtractorOptions);
+    if (partial.dataGridVisibleCopyExtractors !== undefined) editorSettings.value.dataGridVisibleCopyExtractors = normalizeVisibleDataGridCopyExtractors(partial.dataGridVisibleCopyExtractors);
     if (partial.dataGridExtractorOptionsMigrationVersion !== undefined) editorSettings.value.dataGridExtractorOptionsMigrationVersion = DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION;
     if (partial.resultRunDisplayMode !== undefined) editorSettings.value.resultRunDisplayMode = normalizeResultRunDisplayMode(partial.resultRunDisplayMode);
     if (partial.defaultAutoKeepResults !== undefined) editorSettings.value.defaultAutoKeepResults = partial.defaultAutoKeepResults === true;

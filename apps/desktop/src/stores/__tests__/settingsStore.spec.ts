@@ -27,7 +27,7 @@ import {
   COMPACT_TAB_TITLE_DEFAULT_VERSION,
 } from "@/stores/settingsStore";
 import type { AiConfigItem } from "@/types/ai";
-import { DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION } from "@/lib/dataGrid/dataGridCopyExtractor";
+import { DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS, DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION } from "@/lib/dataGrid/dataGridCopyExtractor";
 import { DEFAULT_MONO_FONT_FAMILY } from "@/lib/app/appFonts";
 
 describe("normalizeEditorSettings", () => {
@@ -655,6 +655,8 @@ describe("normalizeEditorSettings", () => {
       quote: '"',
       quotePolicy: "minimal",
     });
+    expect(defaults.valueFormat).toBe("default");
+    expect(normalizeEditorSettings({}).dataGridVisibleCopyExtractors).toEqual(DATA_GRID_DEFAULT_VISIBLE_COPY_EXTRACTORS);
     expect(defaults.sql).toMatchObject({
       skipComputedColumns: true,
       skipGeneratedColumns: true,
@@ -674,6 +676,9 @@ describe("normalizeEditorSettings", () => {
     expect(configured.json.pretty).toBe(false);
     // mod 42：类型感知的 strings 引号策略可持久化（字符串加引号，数值/布尔裸写）。
     expect(normalizeEditorSettings({ dataGridExtractorOptions: { dsv: { ...defaults.dsv, quotePolicy: "strings" } } }).dataGridExtractorOptions.dsv.quotePolicy).toBe("strings");
+    const visible = normalizeEditorSettings({ dataGridVisibleCopyExtractors: ["php", "php", "unknown"] }).dataGridVisibleCopyExtractors;
+    expect(visible).toEqual(["php"]);
+    expect(normalizeEditorSettings({ dataGridVisibleCopyExtractors: [] }).dataGridVisibleCopyExtractors).toEqual([]);
   });
 
   it("migrates the legacy NULL clipboard sentinel once", () => {
@@ -694,21 +699,27 @@ describe("normalizeEditorSettings", () => {
     expect(configured.dataGridExtractorOptions.dsv.nullText).toBe("NULL");
   });
 
-  it("resets the copy extractor database-name opt-in once when migrating to v2", () => {
+  it("restores the copy extractor database-name opt-in default when migrating to v3 (#12146)", () => {
     const legacy = normalizeEditorSettings({
-      dataGridExtractorOptionsMigrationVersion: 1,
-      dataGridExtractorOptions: { sql: { includeDatabaseName: true } },
+      dataGridExtractorOptionsMigrationVersion: 2,
+      dataGridExtractorOptions: { sql: { includeDatabaseName: false } },
     });
-    // 历史持久化的「包含数据库名称」归位到新默认：复制/导出 SQL 默认不带库名/模式名
-    expect(legacy.dataGridExtractorOptions.sql.includeDatabaseName).toBe(false);
+    // v2 中被重置为 false 的历史配置重新恢复为新默认：复制/导出 SQL 默认带库名/模式名
+    expect(legacy.dataGridExtractorOptions.sql.includeDatabaseName).toBe(true);
     expect(legacy.dataGridExtractorOptionsMigrationVersion).toBe(DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION);
 
-    const current = normalizeEditorSettings({
+    const currentExplicitFalse = normalizeEditorSettings({
+      dataGridExtractorOptionsMigrationVersion: DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
+      dataGridExtractorOptions: { sql: { includeDatabaseName: false } },
+    });
+    // v3 迁移之后用户的显式取消勾选必须被保留
+    expect(currentExplicitFalse.dataGridExtractorOptions.sql.includeDatabaseName).toBe(false);
+
+    const currentExplicitTrue = normalizeEditorSettings({
       dataGridExtractorOptionsMigrationVersion: DATA_GRID_EXTRACTOR_OPTIONS_MIGRATION_VERSION,
       dataGridExtractorOptions: { sql: { includeDatabaseName: true } },
     });
-    // 迁移之后用户的显式勾选必须被保留
-    expect(current.dataGridExtractorOptions.sql.includeDatabaseName).toBe(true);
+    expect(currentExplicitTrue.dataGridExtractorOptions.sql.includeDatabaseName).toBe(true);
   });
 
   it("defaults retained result runs to tiled tabs and preserves list mode", () => {
@@ -1489,6 +1500,13 @@ describe("settingsStore AI API key normalization", () => {
       requiresApiKey: false,
     });
     expect(AI_PROVIDER_PRESETS).not.toHaveProperty(CC_SWITCH_PROVIDER_ID);
+  });
+
+  it("defaults new MiniMax configurations to Flash and preserves explicit models", () => {
+    expect(normalizeAiConfig({ provider: "minimax" }).model).toBe("MiniMax-M3.1-Flash");
+    for (const model of ["MiniMax-M3", "MiniMax-M2.7", "private-model", ""]) {
+      expect(normalizeAiConfig({ provider: "minimax", model }).model).toBe(model);
+    }
   });
 
   it("preserves saved MiniMax endpoints during normalization", () => {

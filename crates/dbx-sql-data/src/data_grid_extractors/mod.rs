@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 mod contract;
+mod copy_formats;
 mod delimited;
 mod document;
 mod json;
@@ -11,6 +12,7 @@ mod sql;
 
 use crate::data_grid_sql::unique_column_info_match;
 pub use contract::*;
+use copy_formats::{write_dbunit, write_php};
 use delimited::{write_dsv, write_one_row};
 use document::{write_html, write_markdown, write_pretty, write_xml};
 use json::{write_json, write_json_lines};
@@ -167,10 +169,17 @@ fn validate_request_budget(request: &DataGridExtractRequest) -> Result<(), DataG
         .fold(0usize, |size, column| {
             size.saturating_add(column.display_name.len())
                 .saturating_add(column.source_name.as_deref().map_or(0, str::len))
+                .saturating_add(column.description.as_deref().map_or(0, str::len))
         })
         .saturating_add(request.options.dsv.column_separator.len())
         .saturating_add(request.options.dsv.row_separator.len())
         .saturating_add(request.options.dsv.null_text.len())
+        .saturating_add(request.options.dsv.line_feed_escape_string.len())
+        .saturating_add(request.source_table_name.as_deref().map_or(0, str::len))
+        .saturating_add(request.options.dbunit.table_name.len())
+        .saturating_add(request.options.dbunit.null_value_string.len())
+        .saturating_add(request.options.php.variable_name.len())
+        .saturating_add(request.options.php.row_delimiter.len())
         .saturating_add(estimated_table_meta_bytes(request.table_meta.as_ref()));
     if estimated_bytes > DATA_GRID_EXTRACTOR_MAX_INPUT_BYTES {
         return Err(input_too_large_error());
@@ -259,11 +268,16 @@ fn write_extraction(
             Ok(text_metadata("text/plain", "txt"))
         }
         DataGridExtractorId::Tsv | DataGridExtractorId::TsvWithHeaders => {
-            let options = DataGridDsvOptions {
-                column_separator: "\t".to_string(),
-                include_column_header: extractor == DataGridExtractorId::TsvWithHeaders,
-                ..context.request.options.dsv.clone()
-            };
+            let mut options = context.request.options.dsv.clone();
+            options.column_separator = "\t".to_string();
+            options.include_column_header = extractor == DataGridExtractorId::TsvWithHeaders;
+            options.quote_numeric_strings = false;
+            options.header_position = DataGridHeaderPosition::Legacy;
+            options.header_format = DataGridHeaderFormat::Name;
+            options.header_case = DataGridHeaderCase::Preserve;
+            options.escape_formulas = false;
+            options.line_feed_escape_string.clear();
+            options.array_format = DataGridArrayFormat::Preserve;
             // TSV is split on the tab separator with no quote state machine, so a
             // value that merely contains a double quote must not be escaped.
             write_dsv(context, output, &options, false)?;
@@ -272,15 +286,23 @@ fn write_extraction(
         DataGridExtractorId::Csv | DataGridExtractorId::CsvWithHeaders => {
             let options = DataGridDsvOptions {
                 column_separator: ",".to_string(),
-                include_column_header: extractor == DataGridExtractorId::CsvWithHeaders,
+                include_column_header: extractor == DataGridExtractorId::CsvWithHeaders
+                    && context.request.options.dsv.header_position == DataGridHeaderPosition::Legacy,
                 ..context.request.options.dsv.clone()
             };
             write_dsv(context, output, &options, true)?;
             Ok(text_metadata("text/csv", "csv"))
         }
         DataGridExtractorId::PipeSeparated => {
-            let options =
-                DataGridDsvOptions { column_separator: "|".to_string(), ..context.request.options.dsv.clone() };
+            let mut options = context.request.options.dsv.clone();
+            options.column_separator = "|".to_string();
+            options.quote_numeric_strings = false;
+            options.header_position = DataGridHeaderPosition::Legacy;
+            options.header_format = DataGridHeaderFormat::Name;
+            options.header_case = DataGridHeaderCase::Preserve;
+            options.escape_formulas = false;
+            options.line_feed_escape_string.clear();
+            options.array_format = DataGridArrayFormat::Preserve;
             write_dsv(context, output, &options, false)?;
             Ok(text_metadata("text/plain", "txt"))
         }
@@ -341,6 +363,14 @@ fn write_extraction(
             write_pretty(context, output)?;
             Ok(text_metadata("text/plain", "txt"))
         }
+        DataGridExtractorId::Dbunit => {
+            write_dbunit(context, output)?;
+            Ok(text_metadata("application/xml", "xml"))
+        }
+        DataGridExtractorId::Php => {
+            let warnings = write_php(context, output)?;
+            Ok(WriteMetadata { mime_type: "text/x-php", file_extension: "php", omitted_columns: Vec::new(), warnings })
+        }
     }
 }
 
@@ -364,39 +394,6 @@ fn value_text(value: &Value) -> Cow<'_, str> {
         Value::Number(value) => Cow::Owned(value.to_string()),
         Value::Array(_) | Value::Object(_) => Cow::Owned(value.to_string()),
     }
-}
-
-/// Strings 引号策略（mod 42）的类型判定：JSON 字符串与 JSON 化的对象/数组
-/// 按文本加引号，数值/布尔裸写。
-fn value_string_like(value: &Value) -> bool {
-    matches!(value, Value::String(_) | Value::Array(_) | Value::Object(_))
-}
-
-/// MySQL 系驱动在文本协议下把所有标量都以 JSON 字符串送达（tinyint/int 与
-/// varchar 同样是 `Value::String`），仅凭值类型无法区分数值与文本；因此
-/// Strings 策略在列类型可辨时优先按列类型判定。这里收录各家驱动的数值/
-/// 布尔类型首词（information_schema 的 `tinyint(1) unsigned`、协议裸名
-/// `tinyint`、Postgres 的 `int8`、ClickHouse 的 `UInt32` 等）。
-const NUMERIC_DATA_TYPE_WORDS: &[&str] = &[
-    "tinyint", "smallint", "mediumint", "int", "integer", "bigint", "int2", "int4", "int8", "int16", "int32",
-    "int64", "int128", "uint8", "uint16", "uint32", "uint64", "uint128", "decimal", "numeric", "dec", "fixed",
-    "number", "money", "smallmoney", "float", "float4", "float8", "double", "real", "bit", "bool", "boolean",
-    "serial", "bigserial", "smallserial", "year",
-];
-
-fn data_type_is_numeric(data_type: Option<&str>) -> bool {
-    let Some(data_type) = data_type else { return false };
-    let first_word = data_type.split(|ch: char| ch.is_whitespace() || ch == '(').next().unwrap_or("");
-    NUMERIC_DATA_TYPE_WORDS.iter().any(|word| first_word.eq_ignore_ascii_case(word))
-}
-
-/// Strings 引号策略（mod 42）的综合判定：数值/布尔列即使以 JSON 字符串到达
-/// （MySQL 文本协议）也裸写；其余列回退值类型判定（字符串/对象/数组加引号）。
-fn strings_policy_string_like(value: &Value, data_type: Option<&str>) -> bool {
-    if data_type_is_numeric(data_type) {
-        return false;
-    }
-    value_string_like(value)
 }
 
 fn write_bytes(output: &mut dyn Write, bytes: &[u8]) -> Result<(), DataGridExtractError> {

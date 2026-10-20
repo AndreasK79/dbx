@@ -117,6 +117,8 @@ import { isXuguTypeMemberContainer } from "@/lib/sidebar/xuguTypeMembers";
 import { isXuguSyntheticTreeNode } from "@/lib/sidebar/xuguPublicSynonyms";
 import { buildXuguSchedulerJobSql, type XuguSchedulerJobAction } from "@/lib/database/xuguSchedulerJobSql";
 import { canViewDatabaseObjectDependencies, databaseDependencyProviderFor } from "@/lib/database/databaseObjectDependencies";
+import { oracleTarget } from "@/lib/database/oracleObjectDependencies";
+import type { ObjectDetailsSection } from "@/lib/database/objectDependencyDetails";
 import { elasticsearchClearIndexPreview, isElasticsearchClearConfirmed, isElasticsearchIndexPattern } from "@/lib/sidebar/elasticsearchIndexActions";
 import { sidebarObjectTemplateForGroup } from "@/lib/sidebar/databaseObjectTemplates";
 import { buildTableDeleteTemplate, buildTableInsertTemplate, buildTableSelectTemplate, buildTableUpdateTemplate, insertTemplatePrimaryKeyConflicts } from "@/lib/table/tableSqlTemplates";
@@ -160,6 +162,7 @@ import {
   treeNodeRowAction,
   treeNodeRowDoubleClickAction,
 } from "@/lib/sidebar/treeNodeClick";
+import { qualifiedNameForSidebarNode } from "@/lib/sidebar/sidebarTableNameCopy";
 import { customTypeCapabilities, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
 import { mongoCollectionTableTypeFromNode, mongoCreateDatabasePreview, mongoDropIndexFailureCount } from "@/lib/sidebar/mongoCollectionMutation";
 import { dataTabOpenModeFromTreeClick, type DataTabOpenMode } from "@/lib/sidebar/dataTabOpenPolicy";
@@ -540,7 +543,7 @@ const emit = defineEmits<{
   "context-menu": [event: MouseEvent, node: TreeNode, items: ContextMenuItem[]];
   "open-ddl": [node: TreeNode];
   "open-elasticsearch-index-metadata": [node: TreeNode, kind: ElasticsearchIndexMetadataKind];
-  "open-object-source": [node: TreeNode, initialEditing: boolean];
+  "open-object-source": [node: TreeNode, initialEditing: boolean, initialSection?: ObjectDetailsSection];
   "open-procedure": [node: TreeNode];
   "open-settings": [initialTab: string];
   "open-data": [node: TreeNode, requireSelection: boolean, openMode: DataTabOpenMode, runner: (node: TreeNode, request: SidebarDataOpenRequest) => Promise<void>];
@@ -583,6 +586,9 @@ const {
   connectionGroupDisconnectMenuLabel,
   canDisconnectConnectionGroup,
   disconnectConnectionGroup,
+  connectionGroupConnectMenuLabel,
+  canConnectConnectionGroup,
+  connectConnectionGroup,
   canForgetSessionCredential,
   disconnectAndForgetConnectionPassword,
   cancelConnectionAttempt,
@@ -2194,7 +2200,7 @@ async function newQuery(options: { reuseQueryTabByScope?: boolean } = {}) {
         return;
       }
       if (openDefault) await queryStore.openDefaultQuery({ connectionId: node.connectionId, database: node.database, catalog: node.catalog });
-      else queryStore.createTab(node.connectionId, node.database, undefined, "query", node.schema, undefined, node.catalog);
+      else queryStore.createTab(node.connectionId, node.database, undefined, "query", node.schema, undefined, node.catalog, { schemaQualifiesSql: true });
       return;
     }
     const connection = connectionStore.getConfig(node.connectionId);
@@ -2268,7 +2274,7 @@ async function openMultiTableSqlTemplate(targets: Array<TreeNode & { connectionI
 }
 
 function openSqlTemplateTab(connectionId: string, database: string, schema: string | undefined, catalog: string | undefined, sql: string, title?: string) {
-  const tabId = queryStore.createTab(connectionId, database, title, "query", schema, undefined, catalog, { forceWordWrap: true });
+  const tabId = queryStore.createTab(connectionId, database, title, "query", schema, undefined, catalog, { forceWordWrap: true, schemaQualifiesSql: true });
   queryStore.updateSql(tabId, sql);
 }
 
@@ -2489,7 +2495,7 @@ async function openSidebarMultiTableDdlTab(targets: Array<TreeNode & { connectio
       return buildViewDdl({
         databaseType: databaseTypeForNode(target),
         identifierQuote: connectionStore.connectionIdentifierQuote?.(target.connectionId),
-        schema,
+        schema: connectionTableSqlSchema(connectionStore.getConfig(target.connectionId), schema),
         name: target.label,
         source: result.source,
       });
@@ -2675,17 +2681,44 @@ async function copyDisplayPath() {
   }
 }
 
+async function copyQualifiedName() {
+  const active = activeNode.value;
+  const selected = selectedTreeNodesInVisibleOrder();
+  const targets = selected.some((node) => node.id === active.id) ? selected : [active];
+  const connectionId = active.connectionId;
+  if (!connectionId || targets.some((node) => node.connectionId !== connectionId)) {
+    toast(t("contextMenu.copyQualifiedNameSameConnection"), 4000);
+    return;
+  }
+  const options = sidebarTableCopyFormatOptions(active);
+  const names = targets.map((node) => qualifiedNameForSidebarNode(node, options));
+  const invalid = names.findIndex((name) => !name);
+  if (invalid >= 0) {
+    toast(t("contextMenu.copyQualifiedNameUnavailable", { name: targets[invalid]?.label ?? "" }), 4000);
+    return;
+  }
+  try {
+    await copyToClipboard(names.join("\n"));
+    toast(t("connection.copied"), 2000);
+  } catch (e: any) {
+    toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
+  }
+}
+
 function copyNameMenuItem(): ContextMenuItem {
   const node = activeNode.value;
   const connectionName = node.connectionId ? connectionStore.getConfig(node.connectionId)?.name || "" : "";
-  if (copyDisplayPathForTreeNode(node, connectionName)) {
+  const displayPath = copyDisplayPathForTreeNode(node, connectionName);
+  const qualifiedName = qualifiedNameForSidebarNode(node, sidebarTableCopyFormatOptions(node));
+  if (displayPath || qualifiedName) {
     return {
       sidebarActionId: "contextMenu.copyName",
       label: t("contextMenu.copyName"),
       icon: Copy,
       children: [
         { sidebarActionId: "contextMenu.name", label: t("contextMenu.name"), action: copyName, icon: Copy },
-        { sidebarActionId: "contextMenu.fullPath", label: t("contextMenu.fullPath"), action: copyDisplayPath, icon: Copy },
+        ...(displayPath ? [{ sidebarActionId: "contextMenu.fullPath", label: t("contextMenu.fullPath"), action: copyDisplayPath, icon: Copy }] : []),
+        ...(qualifiedName ? [{ sidebarActionId: "contextMenu.copyQualifiedName", label: t("contextMenu.copyQualifiedName"), action: copyQualifiedName, icon: Copy }] : []),
       ],
     };
   }
@@ -2851,10 +2884,11 @@ function dropObjectSqlOptions(): DropObjectSqlOptions | null {
 
 function dropObjectSqlOptionsForNode(node: TreeNode): DropObjectSqlOptions | null {
   if (node.type !== "view" && node.type !== "materialized_view" && node.type !== "procedure" && node.type !== "function" && node.type !== "event") return null;
+  const config = node.connectionId ? connectionStore.getConfig(node.connectionId) : undefined;
   return {
     databaseType: tableStructureDatabaseTypeForNode(node),
     objectType: node.type === "view" ? "VIEW" : node.type === "materialized_view" ? "MATERIALIZED_VIEW" : node.type === "procedure" ? "PROCEDURE" : node.type === "function" ? "FUNCTION" : "EVENT",
-    schema: node.schema,
+    schema: connectionTableSqlSchema(config, node.schema),
     name: node.objectName || node.label,
     signature: node.signature,
     // Cloud Spanner's dialect decides the quote; the static per-type mapping cannot.
@@ -2969,8 +3003,9 @@ async function refreshDropTableChildObjectPreviewSql() {
   dropTableChildObjectPreviewSql.value = options ? await buildDropTableChildObjectSql(options).catch(() => "") : "";
 }
 
-function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false) {
-  const node = activeNode.value;
+function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false, dependencyNode?: TreeNode) {
+  const node = dependencyNode || activeNode.value;
+  const initialSection = dependencyNode ? "dependencies" : undefined;
   if (!node.connectionId || !node.database) return;
   if (viewPackageBody && (node.type !== "package" || node.xuguPackageBodyAvailable !== true || currentDatabaseType() !== "xugu")) return;
   const sourceNode: TreeNode = viewPackageBody ? { ...node, type: "package-body" } : node;
@@ -2993,11 +3028,12 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
       schema,
       catalog: node.catalog,
       initialEditing,
+      initialSection,
       request: { name: sourceTarget.name, objectType: sourceTarget.objectType, signature: sourceNode.signature },
     });
     return;
   }
-  emit("open-object-source", sourceNode, initialEditing);
+  emit("open-object-source", sourceNode, initialEditing, initialSection);
 }
 
 function openProcedureExecution() {
@@ -3010,13 +3046,20 @@ async function openDatabaseObjectDependencies() {
   const node = activeNode.value;
   const provider = databaseDependencyProviderFor(currentDatabaseType());
   if (!provider || !node.connectionId || !node.database || !provider.supports(node)) return;
+  if (currentDatabaseType() === "oracle" || currentDatabaseType() === "oceanbase-oracle") {
+    const target = oracleTarget(node);
+    if (!target) return;
+    openObjectSourceDialog(false, false, { ...node, type: target.type.toLowerCase() as "procedure" | "function" | "package", schema: target.schema, objectName: target.name, label: target.name, parentType: undefined, parentName: undefined, parentSchema: undefined });
+    return;
+  }
   const sql = provider.buildQuery(node);
   if (!sql) return;
 
   try {
     await connectionStore.ensureConnected(node.connectionId);
     connectionStore.activeConnectionId = node.connectionId;
-    const objectName = node.objectName || node.label;
+    const target = provider.targetLabel?.(node);
+    const objectName = target ? `${target.packageScope ? `${t("common.package")} ` : ""}${target.name}` : node.objectName || node.label;
     const tabId = queryStore.createTab(node.connectionId, node.database, `${t("contextMenu.viewDependencies")} - ${objectName}`, "query", node.schema, undefined, node.catalog, { forceNew: true });
     queryStore.updateSql(tabId, sql);
     await queryStore.executeTabSql(tabId, sql);
@@ -6886,6 +6929,14 @@ function buildConnectionSidebarMenu(context: SidebarMenuFactoryContext): boolean
     items.push({ label: t("toolbar.newConnection"), action: newConnectionInGroup, icon: Plus });
     items.push({ label: t("connectionGroup.newGroup"), action: newSubgroup, icon: FolderPlus });
     items.push({
+      sidebarActionId: "connectionGroup.openConnections",
+      label: connectionGroupConnectMenuLabel(),
+      action: connectConnectionGroup,
+      icon: Plug,
+      disabled: !canConnectConnectionGroup(),
+    });
+    items.push({
+      sidebarActionId: "connectionGroup.closeConnections",
       label: connectionGroupDisconnectMenuLabel(),
       action: disconnectConnectionGroup,
       icon: Unplug,
@@ -7599,7 +7650,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 
   // 7. Column
   if (node.type === "column") {
-    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(copyNameMenuItem());
     const columnActions: ContextMenuItem[] = [];
     columnActions.push({ label: t("contextMenu.viewDdl"), action: openColumnDdl, icon: FileCode });
     if (canOpenStructureEditor.value) {
@@ -7626,7 +7677,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   }
 
   if (node.type === "index" || node.type === "fkey" || (node.type === "trigger" && !!node.tableName)) {
-    items.push(node.type === "trigger" ? copyNameMenuItem() : { label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(node.type === "trigger" || node.type === "index" ? copyNameMenuItem() : { label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
     if (node.type === "trigger") {
       items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
       items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });
@@ -7677,11 +7728,14 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     if (!isPackageMember && currentDatabaseType() === "xugu" && buildXuguCompileSql({ objectType: node.type, schema: node.schema, name: node.objectName || node.label })) {
       items.push({ label: t("contextMenu.compileObject"), action: compileXuguObject, icon: Wrench });
     }
-    items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
+    if (!isPackageMember) {
+      items.push({ sidebarActionId: "contextMenu.editObject", label: t("contextMenu.editObject"), action: () => openObjectSourceDialog(true), icon: Pencil });
+    }
+    items.push({ sidebarActionId: "contextMenu.viewSource", label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
     if (!isPackageMember) {
       items.push({ label: t("diff.title"), action: openSchemaDiffForRoutine, icon: ArrowRightLeft });
     }
-    if (!isPackageMember && canViewDatabaseObjectDependencies(currentDatabaseType(), node)) {
+    if (canViewDatabaseObjectDependencies(currentDatabaseType(), node)) {
       items.push({ label: t("contextMenu.viewDependencies"), action: openDatabaseObjectDependencies, icon: Network });
     }
     items.push(copyNameMenuItem());
@@ -7719,7 +7773,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     // Open that surface from the tree instead of routing through the generic source dialog.
     items.push({ label: t("contextMenu.editObject"), action: () => openObjectBrowser(false, true), icon: Pencil });
     items.push({ label: t("contextMenu.viewObject"), action: () => openObjectBrowser(true, true), icon: Eye });
-    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    items.push(copyNameMenuItem());
     items.push({ label: t("contextMenu.dropObject"), action: deleteMenuAction(requestDropObject), icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
     items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw, shortcut: shortcutRefresh.value });
     return true;
@@ -7758,7 +7812,10 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     if (currentDatabaseType() === "xugu" && buildXuguCompileSql({ objectType: node.type, schema: node.schema, name: node.objectName || node.label })) {
       items.push({ label: t("contextMenu.compileObject"), action: compileXuguObject, icon: Wrench });
     }
-    items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
+    if (node.type === "package" || node.type === "package-body") {
+      items.push({ sidebarActionId: "contextMenu.editObject", label: t("contextMenu.editObject"), action: () => openObjectSourceDialog(true), icon: Pencil });
+    }
+    items.push({ sidebarActionId: "contextMenu.viewSource", label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
     if (canViewDatabaseObjectDependencies(currentDatabaseType(), node)) {
       items.push({ label: t("contextMenu.viewDependencies"), action: openDatabaseObjectDependencies, icon: Network });
     }
