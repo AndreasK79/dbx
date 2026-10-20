@@ -1,4 +1,4 @@
-﻿// @vitest-environment happy-dom
+// @vitest-environment happy-dom
 
 import { createApp, defineComponent, h, nextTick, type App } from "vue";
 import { afterEach, describe, expect, it, vi } from "vitest";

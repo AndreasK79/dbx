@@ -594,7 +594,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
     titleKey: "settings.snippetsTab",
     descriptionKey: "settings.snippetsDescription",
     targetId: "snippets",
-    keywordKeys: ["settings.snippetsLabel", "settings.snippetsPrefix", "settings.snippetsBody", "settings.snippetsToggle", "settings.snippetsEnabled", "settings.snippetsDisabled", "settings.snippetsPlaceholderHint"],
+    keywordKeys: ["settings.snippetsLabel", "settings.snippetsPrefix", "settings.snippetsBody", "settings.snippetsToggle", "settings.snippetsEnabled", "settings.snippetsDisabled", "settings.snippetsPlaceholderHint", "settings.snippetsSelectAll", "settings.snippetsSelectSnippet"],
   },
   {
     id: "snippet-trigger-key",
@@ -635,6 +635,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
     keywordKeys: [
       "ai.configName",
       "ai.provider",
+      "ai.copilotAccount",
       "ai.customHeaders",
       "ai.customHeadersHint",
       "ai.cliPath",

@@ -612,6 +612,19 @@ function batchErrorLooksCancelled(errorDetails: BackendError | undefined, errorT
   return errorDetails?.code === "DBX-JDBC-2003" || /cancel|取消/i.test(errorText ?? "");
 }
 
+// The notice-stream hook is a fork addition on the api layer; specs that mock
+// the whole api module may not expose it — and vitest's module mocks throw on
+// unknown property access — so fall back to running the execution unwrapped.
+function withStatementNoticesOrDirect<T>(executionId: string, onNotices: (event: api.StatementNoticesEvent) => void, run: () => Promise<T>): Promise<T> {
+  try {
+    const wrapper = api.withStatementNotices;
+    if (typeof wrapper === "function") return wrapper(executionId, onNotices, run);
+  } catch {
+    // hook absent from the api surface
+  }
+  return run();
+}
+
 function cloneBatchSqlExecution(batch: BatchSqlExecution | undefined): BatchSqlExecution | undefined {
   return batch ? { ...batch, executionTarget: batch.executionTarget ? { ...batch.executionTarget } : undefined, items: batch.items.map((item) => ({ ...item })) } : undefined;
 }
@@ -9023,7 +9036,7 @@ export const useQueryStore = defineStore("query", () => {
           }
         }
         if (useLegacyReadFallback) {
-          executionPromise = api.withStatementNotices(executionId, onStatementNotices, executeWithoutManualTransaction);
+          executionPromise = withStatementNoticesOrDirect(executionId, onStatementNotices, executeWithoutManualTransaction);
         } else {
           queryExecutionLog("info", "execute-in-txn:invoke", { traceId, txnSessionId: tab.txnSessionId, elapsed: elapsed() });
           executionDispatched = true;
@@ -9034,7 +9047,7 @@ export const useQueryStore = defineStore("query", () => {
           const isInitialStickyClassification = usesProvenReadOnlyStickyTransactionState(effectiveDbType) && !options?.pagination?.sessionId;
           const classificationSql = isInitialStickyClassification ? queryBaseSql : undefined;
           let manualTransactionRecoveryAttempted = false;
-          executionPromise = api.withStatementNotices(executionId, onStatementNotices, async () => {
+          executionPromise = withStatementNoticesOrDirect(executionId, onStatementNotices, async () => {
             const txnSessionId = tab.txnSessionId;
             if (!txnSessionId) throw new Error("Manual transaction session was not initialized");
             // Offset jumps inside a manual transaction keep the legacy
@@ -9095,7 +9108,7 @@ export const useQueryStore = defineStore("query", () => {
           });
         }
       } else {
-        executionPromise = api.withStatementNotices(executionId, onStatementNotices, executeWithoutManualTransaction);
+        executionPromise = withStatementNoticesOrDirect(executionId, onStatementNotices, executeWithoutManualTransaction);
       }
       const responseResults = await withFrontendQueryTimeout(executionPromise, frontendTimeoutSecs, t("editor.queryTimeoutError", { seconds: frontendTimeoutSecs }), () => {
         void api.cancelQuery(executionId).catch((error) => queryExecutionLog("warn", "frontend-timeout:cancel-failed", { traceId, error }));

@@ -52,7 +52,7 @@ pub(super) fn write_dsv(
                 } else {
                     let is_numeric_string =
                         value.as_str().is_some_and(|text| !text.is_empty() && text.parse::<f64>().is_ok());
-                    let numeric_type = is_numeric_type(column.data_type.as_deref());
+                    let numeric_type = cell_is_numeric(column.data_type.as_deref(), value);
                     let mut text = format_array_value(
                         value_text(value).into_owned(),
                         value,
@@ -113,6 +113,17 @@ fn header_label(column: &super::DataGridExtractColumn, options: &DataGridDsvOpti
         label.insert(0, '\'');
     }
     label
+}
+
+/// mod 42: the Strings/AllButNumbers policies treat a cell as numeric when the
+/// column type says so, or — for columns with no usable type — when the value
+/// itself is a JSON number or boolean, so untyped numeric grids still copy bare.
+fn cell_is_numeric(data_type: Option<&str>, value: &serde_json::Value) -> bool {
+    if is_numeric_type(data_type) {
+        return true;
+    }
+    let type_known = data_type.is_some_and(|text| !text.trim().is_empty());
+    !type_known && matches!(value, serde_json::Value::Number(_) | serde_json::Value::Bool(_))
 }
 
 fn is_numeric_type(data_type: Option<&str>) -> bool {
@@ -363,7 +374,7 @@ pub(super) fn write_one_row(context: &ExtractContext<'_>, output: &mut dyn Write
                 DsvCell::Null
             } else {
                 let numeric_string = value.as_str().is_some_and(|text| !text.is_empty() && text.parse::<f64>().is_ok());
-                DsvCell::Text(value_text(value), is_numeric_type(column.data_type.as_deref()), numeric_string)
+                DsvCell::Text(value_text(value), cell_is_numeric(column.data_type.as_deref(), value), numeric_string)
             };
             // A one-row extraction is an RFC4180 CSV record, so embedded quotes must
             // be escaped.
