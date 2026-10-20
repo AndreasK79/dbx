@@ -306,6 +306,8 @@ export const buildCreateUserSql = forward("buildCreateUserSql");
 export const buildDroppedFilePreviewSql = forward("buildDroppedFilePreviewSql");
 export const buildTableSelectSql = forward("buildTableSelectSql");
 export const buildDatabaseSearchSql = forward("buildDatabaseSearchSql");
+export const buildDatabaseSearchColumnsSql = forward("buildDatabaseSearchColumnsSql");
+export const buildDatabaseSearchProbeSql = forward("buildDatabaseSearchProbeSql");
 export const buildDatabaseStructureSearchSql = forward("buildDatabaseStructureSearchSql");
 export const supportsDatabaseStructureSearch = forward("supportsDatabaseStructureSearch");
 export const buildSearchResultWhere = forward("buildSearchResultWhere");
@@ -1164,6 +1166,7 @@ export type {
   TransferObjectKind,
   TransferObjectSelection,
   TransferTableNameCase,
+  TransferColumnNameCase,
   TransferOwnershipPolicy,
   TransferStructureOperation,
   TransferStructureOperationKind,

@@ -296,7 +296,8 @@ export function useSqlExecution(deps: {
       cancelEditorViewportRequest(options.editorViewportRequestId);
       return notStarted("no-tab", options.tabId);
     }
-    const { sql, sourceOffset, editorViewportRequestId } = await resolvedExecutableSql(sqlOverride, context);
+    const { sql, sourceOffset, editorViewportRequestId: snapshotRequestId } = await resolvedExecutableSql(sqlOverride, context);
+    const editorViewportRequestId = snapshotRequestId ?? options.editorViewportRequestId;
     const executionOptions = { ...options, editorViewportRequestId, tabId: context.tabId };
     if (!sql.trim()) {
       cancelEditorViewportRequest(editorViewportRequestId);
@@ -306,6 +307,10 @@ export function useSqlExecution(deps: {
     if (!tab) {
       cancelEditorViewportRequest(editorViewportRequestId);
       return notStarted("no-tab", context.tabId);
+    }
+    if (tab.isExecuting) {
+      cancelEditorViewportRequest(editorViewportRequestId);
+      return notStarted("busy", context.tabId);
     }
     if (requiresDatabaseSelection(tab, context.connection, sql)) {
       deps.onMissingDatabase?.(context.tabId);

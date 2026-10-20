@@ -2455,12 +2455,14 @@ const {
   onHideNullColumnsChange: (value) => settingsStore.updateEditorSettings({ dataGridHideNullColumns: value }),
   onRefreshMetrics: scheduleColumnLayoutRefresh,
 });
+// The go-to-column list mirrors the column filter panel, so both follow the
+// user's local column order instead of the database order.
 const goToColumnItems = computed(() =>
   buildDataGridColumnLookupItems({
     columns: props.result.columns,
     sourceColumns: props.sourceColumns,
     columnComments: props.resultColumnComments,
-    displayableIndexes: displayableColumnIndexes.value,
+    displayableIndexes: orderedDisplayableColumnIndexes.value,
     commentByColumn: columnCommentMap.value,
   }),
 );
@@ -9047,6 +9049,9 @@ function changeExportQueryTimeout() {
 
 const userFacingSql = ref("");
 let userFacingSqlGeneration = 0;
+// Legacy snapshots may retain a display page without the actual execution text.
+// Do not present the original, unpaginated statement as the executed SQL there.
+const actualExecutionSql = computed(() => props.result.sqlPage?.executedSql || props.result.executedStatement || (!props.pageSql ? props.result.sourceStatement || props.sql || "" : ""));
 
 function sqlWithDisplayDatabaseName(sql: string): string {
   const database = props.tableMeta?.database ?? props.database;
@@ -9060,7 +9065,7 @@ function sqlWithDisplayDatabaseName(sql: string): string {
 
 async function syncUserFacingSql() {
   const generation = ++userFacingSqlGeneration;
-  const executionSql = (props.pageSql || props.sql)?.trim() ?? "";
+  const executionSql = (props.result.sqlPage?.sql || props.pageSql || props.sql)?.trim() ?? "";
   const includeDatabaseName = settingsStore.editorSettings.generateSqlIncludeDatabaseName;
   const shouldRebuildSql = executionSql.includes("__DBX_LARGE_VALUE_BYTES_") || includeDatabaseName;
   if (props.context !== "table-data" || !shouldRebuildSql || !props.tableMeta?.tableName) {
@@ -9102,7 +9107,7 @@ async function syncUserFacingSql() {
 }
 
 watch(
-  () => [props.sql, props.pageSql, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, currentWhereInput(), effectiveOrderBy(), settingsStore.editorSettings.generateSqlIncludeDatabaseName],
+  () => [props.sql, props.pageSql, props.result.sqlPage, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, currentWhereInput(), effectiveOrderBy(), settingsStore.editorSettings.generateSqlIncludeDatabaseName],
   () => void syncUserFacingSql(),
   { immediate: true },
 );
@@ -9741,6 +9746,12 @@ function clipboardShortcut(event: KeyboardEvent, key: string): boolean {
   return isPlainClipboardShortcut(event, key);
 }
 
+// The copy/extract "NULL text" a copy writes for a NULL cell, so a paste can
+// turn the very same text back into NULL instead of the literal string
+// (issue #12727). Empty means "no configured sentinel": empty clipboard fields
+// then stay empty strings, which is what the DBX grid copies for both.
+const clipboardNullText = computed(() => settingsStore.editorSettings.dataGridExtractorOptions.dsv.nullText);
+
 async function pasteClipboardIntoSelection() {
   if (!props.editable) return;
   const operation = dataGridResultLifecycle.beginOperation();
@@ -9765,7 +9776,7 @@ async function pasteClipboardAsNewRows() {
     const result = await prepareGridRows(async (options) => {
       const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
       if (options.signal?.aborted || options.isCurrent?.() === false) return undefined;
-      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits, clipboardNullText.value));
       if (!rows) return undefined;
       return appendPastedRowsAsNewRowsInBatches(rows, columnIndexes, insertPaste?.columnNames, options);
     });
@@ -9867,7 +9878,7 @@ function pasteTextIntoGrid(text: string): boolean | Promise<boolean> {
     return prepareGridRows(async (options) => {
       const insertPaste = await parseInsertStatementPasteInBatches(text, options, limits);
       if (options.signal?.aborted || options.isCurrent?.() === false) return false;
-      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits));
+      const rows = insertPaste?.rows ?? (await parseDataGridClipboardInBatches(text, options, limits, clipboardNullText.value));
       if (!rows || options.signal?.aborted || options.isCurrent?.() === false) return false;
       return applyParsedGridPaste(rows, insertPaste?.columnNames, options);
     })
@@ -9879,7 +9890,7 @@ function pasteTextIntoGrid(text: string): boolean | Promise<boolean> {
   }
   try {
     const insertPaste = parseInsertStatementPaste(text, limits);
-    return applyParsedGridPaste(insertPaste?.rows ?? parseDataGridClipboard(text, limits), insertPaste?.columnNames);
+    return applyParsedGridPaste(insertPaste?.rows ?? parseDataGridClipboard(text, limits, clipboardNullText.value), insertPaste?.columnNames);
   } catch (error) {
     reportGridPasteError(error);
     return false;
@@ -9903,7 +9914,7 @@ function applyParsedGridPaste(rows: readonly (readonly (string | null)[])[], col
 function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): boolean {
   const allowDraftSelectionValue = selectedRangeTargetsOnlyDraftRow();
 
-  if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0])) {
+  if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0], { preserveEmptyString: true })) {
     toast(t("grid.pasted"));
     return true;
   }
@@ -9921,7 +9932,9 @@ function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): 
       const item = displayItemAt(rowIndex);
       if (!item) continue;
       const visibleCol = start.colIndex + cell.columnOffset;
-      applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue) || applied;
+      // Pasting is a literal value transfer, so an empty field stays an empty
+      // string instead of clearing the cell to NULL (issue #12727).
+      applied = applyVisibleSelectedCellValue(item, visibleCol, cell.value, allowDraftSelectionValue, { preserveEmptyString: true }) || applied;
     }
   } finally {
     commitBatch();
@@ -12471,8 +12484,9 @@ async function copyUserFacingSqlWithoutComments() {
 }
 
 const statusSqlContextMenuItems = computed<ContextMenuItem[]>(() => [
-  { label: t("grid.copyQuerySql"), icon: Copy, action: () => void copyUserFacingSql() },
+  { label: t(props.result.sqlPage ? "grid.copyCurrentPageSql" : "grid.copyQuerySql"), icon: Copy, action: () => void copyUserFacingSql() },
   { label: t("grid.copyExecutableSql"), icon: Copy, action: () => void copyUserFacingSqlWithoutComments() },
+  ...(actualExecutionSql.value ? [{ label: t("grid.copyActualExecutionSql"), icon: Copy, action: () => void copyText(actualExecutionSql.value) }] : []),
 ]);
 
 type TableInfoTabItem = {
@@ -16618,11 +16632,18 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
           <Tooltip>
             <TooltipTrigger as-child>
               <span class="block min-w-0 max-w-full truncate opacity-60 cursor-pointer hover:opacity-100" data-result-sql @click="copyUserFacingSql" @contextmenu="onContextMenu">
+                <span v-if="result.sqlPage">{{ t("grid.currentPageSql") }}: </span>
                 {{ sqlOneLiner }}
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" class="max-w-md">
+              <div v-if="result.sqlPage" class="mb-1 font-medium">{{ t("grid.currentPageSql") }}</div>
               <pre class="text-xs font-mono whitespace-pre-wrap">{{ userFacingSql }}</pre>
+              <p v-if="result.sqlPage?.probe" class="mt-2 text-xs">{{ t("grid.pageProbeDescription", { count: result.sqlPage.executedLimit }) }}</p>
+              <template v-if="actualExecutionSql && actualExecutionSql.trim() !== userFacingSql.trim()">
+                <div class="mt-3 mb-1 font-medium">{{ t("grid.actualExecutionSql") }}</div>
+                <pre class="max-h-48 overflow-auto text-xs font-mono whitespace-pre-wrap">{{ actualExecutionSql }}</pre>
+              </template>
             </TooltipContent>
           </Tooltip>
         </CustomContextMenu>

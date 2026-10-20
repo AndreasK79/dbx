@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import PasswordInput from "@/components/ui/PasswordInput.vue";
+import SavePasswordCheckbox from "@/components/connection/SavePasswordCheckbox.vue";
 import { Label } from "@/components/ui/label";
 import { sidebarProductionBadgeScope } from "@/lib/sidebar/sidebarProductionBadge";
 import type { ProductionBadgeScope } from "@/types/database";
@@ -5317,6 +5318,13 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     if ((config.client_cert_path && !config.client_key_path) || (!config.client_cert_path && config.client_key_path)) {
       throw new Error(t("connection.etcdClientCertPairRequired"));
     }
+  } else if (config.db_type === "redis") {
+    config.etcd_endpoints = undefined;
+    config.client_cert_path = config.client_cert_path?.trim() || "";
+    config.client_key_path = config.client_key_path?.trim() || "";
+    if ((config.client_cert_path && !config.client_key_path) || (!config.client_cert_path && config.client_key_path)) {
+      throw new Error(t("connection.redisClientCertPairRequired"));
+    }
   } else if (form.value.db_type !== "consul" && config.db_type !== "elasticsearch" && config.db_type !== "easysearch" && config.db_type !== "solr") {
     config.etcd_endpoints = undefined;
     config.client_cert_path = undefined;
@@ -5338,6 +5346,7 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.db_type !== "doris" &&
     config.db_type !== "mongodb" &&
     config.db_type !== "victoriametrics" &&
+    config.db_type !== "redis" &&
     config.db_type !== "zookeeper" &&
     config.db_type !== "elasticsearch" &&
     config.db_type !== "easysearch" &&
@@ -6930,6 +6939,29 @@ async function browseEtcdTlsFile(target: "ca" | "cert" | "key") {
   }
 }
 
+async function browseRedisTlsFile(target: "ca" | "cert" | "key") {
+  if (isTauriRuntime()) {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
+      title: target === "ca" ? t("connection.redisCaCertBrowse") : target === "cert" ? t("connection.redisClientCertBrowse") : t("connection.redisClientKeyBrowse"),
+      multiple: false,
+      filters: [
+        { name: "PEM", extensions: ["pem", "crt", "cer", "key"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
+    if (selected && typeof selected === "string") {
+      if (target === "ca") {
+        form.value.ca_cert_path = selected;
+      } else if (target === "cert") {
+        form.value.client_cert_path = selected;
+      } else {
+        form.value.client_key_path = selected;
+      }
+    }
+  }
+}
+
 async function browseHiveKerberosFile(target: "krb5" | "jaas") {
   if (isTauriRuntime()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
@@ -7606,18 +7638,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
-                    <div class="grid grid-cols-4 items-center gap-4">
-                      <span />
-                      <div class="col-span-3 flex items-center gap-1.5 text-sm">
-                        <label class="flex items-center gap-2">
-                          <input v-model="form.save_password" type="checkbox" class="h-4 w-4 rounded border-border accent-primary" :aria-label="t('connection.savePassword')" />
-                          <span class="whitespace-nowrap">{{ t("connection.savePassword") }}</span>
-                        </label>
-                        <HelpTooltip :label="t('connection.savePassword')">
-                          {{ form.save_password ? t("connection.savePasswordHint") : t("connection.savePasswordSessionHint") }}
-                        </HelpTooltip>
-                      </div>
-                    </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-start gap-4">
                       <Label :class="connectionLabelTopClass">{{ t("connection.jdbcDriverPaths") }}</Label>
                       <div class="col-span-3 space-y-2">
@@ -7756,6 +7777,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.sqliteCipherKey") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" :placeholder="t('connection.sqliteCipherKeyPlaceholder')" />
                     </div>
+                    <SavePasswordCheckbox v-if="form.db_type === 'sqlite' && !sqliteUsesSsh" v-model="form.save_password" />
                     <div v-if="form.db_type === 'sqlite' && !sqliteUsesSsh" class="grid grid-cols-4 items-start gap-4">
                       <Label :class="connectionLabelTopClass">{{ t("connection.sqliteExtensions") }}</Label>
                       <div class="col-span-3 space-y-1">
@@ -7803,6 +7825,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">{{ t("connection.password") }}{{ form.db_type === "access" ? t("connection.optionalSuffix") : "" }}</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" />
                       </div>
+                      <SavePasswordCheckbox v-model="form.save_password" />
                     </template>
                   </template>
 
@@ -8236,6 +8259,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" :placeholder="t('connection.databasePlaceholder')" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.redisKeySeparator") }}</Label>
                       <Input v-model="form.redis_key_separator" class="col-span-3 h-8 text-xs" placeholder=":" />
@@ -8271,6 +8295,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.consulToken") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" :placeholder="t('connection.consulTokenPlaceholder')" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ t("connection.consulDatacenter") }}</Label>
                       <Input v-model="consulDatacenter" class="col-span-3" placeholder="dc1" />
@@ -8376,6 +8401,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                   </template>
 
                   <!-- ZooKeeper: host, connect string, user, password -->
@@ -8419,6 +8445,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                   </template>
 
                   <!-- DynamoDB: endpoint, region, AWS credentials -->
@@ -8447,6 +8474,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.dynamodbSecretAccessKey") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.dynamodbSessionToken") }}</Label>
                       <PasswordInput v-model="form.connection_string" class="col-span-3" :placeholder="t('connection.dynamodbSessionTokenPlaceholder')" />
@@ -8551,6 +8579,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" />
                       </div>
+                      <SavePasswordCheckbox v-if="mongoAuthMechanism !== 'MONGODB-OIDC'" v-model="form.save_password" />
                       <div class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.defaultDatabase") }}</Label>
                         <Input v-model="form.database" class="col-span-3" :placeholder="t('connection.databasePlaceholder')" />
@@ -8702,6 +8731,7 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-start gap-4">
                       <Label :class="connectionLabelSmallClass">{{ t("connection.victoriametricsApiPath") }}</Label>
                       <div class="col-span-3 space-y-1.5">
@@ -8758,6 +8788,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">Token</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" />
                       </div>
+                      <SavePasswordCheckbox v-model="form.save_password" />
                     </template>
                     <template v-else-if="influxDbVersion === '3'">
                       <div class="grid grid-cols-4 items-center gap-4">
@@ -8768,6 +8799,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">Token</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" />
                       </div>
+                      <SavePasswordCheckbox v-model="form.save_password" />
                     </template>
                     <template v-else>
                       <div class="grid grid-cols-4 items-center gap-4">
@@ -8778,6 +8810,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">{{ t("connection.password") }}</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" />
                       </div>
+                      <SavePasswordCheckbox v-model="form.save_password" />
                       <div class="grid grid-cols-4 items-center gap-4">
                         <Label :class="connectionLabelClass">{{ t("connection.database") }}</Label>
                         <Input v-model="form.database" class="col-span-3" :placeholder="t('connection.databasePlaceholder')" />
@@ -8806,6 +8839,7 @@ function openExternalUrl(url: string) {
                       <PasswordInput v-model="form.password" class="col-span-3" placeholder="eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9..." />
                     </div>
 
+                    <SavePasswordCheckbox v-model="form.save_password" />
                     <div class="grid grid-cols-4 items-start gap-4">
                       <span />
                       <p class="col-span-3 text-xs text-muted-foreground">{{ t("connection.tursoTokenHint") }} <code class="px-1 py-0.5 rounded bg-muted text-xs">turso db tokens create &lt;database-name&gt;</code></p>
@@ -8895,6 +8929,7 @@ function openExternalUrl(url: string) {
                         <Label :class="connectionLabelClass">{{ t("connection.salesforceAccessToken") }}</Label>
                         <PasswordInput v-model="form.password" class="col-span-3" :placeholder="t('connection.salesforceAccessTokenPlaceholder')" />
                       </div>
+                      <SavePasswordCheckbox v-model="form.save_password" />
                       <div class="grid grid-cols-4 items-start gap-4">
                         <span />
                         <p class="col-span-3 text-xs leading-5 text-muted-foreground">{{ t("connection.salesforceAccessTokenHint") }}</p>
@@ -9265,18 +9300,7 @@ function openExternalUrl(url: string) {
                       <PasswordInput v-model="form.password" class="col-span-3" />
                     </div>
 
-                    <div v-if="form.db_type !== 'spanner'" class="grid grid-cols-4 items-center gap-4">
-                      <span />
-                      <div class="col-span-3 flex items-center gap-1.5 text-sm">
-                        <label class="flex items-center gap-2">
-                          <input v-model="form.save_password" type="checkbox" class="h-4 w-4 rounded border-border accent-primary" :aria-label="t('connection.savePassword')" />
-                          <span class="whitespace-nowrap">{{ t("connection.savePassword") }}</span>
-                        </label>
-                        <HelpTooltip :label="t('connection.savePassword')">
-                          {{ form.save_password ? t("connection.savePasswordHint") : t("connection.savePasswordSessionHint") }}
-                        </HelpTooltip>
-                      </div>
-                    </div>
+                    <SavePasswordCheckbox v-if="form.db_type !== 'spanner'" v-model="form.save_password" />
 
                     <div v-if="form.db_type !== 'hbase' && form.db_type !== 'meilisearch' && form.db_type !== 'solr' && form.db_type !== 'spanner'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ databaseLabel }}</Label>
@@ -9845,6 +9869,55 @@ function openExternalUrl(url: string) {
                     </span>
                   </label>
                 </div>
+
+                <template v-if="form.db_type === 'redis'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelSmallClass">{{ t("connection.redisCaCert") }}</Label>
+                    <div class="col-span-3 flex items-center gap-1">
+                      <Input v-model="form.ca_cert_path" class="flex-1" :placeholder="t('connection.redisCaCertPlaceholder')" :disabled="!form.ssl" />
+                      <Tooltip v-if="isDesktop">
+                        <TooltipTrigger as-child>
+                          <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" :disabled="!form.ssl" @click="browseRedisTlsFile('ca')">
+                            <FolderOpen class="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{{ t("connection.redisCaCertBrowse") }}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelSmallClass">{{ t("connection.redisClientCert") }}</Label>
+                    <div class="col-span-3 flex items-center gap-1">
+                      <Input v-model="form.client_cert_path" class="flex-1" :placeholder="t('connection.redisClientCertPlaceholder')" :disabled="!form.ssl" />
+                      <Tooltip v-if="isDesktop">
+                        <TooltipTrigger as-child>
+                          <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" :disabled="!form.ssl" @click="browseRedisTlsFile('cert')">
+                            <FolderOpen class="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{{ t("connection.redisClientCertBrowse") }}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelSmallClass">{{ t("connection.redisClientKey") }}</Label>
+                    <div class="col-span-3 flex items-center gap-1">
+                      <Input v-model="form.client_key_path" class="flex-1" :placeholder="t('connection.redisClientKeyPlaceholder')" :disabled="!form.ssl" />
+                      <Tooltip v-if="isDesktop">
+                        <TooltipTrigger as-child>
+                          <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" :disabled="!form.ssl" @click="browseRedisTlsFile('key')">
+                            <FolderOpen class="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{{ t("connection.redisClientKeyBrowse") }}</TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <p class="col-span-3 text-xs leading-5 text-muted-foreground">{{ t("connection.redisTlsCertificateHint") }}</p>
+                  </div>
+                </template>
 
                 <template v-if="form.db_type === 'etcd' || form.db_type === 'consul' || form.db_type === 'zookeeper' || form.db_type === 'elasticsearch' || form.db_type === 'easysearch' || form.db_type === 'nebula'">
                   <div class="grid grid-cols-4 items-start gap-4">

@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import LightDropdown from "@/components/ui/LightDropdown.vue";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
+import { formatShortcut } from "@/lib/editor/shortcutRegistry";
 import PluginShortcutBar from "@/components/plugins/PluginShortcutBar.vue";
 import { useSettingsStore } from "@/stores/settingsStore";
 import ConnectionTree from "@/components/sidebar/ConnectionTree.vue";
@@ -220,12 +221,22 @@ function openTableStructureForSelection(): boolean {
   return connectionTreeRef.value?.openTableStructureForSelection?.() ?? false;
 }
 
-defineExpose({ focusSearch, locateTabInSidebar, disconnectAllActiveConnections, openTableStructureForSelection });
+const refreshShortcutLabel = computed(() => formatShortcut(settingsStore.editorSettings.shortcuts.refreshData));
+
+function refreshSidebar(): boolean {
+  return connectionTreeRef.value?.refreshSidebar?.() ?? false;
+}
+
+async function focusSelectedNode() {
+  await connectionTreeRef.value?.focusSelectedNode?.();
+}
+
+defineExpose({ focusSearch, locateTabInSidebar, disconnectAllActiveConnections, focusSelectedNode, openTableStructureForSelection, refreshSidebar, refreshTree });
 </script>
 
 <template>
-  <div data-app-sidebar class="app-sidebar-panel h-full shrink-0 relative select-none" :class="classicLayout ? '' : 'rounded-md border border-border/80 bg-background'" :style="{ width: sidebarWidth + 'px' }" @keydown="onSidebarKeydown">
-    <div class="h-full flex flex-col overflow-hidden">
+  <div data-app-sidebar class="app-sidebar-panel h-full shrink-0 relative select-none" :class="classicLayout ? '' : 'dbx-panel bg-background'" :style="{ width: sidebarWidth + 'px' }" @keydown="onSidebarKeydown">
+    <div class="h-full flex flex-col overflow-hidden rounded-[inherit]">
       <div class="app-sidebar-toolbar flex items-center gap-px px-3 text-xs font-medium text-muted-foreground border-b bg-muted/20" :class="classicLayout ? 'h-9' : 'h-10'">
         <span v-if="showConnectionMultiSelectToolbar" class="flex min-w-0 self-stretch items-center" data-tauri-drag-region>
           <span class="truncate" data-tauri-drag-region>{{ t("sidebar.connections") }}</span>
@@ -307,7 +318,7 @@ defineExpose({ focusSearch, locateTabInSidebar, disconnectAllActiveConnections, 
               </Button>
             </LightTooltip>
             <LightTooltip :text="t('contextMenu.refreshChildren')" side="bottom" :delay="0" :close-delay="0" nowrap>
-              <Button variant="ghost" size="icon" class="h-5 w-5" @click="refreshTree">
+              <Button variant="ghost" size="icon" class="h-5 w-5" :aria-keyshortcuts="refreshShortcutLabel || undefined" @click="refreshTree">
                 <RefreshCw class="h-3 w-3" />
               </Button>
             </LightTooltip>

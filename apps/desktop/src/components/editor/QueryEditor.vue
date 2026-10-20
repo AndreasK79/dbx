@@ -68,6 +68,7 @@ import { clipboardLineEndings, copyToClipboard, readTextFromClipboard } from "@/
 import { resolveExecutableSql, type SqlExecutionOverride } from "@/lib/sql/sqlExecutionTarget";
 import { supportsExecutionTargetPicker, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
 import { executableStatementRangeAtCursor, executableStatementRangeCacheForDoc, executableStatementRangeStartingAt as executableStatementRangeStartingAtLine, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
+import { statementNavigationTarget, type StatementNavigationDirection } from "@/lib/sql/statementNavigation";
 
 import { looksLikeDmlStatement } from "@/lib/sql/dmlChangePreview";
 
@@ -138,8 +139,9 @@ import { selectLineEnds } from "@/lib/editor/selectLineEnds";
 import { scrollEditorLine } from "@/lib/editor/scrollEditorLine";
 import { createQueryEditorStringMouseSelection } from "@/lib/editor/queryEditorStringMouseSelection";
 import { createQueryEditorCompletionShortcutBindings } from "@/lib/editor/queryEditorCompletionShortcut";
+import { handleQueryEditorCompletionNavigation } from "@/lib/editor/queryEditorCompletionNavigation";
 import { createQueryEditorSelectionCaseShortcutBindings } from "@/lib/editor/queryEditorSelectionCaseShortcut";
-import { createQueryEditorExecutionShortcutBindings, createQueryEditorPostCompositionKeyGuard } from "@/lib/editor/queryEditorExecutionShortcut";
+import { createQueryEditorExecutionShortcutBindings, createQueryEditorExecutionShortcutHandler, createQueryEditorPostCompositionKeyGuard } from "@/lib/editor/queryEditorExecutionShortcut";
 import { supportsQueryEditorBlockComments, supportsSqlInListPaste } from "@/lib/database/databaseFeatureSupport";
 import { queryContextObjectRoute, queryTableCandidateAtSqlPosition, resolveQueryContextCandidateDatabase, resolveQueryContextObjectTarget, type QueryContextObjectAction } from "@/lib/sql/queryCursorTableTarget";
 import * as api from "@/lib/backend/api";
@@ -1234,6 +1236,24 @@ function selectCurrentStatementFromContextMenu(): void {
   selectCurrentStatementFromView(currentView);
 }
 
+/**
+ * Move the caret between executable statements without changing the document.
+ * Reuses the same statement ranges as 「执行当前语句」/「选中当前语句」 so the
+ * navigation boundaries always match what execution would run.
+ */
+function navigateStatementFromView(currentView: EditorViewType, direction: StatementNavigationDirection): boolean {
+  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, props.databaseType, sqlStatementParameterOptions());
+  const target = statementNavigationTarget(executableStatementRangeCache.ranges, currentView.state.selection.main.head, direction);
+  if (target === null) return false;
+  currentView.dispatch({
+    selection: { anchor: target },
+    scrollIntoView: true,
+    userEvent: "select.keyboard",
+  });
+  currentView.focus();
+  return true;
+}
+
 const contextMenuActions: QueryEditorContextMenuActions = {
   executeFromContextMenu,
   executeInNewResultTabFromContextMenu,
@@ -1323,8 +1343,16 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         shortcuts.executeSql,
         () => requestExecute({ bypassPicker: true }),
         (currentView) => shouldBlockExecutionShortcut(undefined, currentView),
+        () => !props.isExecuting,
       );
-  const executeInNewResultTabBindings = props.hideExecutionControls ? [] : createQueryEditorExecutionShortcutBindings(shortcuts.executeSqlInNewResultTab, requestExecuteInNewResultTab, (currentView) => shouldBlockExecutionShortcut(undefined, currentView));
+  const executeInNewResultTabBindings = props.hideExecutionControls
+    ? []
+    : createQueryEditorExecutionShortcutBindings(
+        shortcuts.executeSqlInNewResultTab,
+        requestExecuteInNewResultTab,
+        (currentView) => shouldBlockExecutionShortcut(undefined, currentView),
+        () => !props.isExecuting,
+      );
   const explainBindings = props.enableExplainShortcut
     ? createQueryEditorExecutionShortcutBindings(
         shortcuts.explainSql,
@@ -1341,6 +1369,11 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
     shortcut: shortcuts.replace,
     openReplace,
     isReadOnly: () => !!props.readOnly,
+  });
+  const executionShortcutHandler = createQueryEditorExecutionShortcutHandler({
+    getShortcuts: () => shortcuts,
+    isExecuting: () => !!props.isExecuting,
+    enableExplainShortcut: () => !!props.enableExplainShortcut,
   });
   const sqlShortcutActions = enabledSqlShortcutActions(settingsStore.editorSettings.sqlShortcuts);
   const sqlShortcutKeymapBindings = uniqueSqlShortcutBindings(sqlShortcutActions).filter((shortcut) => !isCharacterProducingShortcut(shortcut));
@@ -1366,6 +1399,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
     () => props.databaseType,
   );
   const combinedDomKeydownHandler = (event: KeyboardEvent, view: EditorViewType) => {
+    if (executionShortcutHandler(event)) return true;
     if (replaceShortcutHandler(event)) return true;
     return sqlShortcutDomHandler(event, view);
   };
@@ -1436,6 +1470,9 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
           return true;
         }),
         ...binding(shortcuts.selectCurrentStatement, selectCurrentStatementFromView),
+        ...binding(shortcuts.previousStatement, (currentView) => navigateStatementFromView(currentView, "previous")),
+        ...binding(shortcuts.nextStatement, (currentView) => navigateStatementFromView(currentView, "next")),
+        ...binding(shortcuts.statementStart, (currentView) => navigateStatementFromView(currentView, "start")),
         ...binding(shortcuts.extendSelection, extendQueryEditorSelectionForView),
         ...binding(shortcuts.addNextSelectionOccurrence, addNextQueryEditorSelectionOccurrence),
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
@@ -2173,6 +2210,11 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
           EditorView.domEventHandlers({
             keydown(event, currentView) {
               const shortcuts = normalizeShortcutSettings(settingsStore.editorSettings.shortcuts);
+              // The configured Quick Open shortcut (Ctrl-P on Windows/Linux)
+              // must keep working even while a completion list is open; yield
+              // before completion navigation can consume and preventDefault it.
+              if (matchesShortcut(event, shortcuts.quickOpen)) return false;
+              if (handleQueryEditorCompletionNavigation(currentView, event, initializedRuntime.codeMirrorMoveCompletionSelection)) return true;
               if (matchesShortcut(event, shortcuts.selectLineEnds)) {
                 event.preventDefault();
                 return selectLineEnds(currentView);
@@ -2912,6 +2954,8 @@ function unfoldAll(): boolean {
 }
 
 function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: EditorViewType | null = view.value): boolean {
+  if (props.isExecuting) return true;
+  if (event?.repeat) return true;
   return (currentView ? isEditorComposing(currentView) : false) || (event ? postCompositionKeyGuard.blocks(event) : false);
 }
 

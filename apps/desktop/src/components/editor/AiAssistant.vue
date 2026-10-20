@@ -4688,6 +4688,7 @@ async function send() {
           sqlFiles,
           csvFiles: csvAttachments,
           selections: selectionContexts,
+          includeQueryResult: settings.includeQueryResult,
         },
       );
       context.selectedDatabases = runDatabases;
