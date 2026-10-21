@@ -2004,6 +2004,22 @@ impl Storage {
         .await
     }
 
+    /// `try_lock_exclusive` reports contention on Windows as `ERROR_LOCK_VIOLATION`
+    /// (raw OS error 33); some toolchains classify it `Uncategorized` instead of
+    /// `WouldBlock`, so accept both signals before treating the lock as broken.
+    fn is_migration_lock_contention(error: &std::io::Error) -> bool {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            if error.raw_os_error() == Some(33) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn migration_is_active(&self) -> Result<bool, String> {
         let file =
             match std::fs::OpenOptions::new().read(true).write(true).open(self.data_dir().join(MIGRATION_LOCK_FILE)) {
@@ -2013,7 +2029,7 @@ impl Storage {
             };
         match fs2::FileExt::try_lock_exclusive(&file) {
             Ok(()) => Ok(false), // Closing the handle releases the probe lock.
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(true),
+            Err(error) if Self::is_migration_lock_contention(&error) => Ok(true),
             Err(_) => Err("MIGRATION_LOCK_UNAVAILABLE".to_string()),
         }
     }
@@ -2030,7 +2046,7 @@ impl Storage {
             .open(self.data_dir().join(MIGRATION_LOCK_FILE))
             .map_err(|_| "MIGRATION_LOCK_UNAVAILABLE".to_string())?;
         fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if Self::is_migration_lock_contention(&error) {
                 "MIGRATION_IN_PROGRESS".to_string()
             } else {
                 "MIGRATION_LOCK_UNAVAILABLE".to_string()
@@ -10248,6 +10264,17 @@ mod tests {
         assert!(!legacy_path.exists());
         assert!(directory.path().join("connections.json.bak").exists());
         assert!(reopened.inspect_data_migration().await.unwrap().is_ready());
+    }
+
+    #[test]
+    fn migration_lock_contention_matches_windows_lock_violation() {
+        assert!(super::Storage::is_migration_lock_contention(&std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "probe"
+        )));
+        #[cfg(windows)]
+        assert!(super::Storage::is_migration_lock_contention(&std::io::Error::from_raw_os_error(33)));
+        assert!(!super::Storage::is_migration_lock_contention(&std::io::Error::from_raw_os_error(5)));
     }
 
     #[tokio::test]
