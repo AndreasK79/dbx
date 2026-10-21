@@ -11811,7 +11811,7 @@ mod tests {
             let budget = crate::execution::DbOperationBudget::with_defaults();
             let query = with_query_messages(
                 Some(callback),
-                execute_query_with_max_rows_and_cancel(&pool, &sql, None, Some(token), budget, None, false),
+                execute_query_with_max_rows_and_cancel(&pool, &sql, None, Some(token), budget, None, false, None),
             );
             let mut query = std::pin::pin!(query);
             if outcome != "cancel" {
