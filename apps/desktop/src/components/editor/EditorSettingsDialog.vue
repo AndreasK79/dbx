@@ -275,7 +275,7 @@ import { currentExecutableStatementRange, type SqlTextRange } from "@/lib/sql/sq
 import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
 import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES, tableColumnTemplateRowsToSettings } from "@/lib/table/tableColumnTemplates";
 import {
-  DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES,
+  isModeDependentSubstitutionDatabase,
   normalizeSqlVariableSyntaxOverrides,
   resolveSqlVariableSyntaxToggles,
   SQL_VARIABLE_SYNTAX_DATABASE_TYPES,
@@ -283,6 +283,7 @@ import {
   SQL_VARIABLE_SYNTAX_TOKENS,
   type SqlVariableSyntaxOverrides,
   type SqlVariableSyntaxToggles,
+  updateSqlVariableSyntaxToggle,
 } from "@/lib/sql/sqlVariableSyntax";
 import {
   buildMcpCherryStudioConfig,
@@ -364,6 +365,7 @@ import {
 import { applyEditorSettingsDraftToRefs, type EditorSettingsDraftRefMap } from "@/lib/settings/applyEditorSettingsDraft";
 import { serializeSettingsTransfer, sortTransferCategories, transferCategoryForKey, type SettingsTransferCategoryId } from "@/lib/settings/settingsTransfer";
 import { useConnectionStore } from "@/stores/connectionStore";
+import { useQueryStore } from "@/stores/queryStore";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { usePromptTemplateStore } from "@/stores/promptTemplateStore";
@@ -437,6 +439,7 @@ const { draft: editHistoryRetentionLimit, loaded: historyRetentionLoaded, loadin
 const { draft: editMcpHistoryRetentionLimit, loaded: mcpHistoryRetentionLoaded, loading: mcpHistoryRetentionLoading, saving: mcpHistoryRetentionSaving, loadError: mcpHistoryRetentionLoadError } = mcpHistoryRetention;
 const mcpHistoryCleanupLoading = ref(false);
 const connectionStore = useConnectionStore();
+const queryStore = useQueryStore();
 const hasSqlServerConnection = computed(() => connectionStore.connections.some((connection) => effectiveDatabaseTypeForConnection(connection) === "sqlserver"));
 const savedSqlStore = useSavedSqlStore();
 const promptTemplateStore = usePromptTemplateStore();
@@ -654,7 +657,7 @@ function closeSettings() {
   requestCloseSettings(false);
 }
 
-defineExpose({ requestClose: closeSettings });
+defineExpose({ requestClose: closeSettings, applySettingsFromShortcut });
 
 function cancelUnsavedSettingsClose() {
   showUnsavedSettingsCloseConfirm.value = false;
@@ -770,6 +773,7 @@ const tableCompletionSchemaQualificationDescription = computed(() => {
 const editInsertSpaceAfterCompletion = ref(settingsStore.editorSettings.insertSpaceAfterCompletion);
 const editSqlServerSpaceConfirmsCompletion = ref(settingsStore.editorSettings.sqlServerSpaceConfirmsCompletion);
 const editFunctionCompletionIncludeParams = ref(settingsStore.editorSettings.functionCompletionIncludeParams);
+const editSequenceCompletionEnabled = ref(settingsStore.editorSettings.sequenceCompletionEnabled);
 const showSqlServerSpaceConfirmsCompletion = computed(() => hasSqlServerConnection.value || settingsStore.editorSettings.sqlServerSpaceConfirmsCompletion || editSqlServerSpaceConfirmsCompletion.value);
 const editSortCompletionColumnsAlphabetically = ref(settingsStore.editorSettings.sortCompletionColumnsAlphabetically);
 const editSelectFirstCompletionOnOpen = ref(settingsStore.editorSettings.selectFirstCompletionOnOpen);
@@ -907,32 +911,56 @@ function updateExternalSqlEditorMaxMbInput(event: Event) {
   editExternalSqlEditorMaxMb.value = normalized;
 }
 
+const currentSqlVariableSyntaxCompatibilityMode = computed<string | undefined>(() => {
+  const dbType = editSqlVariableSyntaxDatabaseType.value;
+  if (!isModeDependentSubstitutionDatabase(dbType)) return undefined;
+
+  const activeTab = queryStore.tabs.find((tab) => tab.id === queryStore.activeTabId);
+  if (activeTab?.connectionId) {
+    const activeConn = connectionStore.getConfig(activeTab.connectionId);
+    const connDbType = activeConn ? (effectiveDatabaseTypeForConnection(activeConn) ?? activeConn.db_type) : undefined;
+    if (connDbType === dbType) {
+      if (dbType === "opengauss" || dbType === "gaussdb") {
+        return connectionStore.databaseCompatibilityMode(activeTab.connectionId, activeTab.database || activeConn?.database);
+      }
+      if (dbType === "kingbase") {
+        return activeConn?.database_info?.compatibilityMode;
+      }
+    }
+  }
+
+  if (connectionStore.activeConnectionId) {
+    const activeConn = connectionStore.getConfig(connectionStore.activeConnectionId);
+    const connDbType = activeConn ? (effectiveDatabaseTypeForConnection(activeConn) ?? activeConn.db_type) : undefined;
+    if (activeConn && connDbType === dbType) {
+      if (dbType === "opengauss" || dbType === "gaussdb") {
+        return connectionStore.databaseCompatibilityMode(activeConn.id, activeConn.database);
+      }
+      if (dbType === "kingbase") {
+        return activeConn.database_info?.compatibilityMode;
+      }
+    }
+  }
+
+  const conn = connectionStore.connections.find((c) => (effectiveDatabaseTypeForConnection(c) ?? c.db_type) === dbType);
+  if (conn) {
+    if (dbType === "opengauss" || dbType === "gaussdb") {
+      return connectionStore.databaseCompatibilityMode(conn.id, conn.database);
+    }
+    if (dbType === "kingbase") {
+      return conn.database_info?.compatibilityMode;
+    }
+  }
+
+  return undefined;
+});
+
 function sqlVariableSyntaxToggle(key: keyof SqlVariableSyntaxToggles): boolean {
-  return resolveSqlVariableSyntaxToggles(editSqlVariableSyntaxOverrides.value, editSqlVariableSyntaxDatabaseType.value)[key];
+  return resolveSqlVariableSyntaxToggles(editSqlVariableSyntaxOverrides.value, editSqlVariableSyntaxDatabaseType.value, true, currentSqlVariableSyntaxCompatibilityMode.value)[key];
 }
 
 function setSqlVariableSyntaxToggle(key: keyof SqlVariableSyntaxToggles, value: boolean) {
-  const dbType = editSqlVariableSyntaxDatabaseType.value;
-  if ((dbType === "neo4j" || dbType === "nebula") && key === "named") return;
-  const merged: SqlVariableSyntaxToggles = {
-    ...DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES,
-    ...editSqlVariableSyntaxOverrides.value[dbType],
-    [key]: value,
-  };
-  const next: SqlVariableSyntaxOverrides = {
-    ...editSqlVariableSyntaxOverrides.value,
-  };
-  // Keep storage sparse: an all-enabled type has no entry; otherwise persist only the disabled syntaxes.
-  if (SQL_VARIABLE_SYNTAX_KEYS.every((toggleKey) => merged[toggleKey])) {
-    delete next[dbType];
-  } else {
-    const partial: Partial<SqlVariableSyntaxToggles> = {};
-    for (const toggleKey of SQL_VARIABLE_SYNTAX_KEYS) {
-      if (!merged[toggleKey]) partial[toggleKey] = false;
-    }
-    next[dbType] = partial;
-  }
-  editSqlVariableSyntaxOverrides.value = next;
+  editSqlVariableSyntaxOverrides.value = updateSqlVariableSyntaxToggle(editSqlVariableSyntaxOverrides.value, editSqlVariableSyntaxDatabaseType.value, key, value, currentSqlVariableSyntaxCompatibilityMode.value);
 }
 const tableColumnTemplateSectionRef = ref<HTMLElement | null>(null);
 const draggedTableColumnTemplateRowId = ref<string | null>(null);
@@ -996,6 +1024,7 @@ const editRedisDatabaseDisplayLimit = ref(settingsStore.editorSettings.redisData
 const editSidebarObjectInfoMode = ref<SidebarObjectInfoMode>(settingsStore.editorSettings.sidebarObjectInfoMode);
 const editSidebarAllowHorizontalScroll = ref(settingsStore.editorSettings.sidebarAllowHorizontalScroll);
 const editSidebarShowTooltips = ref(settingsStore.editorSettings.sidebarShowTooltips);
+const editSidebarShowUserAdmin = ref(settingsStore.editorSettings.sidebarShowUserAdmin);
 const editSidebarIndent = ref(settingsStore.editorSettings.sidebarIndent);
 const editSidebarFontSize = ref(settingsStore.editorSettings.sidebarFontSize);
 const editSidebarDensity = ref<SidebarDensity>(settingsStore.editorSettings.sidebarDensity);
@@ -1245,6 +1274,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     insertSpaceAfterCompletion: editInsertSpaceAfterCompletion.value,
     sqlServerSpaceConfirmsCompletion: editSqlServerSpaceConfirmsCompletion.value,
     functionCompletionIncludeParams: editFunctionCompletionIncludeParams.value,
+    sequenceCompletionEnabled: editSequenceCompletionEnabled.value,
     sortCompletionColumnsAlphabetically: editSortCompletionColumnsAlphabetically.value,
     selectFirstCompletionOnOpen: editSelectFirstCompletionOnOpen.value,
     completionTriggerMode: editCompletionTriggerMode.value,
@@ -1355,6 +1385,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     sidebarObjectInfoMode: editSidebarObjectInfoMode.value,
     sidebarAllowHorizontalScroll: editSidebarAllowHorizontalScroll.value,
     sidebarShowTooltips: editSidebarShowTooltips.value,
+    sidebarShowUserAdmin: editSidebarShowUserAdmin.value,
     sidebarIndent: editSidebarIndent.value,
     sidebarFontSize: editSidebarFontSize.value,
     sidebarDensity: editSidebarDensity.value,
@@ -2080,6 +2111,7 @@ function syncEditorSettingsDraftFromStore() {
   editInsertSpaceAfterCompletion.value = settingsStore.editorSettings.insertSpaceAfterCompletion;
   editSqlServerSpaceConfirmsCompletion.value = settingsStore.editorSettings.sqlServerSpaceConfirmsCompletion;
   editFunctionCompletionIncludeParams.value = settingsStore.editorSettings.functionCompletionIncludeParams;
+  editSequenceCompletionEnabled.value = settingsStore.editorSettings.sequenceCompletionEnabled;
   editSortCompletionColumnsAlphabetically.value = settingsStore.editorSettings.sortCompletionColumnsAlphabetically;
   editSelectFirstCompletionOnOpen.value = settingsStore.editorSettings.selectFirstCompletionOnOpen;
   editCompletionTriggerMode.value = settingsStore.editorSettings.completionTriggerMode;
@@ -2196,6 +2228,7 @@ function syncEditorSettingsDraftFromStore() {
   editSidebarObjectInfoMode.value = settingsStore.editorSettings.sidebarObjectInfoMode;
   editSidebarAllowHorizontalScroll.value = settingsStore.editorSettings.sidebarAllowHorizontalScroll;
   editSidebarShowTooltips.value = settingsStore.editorSettings.sidebarShowTooltips;
+  editSidebarShowUserAdmin.value = settingsStore.editorSettings.sidebarShowUserAdmin;
   editSidebarIndent.value = settingsStore.editorSettings.sidebarIndent;
   editSidebarFontSize.value = settingsStore.editorSettings.sidebarFontSize;
   editSidebarDensity.value = settingsStore.editorSettings.sidebarDensity;
@@ -2257,6 +2290,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   insertSpaceAfterCompletion: editInsertSpaceAfterCompletion,
   sqlServerSpaceConfirmsCompletion: editSqlServerSpaceConfirmsCompletion,
   functionCompletionIncludeParams: editFunctionCompletionIncludeParams,
+  sequenceCompletionEnabled: editSequenceCompletionEnabled,
   sortCompletionColumnsAlphabetically: editSortCompletionColumnsAlphabetically,
   selectFirstCompletionOnOpen: editSelectFirstCompletionOnOpen,
   wordWrap: editWordWrap,
@@ -2362,6 +2396,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   sidebarObjectInfoMode: editSidebarObjectInfoMode,
   sidebarAllowHorizontalScroll: editSidebarAllowHorizontalScroll,
   sidebarShowTooltips: editSidebarShowTooltips,
+  sidebarShowUserAdmin: editSidebarShowUserAdmin,
   sidebarIndent: editSidebarIndent,
   sidebarFontSize: editSidebarFontSize,
   sidebarDensity: editSidebarDensity,
@@ -2805,6 +2840,15 @@ async function applySettingsAndClose() {
   }
 }
 
+// Ctrl+S on the settings page behaves like the "Apply" button: persist the draft
+// but stay open (the shortcut means "save", not "save and quit"). Mirrors the
+// button's own disabled state so a key press cannot bypass an apply blocker, and
+// never fires when there is nothing to persist.
+async function applySettingsFromShortcut() {
+  if (!hasChanges()) return;
+  await applySettings();
+}
+
 async function restartDbxForDuckDbIsolation() {
   if (duckDbRestarting.value || hasApplyBlocker.value || isWeb) return;
   duckDbRestarting.value = true;
@@ -2843,6 +2887,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editInsertSpaceAfterCompletion.value = DEFAULT_EDITOR_SETTINGS.insertSpaceAfterCompletion;
     editSqlServerSpaceConfirmsCompletion.value = DEFAULT_EDITOR_SETTINGS.sqlServerSpaceConfirmsCompletion;
     editFunctionCompletionIncludeParams.value = DEFAULT_EDITOR_SETTINGS.functionCompletionIncludeParams;
+    editSequenceCompletionEnabled.value = DEFAULT_EDITOR_SETTINGS.sequenceCompletionEnabled;
     editSortCompletionColumnsAlphabetically.value = DEFAULT_EDITOR_SETTINGS.sortCompletionColumnsAlphabetically;
     editSelectFirstCompletionOnOpen.value = DEFAULT_EDITOR_SETTINGS.selectFirstCompletionOnOpen;
     editCompletionTriggerMode.value = DEFAULT_EDITOR_SETTINGS.completionTriggerMode;
@@ -2923,6 +2968,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editSidebarObjectInfoMode.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectInfoMode;
     editSidebarAllowHorizontalScroll.value = DEFAULT_EDITOR_SETTINGS.sidebarAllowHorizontalScroll;
     editSidebarShowTooltips.value = DEFAULT_EDITOR_SETTINGS.sidebarShowTooltips;
+    editSidebarShowUserAdmin.value = DEFAULT_EDITOR_SETTINGS.sidebarShowUserAdmin;
     editSidebarIndent.value = DEFAULT_EDITOR_SETTINGS.sidebarIndent;
     editSidebarFontSize.value = DEFAULT_EDITOR_SETTINGS.sidebarFontSize;
     editSidebarDensity.value = DEFAULT_EDITOR_SETTINGS.sidebarDensity;
@@ -3040,6 +3086,7 @@ function resetAllDefaults() {
   editInsertSpaceAfterCompletion.value = DEFAULT_EDITOR_SETTINGS.insertSpaceAfterCompletion;
   editSqlServerSpaceConfirmsCompletion.value = DEFAULT_EDITOR_SETTINGS.sqlServerSpaceConfirmsCompletion;
   editFunctionCompletionIncludeParams.value = DEFAULT_EDITOR_SETTINGS.functionCompletionIncludeParams;
+  editSequenceCompletionEnabled.value = DEFAULT_EDITOR_SETTINGS.sequenceCompletionEnabled;
   editSortCompletionColumnsAlphabetically.value = DEFAULT_EDITOR_SETTINGS.sortCompletionColumnsAlphabetically;
   editSelectFirstCompletionOnOpen.value = DEFAULT_EDITOR_SETTINGS.selectFirstCompletionOnOpen;
   editWordWrap.value = DEFAULT_EDITOR_SETTINGS.wordWrap;
@@ -3147,6 +3194,7 @@ function resetAllDefaults() {
   editSidebarObjectInfoMode.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectInfoMode;
   editSidebarAllowHorizontalScroll.value = DEFAULT_EDITOR_SETTINGS.sidebarAllowHorizontalScroll;
   editSidebarShowTooltips.value = DEFAULT_EDITOR_SETTINGS.sidebarShowTooltips;
+  editSidebarShowUserAdmin.value = DEFAULT_EDITOR_SETTINGS.sidebarShowUserAdmin;
   editSidebarIndent.value = DEFAULT_EDITOR_SETTINGS.sidebarIndent;
   editSidebarFontSize.value = DEFAULT_EDITOR_SETTINGS.sidebarFontSize;
   editSidebarDensity.value = DEFAULT_EDITOR_SETTINGS.sidebarDensity;
@@ -8298,6 +8346,16 @@ onUnmounted(() => {
 
                 <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
+                    <Label for="editor-sequence-completion-enabled">{{ t("settings.sequenceCompletionEnabled") }}</Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t("settings.sequenceCompletionEnabledDescription") }}
+                    </p>
+                  </div>
+                  <Switch id="editor-sequence-completion-enabled" v-model="editSequenceCompletionEnabled" class="mt-0.5" />
+                </div>
+
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="space-y-1">
                     <Label for="editor-sort-completion-columns-alphabetically">{{ t("settings.sortCompletionColumnsAlphabetically") }}</Label>
                     <p class="text-xs text-muted-foreground">
                       {{ t("settings.sortCompletionColumnsAlphabeticallyDescription") }}
@@ -9679,6 +9737,17 @@ onUnmounted(() => {
                   </HelpTooltip>
                 </div>
                 <Switch id="sidebar-show-tooltips" v-model="editSidebarShowTooltips" />
+              </div>
+              <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div class="flex items-center gap-2">
+                  <Label for="sidebar-show-user-admin">
+                    {{ t("settings.sidebarShowUserAdmin") }}
+                  </Label>
+                  <HelpTooltip :label="t('settings.sidebarShowUserAdmin')">
+                    {{ t("settings.sidebarShowUserAdminDescription") }}
+                  </HelpTooltip>
+                </div>
+                <Switch id="sidebar-show-user-admin" v-model="editSidebarShowUserAdmin" />
               </div>
               <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                 <div class="space-y-1">

@@ -3,6 +3,7 @@ import { isModifierDoubleTapShortcut, matchesModifierDoubleTapShortcut } from "@
 
 export type ShortcutActionId =
   | "executeSql"
+  | "executeAllSql"
   | "executeSqlInNewResultTab"
   | "explainSql"
   | "formatSql"
@@ -216,6 +217,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutExecuteSql",
     scope: "editor",
     defaultShortcut: "Mod+Enter",
+  },
+  {
+    id: "executeAllSql",
+    labelKey: "settings.shortcutExecuteAllSql",
+    scope: "editor",
+    defaultShortcut: "Alt+X",
   },
   {
     id: "executeSqlInNewResultTab",

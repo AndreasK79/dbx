@@ -14,6 +14,7 @@ import {
   Columns3,
   Download,
   Eye,
+  FastForward,
   FileCode,
   FoldVertical,
   GitBranch,
@@ -61,6 +62,7 @@ export interface QueryEditorContextMenuState {
 
 export interface QueryEditorContextMenuActions {
   executeFromContextMenu: () => void;
+  executeAllFromContextMenu?: () => void;
   executeInNewResultTabFromContextMenu: () => void;
   explainFromContextMenu?: () => void;
   requestPreviewChanges: (sql?: string) => void;
@@ -174,6 +176,18 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
             icon: Play,
             shortcut: shortcuts.executeSql,
           },
+          ...(actions.executeAllFromContextMenu
+            ? [
+                {
+                  sidebarActionId: "toolbar.executeAllSql",
+                  label: t("toolbar.executeAllSql"),
+                  action: actions.executeAllFromContextMenu,
+                  disabled: !canExecuteContextSql,
+                  icon: FastForward,
+                  shortcut: shortcuts.executeAllSql,
+                },
+              ]
+            : []),
           {
             sidebarActionId: "settings.shortcutExecuteSqlInNewResultTab",
             label: t("settings.shortcutExecuteSqlInNewResultTab"),

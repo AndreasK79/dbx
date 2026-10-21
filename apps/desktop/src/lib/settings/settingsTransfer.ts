@@ -88,6 +88,7 @@ const SETTINGS_TRANSFER_CATEGORY_KEYS: Record<SettingsTransferCategoryId, readon
     "insertSpaceAfterCompletion",
     "sqlServerSpaceConfirmsCompletion",
     "functionCompletionIncludeParams",
+    "sequenceCompletionEnabled",
     "sortCompletionColumnsAlphabetically",
     "selectFirstCompletionOnOpen",
     "completionTriggerMode",
@@ -148,6 +149,7 @@ const SETTINGS_TRANSFER_CATEGORY_KEYS: Record<SettingsTransferCategoryId, readon
     "sidebarObjectInfoMode",
     "sidebarAllowHorizontalScroll",
     "sidebarShowTooltips",
+    "sidebarShowUserAdmin",
     "sidebarIndent",
     "sidebarFontSize",
     "sidebarDensity",
@@ -303,6 +305,7 @@ const PASS_THROUGH_BOOLEAN_KEYS = [
   "showExecutionTargetPicker",
   "autoAliasTables",
   "functionCompletionIncludeParams",
+  "sequenceCompletionEnabled",
   "confirmDangerousSqlExecution",
   "confirmUnsavedSqlClose",
   "showColumnCommentsInHeader",
@@ -325,6 +328,7 @@ const PASS_THROUGH_BOOLEAN_KEYS = [
   "sidebarPinDefaultDatabase",
   "sidebarAllowHorizontalScroll",
   "sidebarShowTooltips",
+  "sidebarShowUserAdmin",
   "updateNotificationsEnabled",
   "autoDownloadUpdates",
   "autoUpdateApp",
@@ -521,7 +525,7 @@ const NESTED_FIELD_VALIDATORS: Partial<Record<EditorSettingsDraftKey, (value: un
   snippets: (value) => isArrayOfShape(value, isSqlSnippetItem),
   modelGenerationTemplates: isModelGenerationTemplatesShape,
   sqlShortcuts: (value) => isArrayOfShape(value, isSqlShortcutActionItem),
-  sqlVariableSyntaxOverrides: (value) => isSqlVariableSyntaxOverridesShape(value, (toggle) => toggle === false),
+  sqlVariableSyntaxOverrides: (value) => isSqlVariableSyntaxOverridesShape(value, (toggle) => typeof toggle === "boolean"),
 };
 
 /**

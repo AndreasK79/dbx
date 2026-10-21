@@ -49,6 +49,7 @@ const syntaxLabels: Record<SqlParameterSyntax, string> = {
   shell: "${name}",
   mybatis: "#{name}",
   sqlserver: "@name",
+  substitution: "&name",
 };
 
 function syntaxLabel(parameter: SqlParameterDescriptor): string {
