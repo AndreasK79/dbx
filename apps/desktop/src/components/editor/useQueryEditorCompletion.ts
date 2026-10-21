@@ -336,6 +336,20 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     return false;
   }
 
+  // The label CodeMirror matches against is not always the raw item label: the
+  // presentation layer prepends filterText when the raw label does not start
+  // with it, so a qualified JOIN column ("o.customer_id", filterText
+  // "customer_id") renders and matches as "customer_id o.customer_id". Prefix
+  // checks must accept either surface, or typed prefixes that match the column
+  // name would drop every item whose qualifier starts with a different letter.
+  function itemLabelStartsWith(item: QueryCompletionItem | BatchColumnSelectionActionItem, normalizedPrefix: string): boolean {
+    const renderedLabel = "displayLabel" in item && typeof item.displayLabel === "string" ? item.displayLabel : item.label;
+    if (renderedLabel.toLowerCase().startsWith(normalizedPrefix)) return true;
+    const filterText = "filterText" in item && typeof item.filterText === "string" ? item.filterText.trim() : undefined;
+    if (!filterText) return false;
+    return completionLabelPresentation(renderedLabel, filterText).label.toLowerCase().startsWith(normalizedPrefix);
+  }
+
   // CodeMirror's built-in matcher only matches single-character queries against
   // the label start, and cannot match pinyin initials against Han labels. Our
   // provider already filters and ranks items itself (substring + pinyin), so
@@ -345,8 +359,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     if (/\p{Script=Han}/u.test(prefix)) return true;
     if (/^[a-z0-9]+$/i.test(prefix) && items.some(itemHasHanText)) return true;
     return items.some((item) => {
-      const renderedLabel = "displayLabel" in item && typeof item.displayLabel === "string" ? item.displayLabel : item.label;
-      if (renderedLabel.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+      if (itemLabelStartsWith(item, prefix.toLowerCase())) return false;
       if ("comment" in item && typeof item.comment === "string" && matchesIdentifierSearch(item.comment, prefix)) return true;
       if (typeof item.detail === "string" && matchesIdentifierSearch(item.detail, prefix)) return true;
       return false;
@@ -360,8 +373,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       // The confirmation row must remain available while typing a Han/pinyin
       // prefix, otherwise checked columns cannot be applied from that menu.
       if (isBatchColumnSelectionAction(item)) return true;
-      const renderedLabel = "displayLabel" in item && typeof item.displayLabel === "string" ? item.displayLabel : item.label;
-      if (renderedLabel.toLowerCase().startsWith(normalized)) return true;
+      if (itemLabelStartsWith(item, normalized)) return true;
       if (itemHasHanText(item)) return true;
       if ("comment" in item && typeof item.comment === "string" && matchesIdentifierSearch(item.comment, prefix)) return true;
       if (typeof item.detail === "string" && matchesIdentifierSearch(item.detail, prefix)) return true;
@@ -1384,6 +1396,9 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       void refreshCompletionColumnsForEditor(connectionId, target.database, insertTable.name, target.schema, target.catalog, insertTable)
         .then((columns) => {
           cachedColumnsByTable.set(completionCacheKey(insertTable, scope), columns);
+          // Columns may land after the menu already opened from local caches
+          // (snippets/keywords only); re-query so the column options appear.
+          if (columns.length > 0) refreshActiveSqlCompletion(fullDoc, position, completionContext);
         })
         .catch(() => {});
     }
@@ -1394,7 +1409,10 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       if (target) {
         void refreshCompletionColumnsForEditor(connectionId, target.database, qualifiedColumnTarget.name, target.schema, target.catalog)
           .then((columns) => {
-            if (columns.length > 0) cachedColumnsByTable.set(qualifiedColumnCacheKey, columns);
+            if (columns.length > 0) {
+              cachedColumnsByTable.set(qualifiedColumnCacheKey, columns);
+              refreshActiveSqlCompletion(fullDoc, position, completionContext);
+            }
           })
           .catch(() => {});
       }
@@ -1410,7 +1428,10 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
         if (!target) continue;
         void refreshCompletionColumnsForEditor(connectionId, target.database, refTable.name, target.schema, target.catalog, refTable)
           .then((columns) => {
-            if (columns.length > 0) cachedColumnsByTable.set(cacheKey, columns);
+            if (columns.length > 0) {
+              cachedColumnsByTable.set(cacheKey, columns);
+              refreshActiveSqlCompletion(fullDoc, position, completionContext);
+            }
           })
           .catch(() => {});
       }

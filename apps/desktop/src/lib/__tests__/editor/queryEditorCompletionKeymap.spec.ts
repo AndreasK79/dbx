@@ -5,6 +5,7 @@ import { acceptSelectedCompletionWithRetry, acceptSelectedOrFirstCompletion } fr
 import { createQueryEditorEscapeHandler } from "@/lib/editor/queryEditorEscape";
 import { DEFAULT_SHORTCUT_SETTINGS, normalizeShortcutSettings, shortcutToCodeMirrorKey } from "@/lib/editor/shortcutRegistry";
 import { excludedCompletionLabelSet, filterExcludedCompletions } from "@/lib/editor/excludedCompletions";
+import { completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
 
 const queryEditorSource = readFileSync(new URL("../../../components/editor/QueryEditor.vue", import.meta.url), "utf8");
 
@@ -297,13 +298,14 @@ describe("QueryEditor completion Tab keymap", () => {
   });
 
   it("keeps ASCII single-character filtering while allowing Han pinyin matches", () => {
-    const source = [extractFunction("isBatchColumnSelectionAction"), extractFunction("itemHasHanText"), extractFunction("completionItemsForBypassedFilter"), extractFunction("shouldBypassCompletionFilter"), extractFunction("buildCompletionResult")].join("\n");
+    const source = [extractFunction("isBatchColumnSelectionAction"), extractFunction("itemHasHanText"), extractFunction("itemLabelStartsWith"), extractFunction("completionItemsForBypassedFilter"), extractFunction("shouldBypassCompletionFilter"), extractFunction("buildCompletionResult")].join("\n");
     const javascript = ts.transpileModule(source, {
       compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const buildCompletionResult = new Function("completionOptionForItem", "completionMatchRanges", "filterExcludedCompletions", "excludedCompletionLabelSet", "settingsStore", `${javascript}\nreturn buildCompletionResult;`)(
+    const buildCompletionResult = new Function("completionOptionForItem", "completionMatchRanges", "completionLabelPresentation", "filterExcludedCompletions", "excludedCompletionLabelSet", "settingsStore", `${javascript}\nreturn buildCompletionResult;`)(
       (item: { label: string }) => item,
       () => [],
+      completionLabelPresentation,
       filterExcludedCompletions,
       excludedCompletionLabelSet,
       { editorSettings: { excludedCompletionItems: [] } },
@@ -316,10 +318,10 @@ describe("QueryEditor completion Tab keymap", () => {
   });
 
   it("bypasses CodeMirror filtering for Han substring matches", () => {
-    const javascript = ts.transpileModule([extractFunction("itemHasHanText"), extractFunction("shouldBypassCompletionFilter")].join("\n"), {
+    const javascript = ts.transpileModule([extractFunction("itemHasHanText"), extractFunction("itemLabelStartsWith"), extractFunction("shouldBypassCompletionFilter")].join("\n"), {
       compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const shouldBypassCompletionFilter = new Function(`${javascript}\nreturn shouldBypassCompletionFilter;`)() as (prefix: string, items: Array<{ label: string }>) => boolean;
+    const shouldBypassCompletionFilter = new Function("completionLabelPresentation", `${javascript}\nreturn shouldBypassCompletionFilter;`)(completionLabelPresentation) as (prefix: string, items: Array<{ label: string }>) => boolean;
 
     expect(shouldBypassCompletionFilter("金", [{ label: "总租金" }])).toBe(true);
     expect(shouldBypassCompletionFilter("m", [{ label: "amount" }, { label: "memo" }])).toBe(false);

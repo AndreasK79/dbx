@@ -50,6 +50,7 @@ function createHarness(overrides: Partial<QueryEditorProps> = {}, configureMetad
     listCompletionTables: vi.fn(async (): Promise<SqlCompletionTable[]> => []),
     listCompletionObjects: vi.fn(async (): Promise<SqlCompletionObject[]> => []),
     listCompletionColumns: vi.fn(async (): Promise<SqlCompletionColumn[]> => []),
+    listCompletionForeignKeys: vi.fn(async (): Promise<import("@/lib/sql/sqlCompletion").SqlCompletionForeignKey[]> => []),
     listCompletionSchemas: vi.fn(async (): Promise<string[]> => []),
     listCompletionDatabases: vi.fn(async (): Promise<string[]> => []),
     refreshCompletionTables: vi.fn(async () => []),
@@ -611,5 +612,76 @@ sf`,
     } finally {
       vi.useFakeTimers();
     }
+  }, 8000);
+});
+
+describe("SQL column completion after column metadata lands (JOIN/UPDATE)", () => {
+  const ORDER_COLUMNS: SqlCompletionColumn[] = [
+    { name: "id", table: "orders", dataType: "integer" },
+    { name: "customer_id", table: "orders", dataType: "integer" },
+    { name: "status", table: "orders", dataType: "varchar" },
+  ];
+  const CUSTOMER_COLUMNS: SqlCompletionColumn[] = [
+    { name: "id", table: "customers", dataType: "integer" },
+    { name: "name", table: "customers", dataType: "varchar" },
+    { name: "created_at", table: "customers", dataType: "timestamp" },
+  ];
+
+  function mockTableColumns(store: ReturnType<typeof createHarness>["store"]) {
+    store.listCompletionColumns.mockImplementation(async (_connectionId: string, _database: string, table: string) => (table === "orders" ? ORDER_COLUMNS : CUSTOMER_COLUMNS));
+    store.refreshCompletionColumns.mockImplementation(async (_connectionId: string, _database: string, table: string) => (table === "orders" ? ORDER_COLUMNS : CUSTOMER_COLUMNS));
+  }
+
+  // This suite switches to real timers so the debounce/defer delays actually elapse.
+  beforeEach(() => vi.useRealTimers());
+
+  it("keeps qualified JOIN columns when filtering by a single typed letter", async () => {
+    const harness = createHarness({ databaseType: "postgres", dialect: "postgres", modelValue: "SELECT * FROM orders o JOIN customers c ON " }, undefined, true);
+    mockTableColumns(harness.store);
+    // Seed the column cache so the typed call resolves against loaded metadata.
+    await harness.provide();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const end = harness.currentView.state.doc.length;
+    harness.currentView.dispatch({ changes: { from: end, insert: "c" }, selection: { anchor: end + 1 } });
+    const result = await harness.provide();
+    const labels = (result?.options ?? []).map((option) => option.label);
+    // The single-letter bypass filter must match the presented label
+    // ("customer_id o.customer_id"), not just the raw qualified one.
+    expect(labels).toContain("customer_id o.customer_id");
+    expect(labels).toContain("created_at c.created_at");
+    expect(labels.some((label) => label === "id o.id")).toBe(false);
+  }, 8000);
+
+  it("refreshes the open menu with UPDATE SET columns when background metadata lands", async () => {
+    // Seed the local table cache the way a live editor session always has it:
+    // with cached tables the auto-triggered call settles on the snippet-only
+    // local result while the referenced table's columns load in the background.
+    const harness = createHarness(
+      { databaseType: "postgres", dialect: "postgres", modelValue: "UPDATE orders SET s" },
+      (metadata) => {
+        metadata.cachedTables = [{ name: "orders" } as SqlCompletionTable];
+      },
+      true,
+    );
+    mockTableColumns(harness.store);
+    harness.settings.editorSettings.snippets = [{ id: "custom-s", label: "set", prefix: "s", body: "set ${1:column} = ${2:value};" }];
+    harness.runtime.codeMirrorCompletionStatus = () => "active";
+    const first = await harness.provide(false);
+    expect(first?.options.some((option) => option.type === "column")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The referenced-table column load must re-query the active completion so the
+    // menu no longer stays on the stale snippet-only list.
+    expect(harness.store.refreshCompletionColumns).toHaveBeenCalledWith("connection", "demo", "orders", undefined, expect.anything(), undefined);
+    expect(harness.startCompletion).toHaveBeenCalled();
+  }, 8000);
+
+  it("offers UPDATE SET target table columns once metadata is cached", async () => {
+    const harness = createHarness({ databaseType: "postgres", dialect: "postgres", modelValue: "UPDATE orders SET " }, undefined, true);
+    mockTableColumns(harness.store);
+    await harness.provide();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const result = await harness.provide();
+    const columnLabels = (result?.options ?? []).filter((option) => option.type === "column").map((option) => option.label);
+    expect(columnLabels).toEqual(expect.arrayContaining(["id", "customer_id", "status"]));
   }, 8000);
 });
