@@ -102,4 +102,47 @@ describe("quoteQueryEditorWordAtCursor", () => {
     // wrapping keeps the escaped identifier intact.
     expect(view.state.doc.toString()).toBe('select ""a"""b"');
   });
+
+  it("quotes the word at the cursor as a string literal", () => {
+    const view = createView("where name = active", EditorSelection.cursor(15));
+
+    expect(quoteQueryEditorWordAtCursor(view, "'")).toBe(true);
+
+    expect(view.state.doc.toString()).toBe("where name = 'active'");
+  });
+
+  it("quotes a selection as a string literal, doubling embedded apostrophes", () => {
+    const view = createView("where name = O'Brien", EditorSelection.single(13, 20));
+
+    expect(quoteQueryEditorWordAtCursor(view, "'")).toBe(true);
+
+    expect(view.state.doc.toString()).toBe("where name = 'O''Brien'");
+  });
+
+  it("unquotes a string literal when the cursor sits inside it", () => {
+    const view = createView("where name = 'active'", EditorSelection.cursor(16));
+
+    expect(quoteQueryEditorWordAtCursor(view, "'")).toBe(true);
+
+    expect(view.state.doc.toString()).toBe("where name = active");
+  });
+
+  it("unquotes a string literal given as a selection, un-doubling apostrophes", () => {
+    const view = createView("where name = 'O''Brien'", EditorSelection.single(13, 23));
+
+    expect(quoteQueryEditorWordAtCursor(view, "'")).toBe(true);
+
+    expect(view.state.doc.toString()).toBe("where name = O'Brien");
+  });
+
+  it("wraps only the word inside a string with an embedded apostrophe", () => {
+    const doc = "where name = 'O''Brien'";
+    const view = createView(doc, EditorSelection.cursor(20));
+
+    expect(quoteQueryEditorWordAtCursor(view, "'")).toBe(true);
+
+    // The quote left of Brien is doubled (an escaped apostrophe), not this
+    // word's opener — quoting the word leaves the literal's escaping intact.
+    expect(view.state.doc.toString()).toBe("where name = 'O'''Brien''");
+  });
 });

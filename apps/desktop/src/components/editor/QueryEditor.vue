@@ -1517,6 +1517,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.toggleCaseSelection, () => convertSelectedSqlCase("toggle")),
         ...createQueryEditorSelectionCaseShortcutBindings(shortcuts.convertNamingStyle, () => convertSelectedNamingStyle()),
         ...binding(shortcuts.quoteWordAtCursor, (currentView) => quoteQueryEditorWordAtCursor(currentView, (props.connectionId ? connectionStore.connectionIdentifierQuote?.(props.connectionId) : undefined) ?? '"')),
+        ...binding(shortcuts.quoteStringAtCursor, (currentView) => quoteQueryEditorWordAtCursor(currentView, "'")),
         ...binding(shortcuts.toggleLineComment, (view) => codeMirrorRuntime.codeMirrorToggleLineComment?.(view) ?? false),
         ...binding(shortcuts.toggleBlockComment, (view) => {
           if (!supportsQueryEditorBlockComments(props.databaseType)) return false;

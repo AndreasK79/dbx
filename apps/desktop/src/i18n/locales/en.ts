@@ -10704,6 +10704,7 @@ export default {
     shortcutConvertNamingStyle: "Toggle naming style",
     shortcutConvertSelectionToDelimited: "Convert selection to delimited list",
     shortcutQuoteWordAtCursor: "Quote/unquote word at cursor",
+    shortcutQuoteStringAtCursor: "Quote/unquote string at cursor",
     shortcutExPasteSqlInCondition: "ExPaste: paste as IN condition",
   },
   driverStore: {

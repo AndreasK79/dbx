@@ -12,8 +12,8 @@ export function identifierCloseQuote(quote: string): string {
  *
  * Toggling works from inside: the word under the caret plus its adjacent quote
  * pair counts as the quoted form, so a second press restores the bare word.
- * Quoting doubles embedded quote characters the way SQL identifiers require
- * (`my"word` → `"my""word"`, `my]word` → `[my]]word]`).
+ * Quoting doubles embedded quote characters the way SQL requires
+ * (`my"word` → `"my""word"`, `my]word` → `[my]]word]`, `O'Brien` → `'O''Brien'`).
  */
 export function quoteQueryEditorWordAtCursor(view: EditorView, quote: string | undefined): boolean {
   if (!quote) return false;

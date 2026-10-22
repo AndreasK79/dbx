@@ -42,6 +42,7 @@ export type ShortcutActionId =
   | "convertNamingStyle"
   | "convertSelectionToDelimited"
   | "quoteWordAtCursor"
+  | "quoteStringAtCursor"
   | "exPasteSqlInCondition"
   | "toggleFold"
   | "foldAll"
@@ -445,6 +446,14 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutQuoteWordAtCursor",
     scope: "editor",
     defaultShortcut: "Shift+Alt+Q",
+  },
+  {
+    // String-literal twin of quoteWordAtCursor on the apostrophe key itself:
+    // single quotes with SQL doubling for embedded apostrophes.
+    id: "quoteStringAtCursor",
+    labelKey: "settings.shortcutQuoteStringAtCursor",
+    scope: "editor",
+    defaultShortcut: "Shift+Alt+'",
   },
   {
     id: "exPasteSqlInCondition",
