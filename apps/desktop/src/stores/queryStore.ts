@@ -586,11 +586,28 @@ function annotateQueryResultSources(results: QueryResult[], sql: string, databas
  * actually carries a position — either typed (PostgreSQL) or parseable from the
  * message text (Oracle's Agent offset) — and the submission is a single statement
  * (a multi-statement thrown error's position cannot be attributed to one statement).
+ *
+ * A batch the backend aborts by throwing is the exception: manual transactions
+ * (and the non-streaming batch databases) report "Statement N failed" with no
+ * position at all. The message names the 1-based statement, so annotate that
+ * statement's source range and the editor underlines it like DBeaver does.
  */
 function annotateSingleStatementErrorResult(errorResult: QueryResult, sourceSql: string, databaseType: DatabaseType | undefined, sourceOffset: number | undefined, parameterOptions: SqlParameterOptions | undefined, executedSql: string | undefined): void {
+  const failedStatementIndex = batchFailedStatementIndex(sqlErrorMessageText(errorResult));
+  if (failedStatementIndex !== undefined) {
+    errorResult.statement_index = failedStatementIndex;
+    annotateQueryResultSources([errorResult], sourceSql, undefined, databaseType, sourceOffset, parameterOptions, executedSql);
+    return;
+  }
   if (!errorResult.error?.errorPosition && !sqlErrorHasMessagePosition(sqlErrorMessageText(errorResult))) return;
   if (splitSqlStatementRanges(sourceSql, databaseType, parameterOptions).length !== 1) return;
   annotateQueryResultSources([errorResult], sourceSql, undefined, databaseType, sourceOffset, parameterOptions, executedSql);
+}
+
+/** The 0-based statement index a thrown batch error names ("Statement 2 failed…"), if any. */
+function batchFailedStatementIndex(message: string): number | undefined {
+  const zeroBased = Number(/Statement (\d+) failed/.exec(message)?.[1]) - 1;
+  return Number.isFinite(zeroBased) && zeroBased >= 0 ? zeroBased : undefined;
 }
 
 const NON_STREAMING_BATCH_DATABASE_TYPES = new Set<DatabaseType>(["sqlserver", "turso", "cloudflare-d1"]);

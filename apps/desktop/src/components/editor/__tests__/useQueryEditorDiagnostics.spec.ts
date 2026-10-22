@@ -138,6 +138,28 @@ describe("QueryEditor diagnostic scheduling ownership", () => {
     expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([]);
   });
 
+  it("underlines the whole failing statement when an aborted batch error names it without a position", () => {
+    const statement = "select * from orderhead where ordernumber = 262425;";
+    const modelValue = `select * from orderline;\n${statement}`;
+    const sourceFrom = modelValue.indexOf(statement);
+    const message = "Statement 2 failed: ERROR: operator does not exist: character varying = integer. The manual transaction was rolled back.";
+    const result: QueryResult = {
+      columns: ["Error"],
+      rows: [[message]],
+      affected_rows: 0,
+      execution_time_ms: 0,
+      execution_error: true,
+      statement_index: 1,
+      sourceStatement: statement,
+      sourceFrom,
+      sourceTo: sourceFrom + statement.length,
+    };
+    const { diagnostics, currentView } = createHarness({ modelValue, executionError: message, executionErrorResult: result });
+    expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([{ from: sourceFrom, to: sourceFrom + statement.length, message }]);
+    currentView.dispatch({ changes: { from: sourceFrom + 9, to: sourceFrom + 13, insert: "item" } });
+    expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([]);
+  });
+
   it("retains legacy full-document textual diagnostics", () => {
     const { diagnostics, currentView } = createHarness({ executionError: "syntax error at line 1, column 8", executionErrorSql: "SELECT missing;" });
     expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([{ from: 7, to: 8, message: "syntax error at line 1, column 8" }]);

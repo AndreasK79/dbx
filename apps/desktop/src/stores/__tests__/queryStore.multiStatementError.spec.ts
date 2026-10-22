@@ -392,6 +392,27 @@ describe("queryStore multi-statement errors", () => {
     expect(tab.result?.executedStatement).toBe("SELECT * FROM no_such_table LIMIT 100");
   });
 
+  it("annotates the statement an aborted manual-transaction batch names so the editor can mark it", async () => {
+    mocks.getConnectionConfig.mockReturnValue({ id: "postgres-1", name: "PostgreSQL", db_type: "postgres", database: "app", query_timeout_secs: 30 });
+    mocks.executeMulti.mockRejectedValueOnce(new Error("Statement 2 failed: ERROR: operator does not exist: character varying = integer. The manual transaction was rolled back."));
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const statement = "select * from orderhead where ordernumber = 262425";
+    const sql = `select * from orderline;\n${statement};`;
+    const tabId = store.createTab("postgres-1", "app", "Query");
+
+    await store.executeTabSql(tabId, sql);
+
+    const result = store.tabs.find((item) => item.id === tabId)!.result!;
+    expect(result.execution_error).toBe(true);
+    expect(String(result.rows[0]?.[0])).toContain("Statement 2 failed");
+    expect(result.statement_index).toBe(1);
+    expect(result.sourceStatement).toBe(statement);
+    // Whole-document runs carry no absolute offsets (same as per-statement batch
+    // results); the editor resolves the range from the index + statement text.
+    expect(result.sourceFrom).toBeUndefined();
+  });
+
   it("updates live per-statement progress before the batch promise resolves", async () => {
     const pendingExecution = deferred<any[]>();
     let reportProgress!: (progress: any) => void;
