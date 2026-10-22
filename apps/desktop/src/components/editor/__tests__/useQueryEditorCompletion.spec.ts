@@ -601,17 +601,6 @@ describe("QueryEditor completion provider ownership", () => {
 
   it.each([
     [
-      "multi-table join with where clause",
-      `select SUM(heating_area)
-from hd_self_managed_vacant v
-  inner join hd_self_managed_vacant_task t on v.self_task_id = t.id
-where v.hi_status = 1
-  and v.\`year\` = '2026-2027'
-  and v.status = 3
-
-sf`,
-    ],
-    [
       "select query with limit",
       `select * from users limit 10
 
@@ -626,12 +615,39 @@ sf`,
   ])("suggests custom snippets immediately when preceding SQL lacks semicolon (%s) (issue #11886)", async (_name, doc) => {
     const { settings, provide, store } = createHarness({ databaseType: "mysql", modelValue: doc });
     settings.editorSettings.snippets = [{ id: "custom-sf", label: "select * from $table", prefix: "sf", body: "select * from ${1:table_name};" }];
-    // When typing (explicit: false), snippets should pop up immediately without waiting for async column fetching
+    // These shapes complete a new statement's first token (no referenced tables
+    // in scope), so the snippet pops synchronously and no column fetch is needed.
     const result = await provide(false);
     expect(result).not.toBeNull();
     expect(result?.options.some((opt) => opt.type === "snippet" && (opt.displayLabel === "select * from $table" || opt.label.includes("select * from $table")))).toBe(true);
     expect(store.listCompletionColumns).not.toHaveBeenCalled();
   });
+
+  it("keeps snippet suggestions in a where-clause filter while fetching its columns (issue #11886)", async () => {
+    // Mid-clause prefix with referenced tables: the snippet no longer settles
+    // the query synchronously — the debounced async flow runs and must still
+    // include the snippet, now alongside the referenced tables' columns.
+    // Real timers so the debounce actually fires.
+    vi.useRealTimers();
+    try {
+      const doc = `select SUM(heating_area)
+from hd_self_managed_vacant v
+  inner join hd_self_managed_vacant_task t on v.self_task_id = t.id
+where v.hi_status = 1
+  and v.\`year\` = '2026-2027'
+  and v.status = 3
+
+sf`;
+      const { settings, provide, store } = createHarness({ databaseType: "mysql", modelValue: doc });
+      settings.editorSettings.snippets = [{ id: "custom-sf", label: "select * from $table", prefix: "sf", body: "select * from ${1:table_name};" }];
+      const result = await provide(false);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(result?.options.some((opt) => opt.type === "snippet" && (opt.displayLabel === "select * from $table" || opt.label.includes("select * from $table")))).toBe(true);
+      expect(store.listCompletionColumns).toHaveBeenCalled();
+    } finally {
+      vi.useFakeTimers();
+    }
+  }, 8000);
 
   it("does not let a local snippet hit suppress the async column fetch on on-demand-only metadata databases", async () => {
     // trino uses on-demand-only column metadata: the async fetch is never re-triggered
@@ -693,10 +709,12 @@ describe("SQL column completion after column metadata lands (JOIN/UPDATE)", () =
     expect(labels.some((label) => label === "id o.id")).toBe(false);
   }, 8000);
 
-  it("refreshes the open menu with UPDATE SET columns when background metadata lands", async () => {
-    // Seed the local table cache the way a live editor session always has it:
-    // with cached tables the auto-triggered call settles on the snippet-only
-    // local result while the referenced table's columns load in the background.
+  it("fetches UPDATE SET columns in the same result as a matching snippet", async () => {
+    // Seed the local table cache the way a live editor session always has it.
+    // Mod 49 (fork): the snippet-matching typed call no longer returns the
+    // column-less local result synchronously — it waits out the debounce and
+    // delivers the UPDATE SET columns together with the snippet, so the menu
+    // never settles on a snippet-only list while columns are missing.
     const harness = createHarness(
       { databaseType: "postgres", dialect: "postgres", modelValue: "UPDATE orders SET s" },
       (metadata) => {
@@ -708,12 +726,34 @@ describe("SQL column completion after column metadata lands (JOIN/UPDATE)", () =
     harness.settings.editorSettings.snippets = [{ id: "custom-s", label: "set", prefix: "s", body: "set ${1:column} = ${2:value};" }];
     harness.runtime.codeMirrorCompletionStatus = () => "active";
     const first = await harness.provide(false);
-    expect(first?.options.some((option) => option.type === "column")).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    // The referenced-table column load must re-query the active completion so the
-    // menu no longer stays on the stale snippet-only list.
+    expect(first?.options.some((option) => option.type === "column")).toBe(true);
+    expect(first?.options.some((option) => option.type === "snippet")).toBe(true);
+    // The background metadata refresh still warms the editor cache.
     expect(harness.store.refreshCompletionColumns).toHaveBeenCalledWith("connection", "demo", "orders", undefined, expect.anything(), undefined);
-    expect(harness.startCompletion).toHaveBeenCalled();
+  }, 8000);
+
+  it("keeps WHERE-clause columns through a typed prefix when a snippet also matches", async () => {
+    // Cold caches (a superseded fetch discarded its columns): the typed call
+    // must fetch the referenced table's columns and keep them in the result,
+    // ranked above keywords/functions, instead of returning snippets only.
+    // Legacy context path; the semantic path has its own coverage above.
+    const harness = createHarness({ databaseType: "postgres", dialect: "postgres", modelValue: "select * from orders where c" });
+    mockTableColumns(harness.store);
+    harness.settings.editorSettings.snippets = [{ id: "custom-c", label: "count rows", prefix: "c", body: "count(*)" }];
+    const result = await harness.provide(false);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The columns arrive via whichever fetcher wins the race (async path or the
+    // metadata refresh warming the cache during the debounce window).
+    const ordersFetched = harness.store.listCompletionColumns.mock.calls.some((call) => call[2] === "orders") || harness.store.refreshCompletionColumns.mock.calls.some((call) => call[2] === "orders");
+    expect(ordersFetched).toBe(true);
+    const options = result?.options ?? [];
+    expect(options.some((option) => option.type === "column" && option.label === "customer_id")).toBe(true);
+    expect(options.some((option) => option.type === "snippet" && option.label === "count rows")).toBe(true);
+    // Columns rank above the noise that previously buried them.
+    const firstKeyword = options.findIndex((option) => option.type === "keyword");
+    const firstColumn = options.findIndex((option) => option.type === "column");
+    expect(firstColumn).toBeGreaterThanOrEqual(0);
+    if (firstKeyword >= 0) expect(firstColumn).toBeLessThan(firstKeyword);
   }, 8000);
 
   it("offers UPDATE SET target table columns once metadata is cached", async () => {

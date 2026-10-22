@@ -1034,7 +1034,15 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
         // column metadata (trino/presto): their fetch is never re-triggered from the
         // metadata cache, so short-circuiting here would suppress column suggestions
         // for as long as the typed prefix keeps matching the snippet prefix.
-        const hasLocalSnippetResult = !usesOnDemandOnlyCompletionColumns() && localResult.options.some((option) => option.type === "snippet");
+        // The same holds for any column-resolution context whose local result carries
+        // no column items (cold caches after a superseded fetch): returning the
+        // snippet-only result synchronously replaces the menu, and only a background
+        // metadata refresh could repair it — which never fires once the menu closed
+        // or the query stopped re-running. Let those fall through to the debounced
+        // async fetch so the columns join the snippets in the same result; the
+        // previous menu stays open for the debounce window.
+        const missingColumnData = shouldResolveColumnCompletion && !hasLocalColumnResult;
+        const hasLocalSnippetResult = !usesOnDemandOnlyCompletionColumns() && !missingColumnData && localResult.options.some((option) => option.type === "snippet");
         if ((!explicit || typedActivation) && (!shouldResolveColumnCompletion || hasLocalColumnResult || hasLocalSnippetResult)) return localResult;
       }
       if ((!explicit || typedActivation) && !shouldResolveAsyncCompletion) {
