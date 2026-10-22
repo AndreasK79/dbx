@@ -6335,11 +6335,13 @@ export function buildSnippetItemsForTest(prefix: string, snippets: SqlSnippet[],
 // prefix (the word being typed) never can, and CodeMirror's matcher scores the
 // whole option label — an interior space dumps the snippet into its heavily
 // penalized gap tiers, or drops it entirely for single-letter queries that do
-// not start the label. Match the whitespace-free spelling of the trigger and
-// label ("S item" ↔ "sitem") as well, and expose it as filterText so the
-// CodeMirror-facing label starts with a word the user can actually type.
+// not start the label. Match the separator-free spelling of the trigger and
+// label ("S item" ↔ "sitem", "IC-1001" ↔ "ic1001") as well, and expose it as
+// filterText so the CodeMirror-facing label starts with a word the user can
+// actually type — both a space and a hyphen end the editor word, so a trigger
+// containing either can never be typed literally mid-word.
 function snippetCompactText(value: string): string {
-  return value.replace(/\s+/g, "");
+  return value.replace(/[\s-]+/g, "");
 }
 
 function snippetCompactVariants(value: string): string[] {

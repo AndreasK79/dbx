@@ -414,6 +414,30 @@ describe("buildSnippetItems", () => {
     expect(items[0].filterText).toBe("scgb");
   });
 
+  // A hyphen ends the editor word exactly like a space, so a trigger such as
+  // "IC-1001" can never be typed literally — only its hyphen-free spelling.
+  it("matches a hyphen-containing trigger by its hyphen-free spelling", () => {
+    const items = buildSnippetItemsForTest("ic1001", [{ id: "ticket", label: "IC-1001", prefix: "IC-1001", body: "SELECT 1001;" }]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual(
+      expect.objectContaining({
+        label: "IC-1001",
+        filterText: "IC1001",
+        type: "snippet",
+        exactMatch: true,
+      }),
+    );
+  });
+
+  it("still surfaces a hyphen-containing trigger from its first letters", () => {
+    const items = buildSnippetItemsForTest("ic", [{ id: "ticket", label: "IC-1001", prefix: "IC-1001", body: "SELECT 1001;" }]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].label).toBe("IC-1001");
+    expect(items[0].filterText).toBe("IC1001");
+  });
+
   it("ranks an exactly typed space-free spelling ahead of keywords", () => {
     const sql = "SELECT * FROM sitem";
     const items = buildSqlCompletionItems(sql, sql.length, {
