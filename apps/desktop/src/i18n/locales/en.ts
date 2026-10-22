@@ -10695,6 +10695,7 @@ export default {
     shortcutToggleCaseSelection: "Toggle selection case",
     shortcutConvertNamingStyle: "Toggle naming style",
     shortcutConvertSelectionToDelimited: "Convert selection to delimited list",
+    shortcutQuoteWordAtCursor: "Quote/unquote word at cursor",
     shortcutExPasteSqlInCondition: "ExPaste: paste as IN condition",
   },
   driverStore: {

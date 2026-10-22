@@ -10107,6 +10107,7 @@ export default withEnglishFallback({
     shortcutToggleCaseSelection: "切换选中内容大小写",
     shortcutConvertNamingStyle: "切换命名风格",
     shortcutConvertSelectionToDelimited: "选中内容转换为带分隔符的列表",
+    shortcutQuoteWordAtCursor: "光标处词加引号/去引号",
     shortcutExPasteSqlInCondition: "ExPaste：粘贴为 IN 条件",
     shortcutEditCell: "编辑单元格",
     shortcutEditTableStructure: "编辑表结构",
