@@ -144,6 +144,7 @@ import {
   shouldIncludeSyntheticRowId,
   showsKeylessEditWarning,
 } from "@/lib/table/tableEditing";
+import { rowIdLocatorUnsupported } from "@/lib/table/tableRowIdSupport";
 import { buildDataGridConditionalUpdateSql, buildDataGridContextFilterCondition, buildDataGridCountSql, buildHiveTablePropertiesSql, type DataGridContextFilterMode } from "@/lib/dataGrid/dataGridSql";
 import { sumGridCountValues } from "@/lib/dataGrid/dataGridCountValue";
 import {
@@ -295,6 +296,7 @@ import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
 import { dataGridPreviewLabelKey, dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGrid/dataGridSaveUi";
 import { buildDataGridSavedRowRefreshPlan, dataGridSavedRowRefreshPatches, executeDataGridSavedRowRefreshQuery } from "@/lib/dataGrid/dataGridSavedRowRefresh";
 import type { QueryEditabilityReason } from "@/lib/sql/sqlAnalysis";
+import type { DataGridSqlPreview } from "./dataGridSqlPreview";
 import { sqlWithoutCommentsForCopy } from "@/lib/sql/sqlWithoutCommentsForCopy";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
 import { EDITOR_FONT_FAMILY_CSS_VAR } from "@/lib/editor/editorThemes";
@@ -743,6 +745,7 @@ function logDataGridTiming(message: string, payload?: Record<string, unknown>) {
 }
 
 const emit = defineEmits<{
+  viewSql: [preview: DataGridSqlPreview];
   reload: [sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number, intent?: DataGridReloadIntent];
   paginate: [offset: number, limit: number, whereInput?: string, orderBy?: string, appendResult?: boolean];
   sort: [column: string, columnIndex: number, direction: "asc" | "desc" | null, whereInput?: string, mode?: DataGridSortMode, effectiveOrderBy?: string];
@@ -4560,7 +4563,7 @@ async function refreshSavedRows(request: { dirtyRows: ReadonlyMap<number, Readon
     ...largeValuePreviewOptions,
     whereInput: identityConditions.join(" OR "),
     limit: planResult.plan.sourceIndexes.length + 1,
-    includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+    includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
   });
   const refreshed = await executeDataGridSavedRowRefreshQuery(api, {
     connectionId,
@@ -7747,7 +7750,7 @@ async function applyOrderBySearch(_value?: string, structuredOrderByOverride?: s
       injectDefaultTimeSeriesWhere: true,
       limit: pageSize.value,
       whereInput: currentWhereInput(),
-      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
     });
     markConditionInputsApplied();
     await props.onExecuteSql(sql);
@@ -7790,7 +7793,7 @@ async function applyWhereFilter() {
       limit: pageSize.value,
       injectDefaultTimeSeriesWhere: true,
       whereInput,
-      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType),
+      includeRowId: shouldIncludeSyntheticRowId(resolvedDatabaseType.value, tableMeta.primaryKeys, tableMeta.tableType) && !(props.connectionId && rowIdLocatorUnsupported(props.connectionId)),
     });
     markConditionInputsApplied();
     await props.onExecuteSql(sql);
@@ -12643,6 +12646,19 @@ function onRowContext(rowId: number, rowIndex: number) {
 
 const sqlOneLiner = computed(() => userFacingSql.value.replace(/\s+/g, " ").trim());
 
+function viewStatusSql() {
+  if (props.context !== "table-data") {
+    void copyUserFacingSql();
+    return;
+  }
+  emit("viewSql", {
+    sql: userFacingSql.value,
+    actualSql: actualExecutionSql.value,
+    isCurrentPage: !!props.result.sqlPage,
+    probeLimit: props.result.sqlPage?.probe ? props.result.sqlPage.executedLimit : undefined,
+  });
+}
+
 async function copyUserFacingSql() {
   if (userFacingSql.value) await copyText(userFacingSql.value);
 }
@@ -16847,14 +16863,14 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       <div v-if="selectedColumnInfo" data-grid-column-info class="min-w-0 max-w-full truncate select-text max-sm:absolute max-sm:left-3 max-sm:right-3 max-sm:top-1" :title="selectedColumnInfo">
         {{ selectedColumnInfo }}
       </div>
-      <div v-else-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="min-w-0 max-w-full justify-self-center">
+      <div v-else-if="settingsStore.editorSettings.showDataGridStatusSql && sqlOneLiner" class="flex min-w-0 max-w-full items-center gap-1 justify-self-center">
         <CustomContextMenu :items="statusSqlContextMenuItems" v-slot="{ onContextMenu }">
           <Tooltip>
             <TooltipTrigger as-child>
-              <span class="block min-w-0 max-w-full truncate opacity-60 cursor-pointer hover:opacity-100" data-result-sql @click="copyUserFacingSql" @contextmenu="onContextMenu">
+              <button type="button" class="block min-w-0 max-w-full truncate text-left opacity-60 cursor-pointer hover:opacity-100" data-result-sql :aria-label="t(context === 'table-data' ? 'grid.viewQuerySql' : 'grid.copyQuerySql')" @click="viewStatusSql" @contextmenu="onContextMenu">
                 <span v-if="result.sqlPage">{{ t("grid.currentPageSql") }}: </span>
                 {{ sqlOneLiner }}
-              </span>
+              </button>
             </TooltipTrigger>
             <TooltipContent side="top" class="max-w-md">
               <div v-if="result.sqlPage" class="mb-1 font-medium">{{ t("grid.currentPageSql") }}</div>
@@ -16867,6 +16883,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             </TooltipContent>
           </Tooltip>
         </CustomContextMenu>
+        <Button v-if="context === 'table-data'" variant="ghost" size="icon" class="h-6 w-6 shrink-0" :aria-label="t('grid.copyQuerySql')" :title="t('grid.copyQuerySql')" @click="copyUserFacingSql"><Copy class="h-3 w-3" /></Button>
       </div>
       <span v-else class="min-w-0" />
 

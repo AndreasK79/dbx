@@ -1007,6 +1007,7 @@ export const cancelUpdateDownload = forward("cancelUpdateDownload");
 export const getDownloadedUpdate = forward("getDownloadedUpdate");
 export const discardDownloadedUpdate = forward("discardDownloadedUpdate");
 export const installDownloadedUpdate = forward("installDownloadedUpdate");
+export const relaunchApp = forward("relaunchApp");
 export const getAppVersion = forward("getAppVersion");
 export const getAppSupportInfo = forward("getAppSupportInfo");
 

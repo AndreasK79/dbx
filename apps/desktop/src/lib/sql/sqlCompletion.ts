@@ -486,6 +486,13 @@ const MYSQL_SQL_KEYWORDS = [
   "JSON_EXTRACT",
   "JSON_UNQUOTE",
   "DATE_FORMAT",
+  // Statement and operator vocabulary MySQL understands but the common list does
+  // not cover: `SHOW BINARY LOGS`, `SHOW BINLOG EVENTS`, and the REGEXP / RLIKE
+  // pattern operators (issue #13008).
+  "BINARY LOGS",
+  "BINLOG EVENTS",
+  "REGEXP",
+  "RLIKE",
 ];
 
 const MANTICORESEARCH_SQL_KEYWORDS = ["FACET", "MATCH", "SHOW", "SHOW META", "SHOW TABLES", "CALL", "CALL PQ", "PQ", "META", "TABLES", "OPTION", "WITHIN GROUP ORDER BY"];
@@ -6828,10 +6835,15 @@ function dedupeAndSort(items: SqlCompletionItem[], context?: SqlCompletionContex
 
 function compareCompletionItems(left: SqlCompletionItem, right: SqlCompletionItem, context?: SqlCompletionContext): number {
   const columnsExpected = !!context && context.suggestColumns && context.referencedTables.length > 0;
+  // An exact match on what the user typed has to win before the "surfaces first"
+  // rule below: sequences (and variables) pin themselves to the top of the list
+  // whenever no columns are expected, so on Oracle-family connections typing the
+  // `sel` snippet trigger listed every `SEL*` sequence above `select *` and Tab
+  // expanded a sequence instead of the snippet (#13115).
+  if (!left.exactMatch !== !right.exactMatch) return left.exactMatch ? -1 : 1;
   const leftSurfacesFirst = left.type === "variable" || (!columnsExpected && left.type === "sequence");
   const rightSurfacesFirst = right.type === "variable" || (!columnsExpected && right.type === "sequence");
   if (leftSurfacesFirst !== rightSurfacesFirst) return leftSurfacesFirst ? -1 : 1;
-  if (!left.exactMatch !== !right.exactMatch) return left.exactMatch ? -1 : 1;
   const leftBonus = getHistoryBoost(left.label, left.type);
   const rightBonus = getHistoryBoost(right.label, right.type);
   return right.boost + rightBonus + getTypePriorityBoost(right.type, columnsExpected) - (left.boost + leftBonus + getTypePriorityBoost(left.type, columnsExpected));
