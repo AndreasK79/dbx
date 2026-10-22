@@ -25,7 +25,9 @@ export function addNextQueryEditorSelectionOccurrence(view: EditorView): boolean
     // and adds the next occurrence of the shared query.
     return selectNextOccurrence(view);
   }
-  if (hasEmptyRange && !selectCurrentWord(view)) return false;
+  // VS Code parity: the first press only selects the word at the caret; each
+  // further press (non-empty selection by then) adds the next occurrence.
+  if (hasEmptyRange) return selectCurrentWord(view);
   return selectNextOccurrence(view);
 }
 

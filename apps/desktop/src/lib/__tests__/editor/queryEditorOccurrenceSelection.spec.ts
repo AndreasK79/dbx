@@ -32,11 +32,15 @@ describe("queryEditorOccurrenceSelection", () => {
     ]);
   });
 
-  it("expands an empty cursor to the current word before adding the next occurrence", () => {
+  it("expands an empty cursor to the current word, then adds further occurrences on later presses", () => {
     const view = createView("select id from users where id = 1", EditorSelection.cursor(8));
 
+    // First press selects only the word at the caret (VS Code parity).
     expect(addNextQueryEditorSelectionOccurrence(view)).toBe(true);
+    expect(ranges(view)).toEqual([{ from: 7, to: 9 }]);
 
+    // The second press adds the next occurrence of that word.
+    expect(addNextQueryEditorSelectionOccurrence(view)).toBe(true);
     expect(ranges(view)).toEqual([
       { from: 7, to: 9 },
       { from: 27, to: 29 },
