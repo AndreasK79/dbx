@@ -82,6 +82,7 @@ import { enabledSqlParameterSyntaxes, resolveSqlVariableSyntaxToggles } from "@/
 import { createQueryEditorExecutionViewportOwnership, isQueryEditorPositionVisible, locateCursorForGutterExecution } from "@/lib/editor/queryEditorExecutionViewport";
 import { mapQueryEditorFormatSelection } from "@/lib/editor/queryEditorFormatSelection";
 import { joinQueryEditorLines } from "@/lib/editor/queryEditorJoinLines";
+import { cutQueryEditorLine } from "@/lib/editor/queryEditorCutLine";
 
 import { resolveSqlSingleQuoteKeyAction } from "@/lib/sql/sqlQuoteCaret";
 
@@ -1510,6 +1511,12 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.joinLines, joinQueryEditorLines),
         ...binding(shortcuts.duplicateLine, (view) => codeMirrorRuntime.codeMirrorCopyLineDown?.(view) ?? false),
         ...binding(shortcuts.deleteLine, (view) => codeMirrorRuntime.codeMirrorDeleteLine?.(view) ?? false),
+        // Line-wise cut (Shift+Delete / Ctrl+X with an empty selection) cannot
+        // remove the last line's break natively, so empty lines pile up at the
+        // bottom of the editor; our variant joins with the previous line and
+        // leaves every other cut to CodeMirror.
+        { key: "Shift-Delete", preventDefault: true, run: cutQueryEditorLine },
+        { key: "Mod-x", preventDefault: true, run: cutQueryEditorLine },
         ...binding(shortcuts.moveLineUp, (view) => codeMirrorRuntime.codeMirrorMoveLineUp?.(view) ?? false),
         ...binding(shortcuts.moveLineDown, (view) => codeMirrorRuntime.codeMirrorMoveLineDown?.(view) ?? false),
         ...binding(shortcuts.scrollLineUp, (view) => scrollEditorLine(view, "up")),
