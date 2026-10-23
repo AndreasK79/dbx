@@ -1,3 +1,4 @@
+import { tableColumnPasteIt as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuIt as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogIt as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -64,6 +65,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dipendenze",
     dependents: "Oggetti dipendenti",
@@ -194,7 +196,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Applica le modifiche agli indici Oracle separatamente dalle altre modifiche alla struttura della tabella." },
+  schemaIndex: {
+    crossOwnerReadOnly: "L'indice «{owner}.{name}» è di sola lettura in questo editor.",
+    editIndividually: "Gestire gli indici singolarmente",
+    parentUnavailable: "Le informazioni sulla tabella padre non sono disponibili. Copiare il nome o aggiornare l'elenco.",
+    focusUnavailable: "Non è possibile individuare esattamente l'indice selezionato. Sono mostrati gli indici leggibili della tabella padre.",
+    targetMissing: "Impossibile individuare esattamente l'indice «{name}». Aggiornare e riprovare.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Applicato; aggiornamento incompleto",
+    refreshPending: "L'aggiornamento dei metadati è incompleto. Ripeterlo non esegue nuovamente il DDL.",
     resultTitle: "Risultato dell'operazione",
     executionFailed: "L'operazione non è stata completata completamente. Controlla ogni istruzione e lo stato del database.",
     readbackFailed: "La rilettura non è riuscita o non corrisponde al risultato previsto",

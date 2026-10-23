@@ -1,3 +1,4 @@
+import { tableColumnPastePtBR as tableColumnPaste } from "./tableColumnPaste";
 import { sidebarMenuPtBR as sidebarMenu } from "./sidebarMenuMessages";
 import { oceanbaseCloneDialogPtBR as oceanbaseCloneDialog } from "./oceanbaseCloneDialog";
 import { withEnglishFallback } from "./fallback";
@@ -65,6 +66,7 @@ const consul = {
 };
 
 export default withEnglishFallback({
+  tableColumnPaste,
   objectDependencies: {
     dependencies: "Dependências",
     dependents: "Objetos dependentes",
@@ -195,7 +197,16 @@ export default withEnglishFallback({
   },
   sidebarMenu,
   oracleIndex: { mixedDraft: "Aplique as alterações de índices Oracle separadamente das demais alterações na estrutura da tabela." },
+  schemaIndex: {
+    crossOwnerReadOnly: "O índice “{owner}.{name}” é somente leitura neste editor.",
+    editIndividually: "Gerencie os índices individualmente",
+    parentUnavailable: "As informações da tabela pai não estão disponíveis. Copie o nome ou atualize a lista.",
+    focusUnavailable: "Não é possível localizar exatamente o índice selecionado. Os índices legíveis da tabela pai são exibidos abaixo.",
+    targetMissing: "Não foi possível localizar exatamente o índice “{name}”. Atualize e tente novamente.",
+  },
   oracleStructureResult: {
+    appliedRefreshPending: "Aplicado; atualização incompleta",
+    refreshPending: "A atualização dos metadados está incompleta. Tentar atualizar novamente não executa o DDL outra vez.",
     resultTitle: "Resultado da operação",
     executionFailed: "A operação não foi concluída por completo. Verifique cada instrução e o estado do banco de dados.",
     readbackFailed: "A releitura falhou ou não correspondeu ao resultado esperado",
