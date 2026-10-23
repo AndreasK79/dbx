@@ -6523,9 +6523,13 @@ function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?:
  * Every enabled snippet, ungated: the explicit snippet menu (Ctrl+Alt+Space)
  * lists them all instead of matching a typed prefix, with CodeMirror's live
  * filter narrowing the list as the user keeps typing from the word start.
- * When `typedPrefix` is supplied, the snippet whose trigger it completes gets
- * an exact-match boost so it ranks above longer-trigger siblings ("SC" above
- * "SCGB" when the typed word is "SC").
+ * When `typedPrefix` is supplied, the snippet whose trigger or label it
+ * completes gets an exact-match boost so it ranks above longer siblings ("sc"
+ * above "SCGB" when the typed word is "sc"). The label counts as much as the
+ * trigger: entries can carry an empty or descriptive trigger while the label
+ * is the text the user sees and imitates, and CodeMirror ranks menu options by
+ * label match score where a shorter label loses the case-fold penalty to
+ * longer uppercase siblings.
  */
 export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywordCase?: SqlKeywordCase, databaseType?: DatabaseType, typedPrefix?: string): SqlCompletionItem[] {
   const compactTyped = typedPrefix ? snippetCompactText(typedPrefix).toLowerCase() : "";
@@ -6538,6 +6542,7 @@ export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywor
       const compactPrefix = snippetCompactText(snippet.prefix);
       const filterText = compactPrefix.length > 0 && compactPrefix !== snippet.prefix ? compactPrefix : snippet.prefix;
       const exactTrigger = compactTyped.length > 0 && compactTyped === filterText.toLowerCase();
+      const exactLabel = compactTyped.length > 0 && (compactTyped === snippet.label.toLowerCase() || compactTyped === snippetCompactText(snippet.label).toLowerCase());
       return {
         label: snippet.label,
         filterText,
@@ -6545,8 +6550,8 @@ export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywor
         detail: body,
         apply,
         // Neutral ranking unless the typed word completes this snippet's
-        // trigger, which jumps to the top of the menu.
-        boost: exactTrigger ? SNIPPET_MENU_EXACT_TRIGGER_BOOST : 0,
+        // trigger or label, which jumps to the top of the menu.
+        boost: exactTrigger || exactLabel ? SNIPPET_MENU_EXACT_TRIGGER_BOOST : 0,
       };
     });
 }

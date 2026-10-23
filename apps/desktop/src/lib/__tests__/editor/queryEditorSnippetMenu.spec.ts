@@ -135,4 +135,47 @@ describe("createSnippetMenuState", () => {
       view.destroy();
     }
   });
+
+  // Real-world shape from the bug report: uppercase sibling labels, a "sc"
+  // entry whose trigger is empty (the label is the only match surface), and an
+  // UPPERCASE typed word. CodeMirror scores the uppercase siblings at -100 and
+  // the case-folded "sc" at -202, which ranked it fourth without the boost.
+  it("ranks a label-only exact match first when typing uppercase past uppercase siblings", async () => {
+    const snippets: SqlSnippet[] = [
+      { id: "scall", label: "SCALL", prefix: "scall", body: "SELECT * FROM call;" },
+      { id: "scallitem", label: "SCALLITEM", prefix: "scallitem", body: "SELECT * FROM call_item;" },
+      { id: "scdelivery", label: "SCDELIVERY", prefix: "scdelivery", body: "SELECT * FROM delivery;" },
+      { id: "sc", label: "sc", prefix: "", body: "SELECT * FROM customers;" },
+      { id: "scgb", label: "scgb", prefix: "scgb", body: "SELECT * FROM customers GROUP BY 1;" },
+    ];
+    const menu = createSnippetMenuState({ StateEffect, StateField }, (state) => completionStatus(state));
+    const source = (context: CompletionContext): CompletionResult => {
+      if (!menu.isActive(context.state)) return { from: 0, options: KEYWORD_OPTIONS };
+      const word = context.state.wordAt(context.pos);
+      const from = word ? word.from : context.pos;
+      const typed = word ? context.state.sliceDoc(from, context.pos) : "";
+      const options = buildSnippetMenuItems(snippets, undefined, undefined, typed).map((item) => ({
+        ...completionLabelPresentation(item.label, item.filterText),
+        type: item.type,
+        detail: item.detail,
+        boost: item.boost,
+      }));
+      return { from, options };
+    };
+    const view = new EditorView({
+      parent: document.createElement("div"),
+      state: EditorState.create({
+        doc: "SC",
+        selection: EditorSelection.cursor(2),
+        extensions: [menu.extensions, autocompletion({ override: [source], compareCompletions: (a, b) => (a.sortText || a.label).localeCompare(b.sortText || b.label) })],
+      }),
+    });
+
+    try {
+      menu.open(view, startCompletion);
+      await vi.waitFor(() => expect(currentCompletions(view.state).map((completion) => completion.displayLabel ?? completion.label)).toEqual(["sc", "SCALL", "SCALLITEM", "SCDELIVERY", "scgb"]));
+    } finally {
+      view.destroy();
+    }
+  });
 });

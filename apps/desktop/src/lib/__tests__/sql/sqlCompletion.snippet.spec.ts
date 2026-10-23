@@ -564,6 +564,27 @@ describe("buildSnippetMenuItems", () => {
     expect(items[0].boost).toBeGreaterThan(0);
   });
 
+  // The label is the text the menu shows and the user imitates; a snippet can
+  // carry an empty or descriptive trigger, so the exact-match boost must fire
+  // on the label too, not just the trigger.
+  it("boosts a label-only exact match when the trigger is empty", () => {
+    const items = buildSnippetMenuItems([{ id: "sc", label: "sc", prefix: "", body: "SELECT * FROM customers;" }], undefined, undefined, "SC");
+
+    expect(items.find((item) => item.label === "sc")?.boost).toBeGreaterThan(0);
+  });
+
+  it("boosts a label exact match even when the trigger differs", () => {
+    const items = buildSnippetMenuItems([{ id: "sc", label: "sc", prefix: "customers", body: "SELECT * FROM customers;" }], undefined, undefined, "sc");
+
+    expect(items.find((item) => item.label === "sc")?.boost).toBeGreaterThan(0);
+  });
+
+  it("matches the exact label by its compact spelling", () => {
+    const items = buildSnippetMenuItems([{ id: "spaced", label: "S item", prefix: "", body: "SELECT 1;" }], undefined, undefined, "sitem");
+
+    expect(items[0].boost).toBeGreaterThan(0);
+  });
+
   it("keeps ranking neutral while the typed word is not a full trigger", () => {
     const items = buildSnippetMenuItems(TEST_SNIPPETS, undefined, undefined, "se");
 
