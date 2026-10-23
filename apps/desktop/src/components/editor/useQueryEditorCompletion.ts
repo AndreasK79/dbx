@@ -349,12 +349,16 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
   }
 
   function buildSnippetMenuCompletionResult(state: import("@codemirror/state").EditorState, position: number) {
-    const items = buildSnippetMenuItems(settingsStore.editorSettings.snippets, settingsStore.editorSettings.sqlFormatter.keywordCase, snippetDatabaseType.value);
-    if (items.length === 0) return null;
-    // Filter from the word head so the menu follows typing; CodeMirror's live
-    // matcher narrows the list (see buildCompletionResult).
+    // Filter from the word head so the menu follows typing. No `validFor`:
+    // re-running the (cheap, synchronous) source per keystroke keeps the
+    // exact-trigger boost in sync with the typed word instead of freezing it
+    // at menu-open time, while CodeMirror still narrows the live list.
     const word = state.wordAt(position);
-    return buildCompletionResult(items, word ? word.from : position, /^[\w-]*$/);
+    const from = word ? word.from : position;
+    const typedPrefix = word ? state.sliceDoc(from, position) : "";
+    const items = buildSnippetMenuItems(settingsStore.editorSettings.snippets, settingsStore.editorSettings.sqlFormatter.keywordCase, snippetDatabaseType.value, typedPrefix);
+    if (items.length === 0) return null;
+    return buildCompletionResult(items, from);
   }
 
   function itemHasHanText(item: QueryCompletionItem | BatchColumnSelectionActionItem): boolean {

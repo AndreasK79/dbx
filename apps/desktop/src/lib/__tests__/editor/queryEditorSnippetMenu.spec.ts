@@ -5,6 +5,9 @@ import { EditorView } from "@codemirror/view";
 import { autocompletion, closeCompletion, completionStatus, currentCompletions, startCompletion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { describe, expect, it, vi } from "vitest";
 import { createSnippetMenuState } from "@/lib/editor/queryEditorSnippetMenu";
+import { buildSnippetMenuItems } from "@/lib/sql/sqlCompletion";
+import { completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
+import type { SqlSnippet } from "@/types/database";
 
 const SNIPPET_OPTIONS = [{ label: "select all — snippet" }, { label: "insert row — snippet" }];
 const KEYWORD_OPTIONS = [{ label: "SELECT" }];
@@ -81,5 +84,55 @@ describe("createSnippetMenuState", () => {
     await vi.waitFor(() => expect(completionStatus(view.state)).toBeNull());
 
     expect(menu.isActive(view.state)).toBe(false);
+  });
+
+  // Mirrors buildSnippetMenuCompletionResult: word head as `from`, typed prefix
+  // for the exact-trigger boost, no `validFor` so the source re-runs per
+  // keystroke, and completionLabelPresentation for the option labels.
+  it("ranks the exactly typed trigger first, ahead of longer-trigger siblings", async () => {
+    const snippets: SqlSnippet[] = [
+      { id: "scgb", label: "Select Customer Group By", prefix: "scgb", body: "GROUP BY ${customer};" },
+      { id: "sc", label: "Select Customers", prefix: "sc", body: "SELECT *\nFROM customers;" },
+    ];
+    const menu = createSnippetMenuState({ StateEffect, StateField }, (state) => completionStatus(state));
+    const source = (context: CompletionContext): CompletionResult => {
+      if (!menu.isActive(context.state)) return { from: 0, options: KEYWORD_OPTIONS };
+      const word = context.state.wordAt(context.pos);
+      const from = word ? word.from : context.pos;
+      const typed = word ? context.state.sliceDoc(from, context.pos) : "";
+      const options = buildSnippetMenuItems(snippets, undefined, undefined, typed).map((item) => ({
+        ...completionLabelPresentation(item.label, item.filterText),
+        type: item.type,
+        detail: item.detail,
+        boost: item.boost,
+      }));
+      return { from, options };
+    };
+    const view = new EditorView({
+      parent: document.createElement("div"),
+      state: EditorState.create({
+        doc: "sc",
+        selection: EditorSelection.cursor(2),
+        extensions: [menu.extensions, autocompletion({ override: [source], compareCompletions: (a, b) => (a.sortText || a.label).localeCompare(b.sortText || b.label) })],
+      }),
+    });
+
+    try {
+      menu.open(view, startCompletion);
+      await vi.waitFor(() => expect(completionStatus(view.state)).toBe("active"));
+      // Both labels fuzzy-match the typed "sc" with the same match score; the
+      // exact-trigger boost must still pin "sc" above the "scgb" sibling.
+      expect(currentCompletions(view.state).map((completion) => completion.displayLabel ?? completion.label)).toEqual(["Select Customers", "Select Customer Group By"]);
+
+      view.dispatch({ changes: { from: 2, insert: "gb" }, selection: { anchor: 4 }, userEvent: "input.type" });
+      await vi.waitFor(() => expect(currentCompletions(view.state).map((completion) => completion.displayLabel ?? completion.label)).toEqual(["Select Customer Group By"]));
+
+      // Backspacing revives the "sc" option: the source re-ran, so the boost
+      // follows the live word instead of freezing at menu-open time.
+      view.dispatch({ changes: { from: 2, to: 4 }, userEvent: "delete.backward" });
+      await vi.waitFor(() => expect(currentCompletions(view.state).map((completion) => completion.displayLabel ?? completion.label)).toEqual(["Select Customers", "Select Customer Group By"]));
+    } finally {
+      view.destroy();
+    }
   });
 });

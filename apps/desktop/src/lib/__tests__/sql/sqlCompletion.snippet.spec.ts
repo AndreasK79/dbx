@@ -545,6 +545,30 @@ describe("buildSnippetMenuItems", () => {
     expect(items[0].detail).toBe("SELECT *\nFROM table\nWHERE ROWNUM <= 100;");
     expect(items[0].apply).toBe("SELECT *\nFROM ${table}\nWHERE ROWNUM <= 100;");
   });
+
+  it("boosts the snippet whose full trigger is typed above longer-trigger siblings", () => {
+    const snippets: SqlSnippet[] = [
+      { id: "scgb", label: "Select Customer Group By", prefix: "scgb", body: "GROUP BY customer;" },
+      { id: "sc", label: "Select Customers", prefix: "sc", body: "SELECT *\nFROM customers;" },
+    ];
+
+    const items = buildSnippetMenuItems(snippets, undefined, undefined, "sc");
+
+    expect(items.find((item) => item.filterText === "sc")?.boost).toBeGreaterThan(0);
+    expect(items.find((item) => item.filterText === "scgb")?.boost).toBe(0);
+  });
+
+  it("matches the exact trigger case-insensitively, hyphen-free spellings included", () => {
+    const items = buildSnippetMenuItems([{ id: "ticket", label: "IC-1001", prefix: "IC-1001", body: "SELECT 1001;" }], undefined, undefined, "ic1001");
+
+    expect(items[0].boost).toBeGreaterThan(0);
+  });
+
+  it("keeps ranking neutral while the typed word is not a full trigger", () => {
+    const items = buildSnippetMenuItems(TEST_SNIPPETS, undefined, undefined, "se");
+
+    expect(items.every((item) => item.boost === 0)).toBe(true);
+  });
 });
 
 describe("snippet ranking", () => {

@@ -929,6 +929,11 @@ function isPairPrefixKeywordForFollowing(keyword: string, followingKeyword: stri
 const MAX_TABLE_COMPLETION_ITEMS = 200;
 const EXACT_LABEL_MATCH_BOOST = 10000;
 const EXACT_CUSTOM_SNIPPET_TRIGGER_BOOST = 40000;
+// Menu siblings rank by CodeMirror's label-match score, where a snippet's
+// display label can tie with longer-trigger siblings and lose the alphabetical
+// tiebreak ("SCGB" above "SC"). The typed word hitting the full trigger
+// outranks everything, mirroring EXACT_CUSTOM_SNIPPET_TRIGGER_BOOST.
+const SNIPPET_MENU_EXACT_TRIGGER_BOOST = 40000;
 
 function isTableTriggerKeyword(keyword: string, options: SqlSemanticBuildOptions): boolean {
   const dialectId = resolveSqlDialectId(options);
@@ -6518,8 +6523,12 @@ function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?:
  * Every enabled snippet, ungated: the explicit snippet menu (Ctrl+Alt+Space)
  * lists them all instead of matching a typed prefix, with CodeMirror's live
  * filter narrowing the list as the user keeps typing from the word start.
+ * When `typedPrefix` is supplied, the snippet whose trigger it completes gets
+ * an exact-match boost so it ranks above longer-trigger siblings ("SC" above
+ * "SCGB" when the typed word is "SC").
  */
-export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywordCase?: SqlKeywordCase, databaseType?: DatabaseType): SqlCompletionItem[] {
+export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywordCase?: SqlKeywordCase, databaseType?: DatabaseType, typedPrefix?: string): SqlCompletionItem[] {
+  const compactTyped = typedPrefix ? snippetCompactText(typedPrefix).toLowerCase() : "";
   return (snippets ?? DEFAULT_SQL_SNIPPETS)
     .filter((snippet) => snippet.enabled !== false)
     .map((snippet) => {
@@ -6528,14 +6537,16 @@ export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywor
       const apply = finalizeSnippetCursor(applyBuiltinSnippetKeywordCase(snippet, applyBuiltinSnippetPlaceholders(snippet, resolvedBody), keywordCase));
       const compactPrefix = snippetCompactText(snippet.prefix);
       const filterText = compactPrefix.length > 0 && compactPrefix !== snippet.prefix ? compactPrefix : snippet.prefix;
+      const exactTrigger = compactTyped.length > 0 && compactTyped === filterText.toLowerCase();
       return {
         label: snippet.label,
         filterText,
         type: "snippet" as const,
         detail: body,
         apply,
-        // Neutral ranking: the menu has no typed prefix to boost against.
-        boost: 0,
+        // Neutral ranking unless the typed word completes this snippet's
+        // trigger, which jumps to the top of the menu.
+        boost: exactTrigger ? SNIPPET_MENU_EXACT_TRIGGER_BOOST : 0,
       };
     });
 }
