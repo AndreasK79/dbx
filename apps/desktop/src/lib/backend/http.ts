@@ -80,6 +80,7 @@ import type {
   SavedSqlLibrary,
   SshConfigHostEntry,
   LocalSshKey,
+  SshAgentIdentity,
   TunnelProfile,
 } from "@/types/database";
 import type { DetachedTabHandoff } from "@/lib/app/detachedTabHandoff";
@@ -343,6 +344,7 @@ import { uuid } from "@/lib/common/utils";
 const DESKTOP_SETTINGS_STORAGE_KEY = "dbx-desktop-settings";
 const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   show_tray_icon: true,
+  linux_floating_frame_enabled: true,
   icon_theme: "default",
   quit_on_close: false,
   close_action_prompted: false,
@@ -623,6 +625,10 @@ export async function saveTunnelProfiles(profiles: TunnelProfile[]): Promise<voi
 
 export async function testTunnelProfile(profile: TunnelProfile): Promise<string> {
   return post("/api/tunnel-profiles/test", profile);
+}
+
+export async function listSshAgentIdentities(_sshAgentSockPath: string): Promise<SshAgentIdentity[]> {
+  return []; // The web backend cannot reach a local SSH agent socket
 }
 
 export async function resolveSshPrompt(resolution: SshPromptResolution): Promise<void> {

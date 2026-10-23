@@ -1862,6 +1862,11 @@ export default withEnglishFallback({
     redisClientKeyBrowse: "Seleziona chiave privata client Redis",
     redisTlsCertificateHint: "Se il certificato CA viene lasciato vuoto, viene utilizzato il trust store di sistema; se il server richiede l'autenticazione reciproca (tls-auth-clients yes), configurare anche il certificato client e la chiave privata.",
     redisClientCertPairRequired: "Il certificato client e la chiave privata TLS di Redis devono essere configurati insieme",
+    sshAgentKey: "Chiave dell'agente",
+    sshAgentKeyAll: "Tutte le identità (prova in ordine)",
+    sshAgentKeyHint: "Seleziona una chiave autorizzata per questo host. Il server limita il numero di tentativi di autenticazione su una singola connessione; provare tutte le chiavi dell'agente una per una potrebbe esaurire i tentativi prima di arrivare a quella corretta.",
+    sshAgentKeyLoadFailed: "Impossibile leggere l'elenco delle identità dell'agente SSH: {error}",
+    sshAgentKeyRefresh: "Aggiorna",
   },
   editor: {
     duckdbDraining: "La query DuckDB precedente è ancora in fase di arresto. Riprova a breve.",
@@ -9353,6 +9358,8 @@ export default withEnglishFallback({
     tabGroupRowsSingle: "Riga singola",
     tabGroupRowsTwoRow: "Due righe (gruppi su una riga dedicata)",
     tabGroupRowsDescription: "Si applica solo a una barra delle schede superiore o inferiore con raggruppamento attivo: i gruppi occupano una riga dedicata e le schede del gruppo selezionato compaiono nella riga successiva.",
+    linuxFloatingFrame: "Effetto di trasparenza della finestra",
+    linuxFloatingFrameDescription: "Abilita automaticamente i bordi trasparenti sui desktop supportati. Può essere disattivato se la finestra sfarfalla; ha effetto dopo l'applicazione e il riavvio di DBX. Le impostazioni delle variabili d'ambiente hanno la precedenza.",
     shortcutExecuteAllSql: "Esegui tutto il SQL",
   },
   driverStore: {

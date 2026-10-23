@@ -2060,6 +2060,11 @@ export default withEnglishFallback({
     redisClientKeyBrowse: "เลือกคีย์ส่วนตัวไคลเอนต์ของ Redis",
     redisTlsCertificateHint: "เมื่อเว้นว่างใบรับรอง CA ระบบจะใช้ที่เก็บความเชื่อถือของระบบ; เมื่อเซิร์ฟเวอร์ต้องการการตรวจสอบสิทธิ์แบบสองทาง (tls-auth-clients yes) กรุณาตั้งค่าใบรับรองไคลเอนต์และคีย์ส่วนตัวพร้อมกัน",
     redisClientCertPairRequired: "ต้องกำหนดค่าใบรับรองไคลเอนต์และคีย์ส่วนตัวสำหรับ Redis TLS พร้อมกัน",
+    sshAgentKey: "คีย์ Agent",
+    sshAgentKeyAll: "identity ทั้งหมด (ลองตามลำดับ)",
+    sshAgentKeyHint: "เลือกคีย์ที่ได้รับอนุญาตสำหรับโฮสต์นี้ เซิร์ฟเวอร์จำกัดจำนวนครั้งในการยืนยันตัวตนต่อการเชื่อมต่อหนึ่งรายการ การลองคีย์ agent ทุกคีย์ทีละคีย์อาจทำให้จำนวนครั้งหมดก่อนที่จะถึงคีย์ที่ถูกต้อง",
+    sshAgentKeyLoadFailed: "ไม่สามารถอ่านรายการ identity ของ SSH agent: {error}",
+    sshAgentKeyRefresh: "รีเฟรช",
   },
   editor: {
     duckdbDraining: "Query DuckDB ก่อนหน้ายังหยุดไม่เสร็จ โปรดลองอีกครั้งในไม่ช้า",
@@ -11199,6 +11204,8 @@ export default withEnglishFallback({
     tabGroupRowsSingle: "แถวเดียว",
     tabGroupRowsTwoRow: "สองแถว (กลุ่มแสดงในแถวของตัวเอง)",
     tabGroupRowsDescription: "ใช้เฉพาะเมื่อแถบแท็บอยู่ด้านบนหรือด้านล่างและเปิดใช้งานการจัดกลุ่ม: กลุ่มจะแสดงในแถวของตัวเอง และแท็บของกลุ่มที่เลือกจะแสดงในแถวถัดไป",
+    linuxFloatingFrame: "เอฟเฟกต์ความโปร่งใสของหน้าต่าง",
+    linuxFloatingFrameDescription: "เปิดใช้ขอบโปร่งใสโดยอัตโนมัติบนเดสก์ท็อปที่รองรับ หากหน้าต่างกะพริบสามารถปิดได้ มีผลหลังนำไปใช้และรีสตาร์ท DBX การตั้งค่าตัวแปรสภาพแวดล้อมมีลำดับความสำคัญ",
     shortcutExecuteAllSql: "เรียกใช้ SQL ทั้งหมด",
   },
   driverStore: {

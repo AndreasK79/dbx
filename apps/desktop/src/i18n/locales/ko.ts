@@ -1790,6 +1790,11 @@ export default withEnglishFallback({
     redisClientKeyBrowse: "Redis 클라이언트 개인 키 선택",
     redisTlsCertificateHint: "CA 인증서를 비워 두면 시스템 신뢰 저장소를 사용합니다. 서버에서 상호 인증(tls-auth-clients yes)을 요구하는 경우 클라이언트 인증서와 개인 키를 함께 구성하세요.",
     redisClientCertPairRequired: "Redis TLS 클라이언트 인증서와 개인 키는 반드시 함께 구성해야 합니다",
+    sshAgentKey: "Agent 키",
+    sshAgentKeyAll: "모든 identity(순서대로 시도)",
+    sshAgentKeyHint: "해당 호스트에 대해 승인된 키를 선택하세요. 서버는 단일 연결에서 인증 시도 횟수를 제한하므로, 모든 agent 키를 하나씩 시도하다 보면 올바른 키 차례가 되기 전에 횟수를 다 써버릴 수 있습니다.",
+    sshAgentKeyLoadFailed: "SSH agent의 identity 목록을 읽을 수 없습니다: {error}",
+    sshAgentKeyRefresh: "새로 고침",
   },
   editor: {
     duckdbDraining: "이전 DuckDB 쿼리가 아직 중지 중입니다. 잠시 후 다시 시도해 주세요.",
@@ -9298,6 +9303,8 @@ export default withEnglishFallback({
     tabGroupRowsSingle: "한 줄",
     tabGroupRowsTwoRow: "두 줄 (그룹을 별도 줄에 표시)",
     tabGroupRowsDescription: "탭 표시줄이 위쪽 또는 아래쪽에 있고 그룹화가 활성화된 경우에만 적용됩니다. 그룹은 별도의 줄에 표시되고 선택한 그룹의 탭은 다음 줄에 표시됩니다.",
+    linuxFloatingFrame: "창 투명 효과",
+    linuxFloatingFrameDescription: "지원되는 데스크톱에서 투명 테두리를 자동으로 활성화합니다. 창이 깜박이면 끌 수 있으며, 적용하고 DBX를 다시 시작한 후 적용됩니다. 환경 변수 설정이 우선합니다.",
     shortcutExecuteAllSql: "모든 SQL 실행",
   },
   driverStore: {

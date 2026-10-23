@@ -1863,6 +1863,11 @@ export default withEnglishFallback({
     redisClientKeyBrowse: "Selecionar chave privada do cliente do Redis",
     redisTlsCertificateHint: "Quando o certificado CA estiver em branco, o repositório de confiança do sistema será usado; se o servidor exigir autenticação mútua (tls-auth-clients yes), configure também o certificado do cliente e a chave privada.",
     redisClientCertPairRequired: "O certificado do cliente Redis TLS e a chave privada devem ser configurados juntos",
+    sshAgentKey: "Chave do agente",
+    sshAgentKeyAll: "Todas as identidades (tentar em sequência)",
+    sshAgentKeyHint: "Selecione uma chave já autorizada para este host. O servidor limita o número de tentativas de autenticação por conexão; tentar todas as chaves do agente uma a uma pode esgotar as tentativas antes de chegar à chave correta.",
+    sshAgentKeyLoadFailed: "Não foi possível ler a lista de identidades do agente SSH: {error}",
+    sshAgentKeyRefresh: "Atualizar",
   },
   editor: {
     duckdbDraining: "A consulta anterior do DuckDB ainda está sendo interrompida. Tente novamente em breve.",
@@ -9350,6 +9355,8 @@ export default withEnglishFallback({
     tabGroupRowsSingle: "Uma linha",
     tabGroupRowsTwoRow: "Duas linhas (grupos em linha própria)",
     tabGroupRowsDescription: "Aplica-se apenas a uma barra de abas no topo ou na base com agrupamento ativado: os grupos ocupam uma linha própria e as abas do grupo selecionado aparecem na linha seguinte.",
+    linuxFloatingFrame: "Efeito de transparência da janela",
+    linuxFloatingFrameDescription: "Ativa automaticamente bordas transparentes em desktops compatíveis. Pode ser desativado se a janela piscar; entra em vigor após aplicar e reiniciar o DBX. As configurações de variáveis de ambiente têm prioridade.",
     shortcutExecuteAllSql: "Executar todo o SQL",
   },
   driverStore: {

@@ -1883,6 +1883,11 @@ export default withEnglishFallback({
     redisClientKeyBrowse: "Redis クライアント秘密鍵を選択",
     redisTlsCertificateHint: "CA 証明書を空欄にするとシステムの信頼ストアを使用します。サーバーが相互認証（tls-auth-clients yes）を要求する場合は、クライアント証明書と秘密鍵も合わせて設定してください。",
     redisClientCertPairRequired: "Redis TLS のクライアント証明書と秘密鍵は同時に設定する必要があります",
+    sshAgentKey: "エージェントキー",
+    sshAgentKeyAll: "すべての identity（順番に試行）",
+    sshAgentKeyHint: "このホストで承認済みのキーを選択します。サーバーは単一接続での認証試行回数を制限するため、すべてのエージェントキーを順番に試すと、正しいキーに到達する前に試行回数を使い切る可能性があります。",
+    sshAgentKeyLoadFailed: "SSH エージェントの identity リストを読み取れません：{error}",
+    sshAgentKeyRefresh: "更新",
   },
   editor: {
     duckdbDraining: "前回の DuckDB クエリはまだ停止処理中です。しばらくしてから再試行してください。",
@@ -9390,6 +9395,8 @@ export default withEnglishFallback({
     tabGroupRowsSingle: "1行",
     tabGroupRowsTwoRow: "2行（グループを独立した行に表示）",
     tabGroupRowsDescription: "タブバーが上または下に配置されていて、グループ化が有効な場合にのみ適用されます。グループは専用の行に表示され、選択したグループのタブは次の行に表示されます。",
+    linuxFloatingFrame: "ウィンドウの透明効果",
+    linuxFloatingFrameDescription: "サポートされているデスクトップで透明な枠線を自動的に有効にします。ウィンドウがちらつく場合は無効にでき、適用して DBX を再起動すると反映されます。環境変数の設定が優先されます。",
     shortcutExecuteAllSql: "すべての SQL を実行",
   },
   driverStore: {
