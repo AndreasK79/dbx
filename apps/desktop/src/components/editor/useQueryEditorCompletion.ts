@@ -7,6 +7,7 @@ import type { CompletionMetadataScope } from "./queryEditorTypes";
 import { completionMatchRanges } from "@/lib/common/completionMatch";
 import { matchesIdentifierSearch } from "@/lib/sql/identifierSearch";
 import {
+  buildSnippetMenuItems,
   buildSqlCompletionItemsFromContext,
   buildPostgresSequenceLiteralCompletionItems,
   getSqlCompletionContext,
@@ -57,7 +58,8 @@ import { buildRedisCompletionItemsFromContext, getRedisCompletionContext, getRed
 import { buildGraphCompletionItems, getGraphCompletionContext, graphCompletionValidFor, shouldAutoOpenGraphCompletion } from "@/lib/graph/graphCompletion";
 import { isGraphQueryDatabase, type GraphQueryDatabase } from "@/lib/graph/graphQueryLanguage";
 import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
-import type { CompletionAssistantObjectKind, SqlServerCompletionContext } from "@/types/database";
+import type { CompletionAssistantObjectKind, SqlServerCompletionContext, SqlSnippet } from "@/types/database";
+import type { SnippetMenuController } from "@/lib/editor/queryEditorSnippetMenu";
 import type { ShallowRef, ComputedRef } from "vue";
 import type { Composer } from "vue-i18n";
 import type { useConnectionStore } from "@/stores/connectionStore";
@@ -72,6 +74,7 @@ interface QueryEditorCompletionRuntime {
   codeMirrorSnippetCompletion: typeof import("@codemirror/autocomplete").snippetCompletion;
   codeMirrorStartCompletion: typeof import("@codemirror/autocomplete").startCompletion | null;
   imeCompositionActive: boolean;
+  snippetMenu: Pick<SnippetMenuController, "isActive"> | null;
 }
 interface QueryEditorCompletionOptions {
   props: Readonly<QueryEditorProps>;
@@ -335,6 +338,23 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
         ]
       : [];
     return buildCompletionResult(actions.length > 0 ? [...replacement.items, ...actions] : replacement.items, replacement.from, getSqlCompletionResultValidFor(fullDoc, position), completionContext.prefix, fullDoc.slice(replacement.from, position));
+  }
+
+  // The "Show snippets in autocomplete" toggle removes snippets from typing
+  // suggestions — an empty list, never undefined, or the engine would fall
+  // back to its built-in snippets. The explicit snippet menu reads the list
+  // directly and ignores the toggle.
+  function activeEditorSnippets(): SqlSnippet[] | undefined {
+    return settingsStore.editorSettings.snippetSuggestions === false ? [] : settingsStore.editorSettings.snippets;
+  }
+
+  function buildSnippetMenuCompletionResult(state: import("@codemirror/state").EditorState, position: number) {
+    const items = buildSnippetMenuItems(settingsStore.editorSettings.snippets, settingsStore.editorSettings.sqlFormatter.keywordCase, snippetDatabaseType.value);
+    if (items.length === 0) return null;
+    // Filter from the word head so the menu follows typing; CodeMirror's live
+    // matcher narrows the list (see buildCompletionResult).
+    const word = state.wordAt(position);
+    return buildCompletionResult(items, word ? word.from : position, /^[\w-]*$/);
   }
 
   function itemHasHanText(item: QueryCompletionItem | BatchColumnSelectionActionItem): boolean {
@@ -808,6 +828,10 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     if (props.databaseType === "salesforce") {
       return provideSoqlCompletions(currentState, position, explicit);
     }
+    // DBeaver-style snippet menu (Ctrl+Alt+Space): an explicit request swaps
+    // the mixed suggestions for the snippet list, so the typing toggle does
+    // not apply and the trigger modes below never gate it.
+    if (runtime.snippetMenu?.isActive(currentState)) return buildSnippetMenuCompletionResult(currentState, position);
     const hasDatabase = props.database != null;
     const epoch = ++completionEpoch;
     context.addEventListener(
@@ -934,7 +958,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           columnsByTable: new Map(),
           schemas: [],
           translations: completionTranslations.value,
-          snippets: settingsStore.editorSettings.snippets,
+          snippets: activeEditorSnippets(),
           dialect: props.dialect,
           databaseType: snippetDatabaseType.value,
           driverProfile: sqlDriverProfile.value,
@@ -1000,7 +1024,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           columnsByTable: new Map(),
           schemas: [],
           translations: completionTranslations.value,
-          snippets: settingsStore.editorSettings.snippets,
+          snippets: activeEditorSnippets(),
           dialect: props.dialect,
           databaseType: snippetDatabaseType.value,
           driverProfile: sqlDriverProfile.value,
@@ -1333,7 +1357,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       foreignKeysByTable: cachedForeignKeysByTable,
       schemas: schemaNames,
       translations: completionTranslations.value,
-      snippets: settingsStore.editorSettings.snippets,
+      snippets: activeEditorSnippets(),
       dialect: props.dialect,
       databaseType: snippetDatabaseType.value,
       driverProfile: sqlDriverProfile.value,
@@ -1881,7 +1905,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       foreignKeysByTable,
       schemas: schemaNames,
       translations: completionTranslations.value,
-      snippets: settingsStore.editorSettings.snippets,
+      snippets: activeEditorSnippets(),
       dialect: props.dialect,
       databaseType: snippetDatabaseType.value,
       driverProfile: sqlDriverProfile.value,

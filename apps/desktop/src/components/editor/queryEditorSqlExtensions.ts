@@ -11,6 +11,7 @@ import { getSqlFunctionSignatureHelp } from "@/lib/sql/sqlCompletion";
 import { shellLineCommentTheme, sqlSemanticHighlightTheme } from "@/lib/editor/editorThemes";
 import { createStatementGutterMarkerDom } from "@/lib/editor/codemirrorStatementGutter";
 import { compareSqlCompletions } from "@/lib/editor/sqlCompletionPresentation";
+import { createSnippetMenuState } from "@/lib/editor/queryEditorSnippetMenu";
 import { currentStatementFrameLayer } from "@/lib/editor/codemirrorCurrentStatementFrameLayer";
 import { createSqlAliasHighlights } from "@/lib/editor/codemirrorSqlAliasHighlights";
 import { createDbxCodeMirrorSqlDialect, supportsQueryEditorSqlLanguage } from "@/lib/editor/codemirrorSqlDialect";
@@ -318,22 +319,30 @@ export function configureQueryEditorSqlExtensions(options: QueryEditorSqlExtensi
     });
   };
 
+  // The explicit snippet menu (Ctrl+Alt+Space) steers the shared completion
+  // source from editor state; completionStatus is resolved lazily because the
+  // runtime fills its module bindings asynchronously.
+  codeMirrorRuntime.snippetMenu = createSnippetMenuState({ StateEffect, StateField }, (state) => codeMirrorRuntime.codeMirrorCompletionStatus?.(state) ?? null);
+
   codeMirrorRuntime.buildSqlCompletionExtension = () => {
     if (!supportsQueryEditorSqlLanguage(props.databaseType)) return [];
-    return autocompletion({
-      activateOnTyping: true,
-      defaultKeymap: false,
-      selectOnOpen: settingsStore.editorSettings.selectFirstCompletionOnOpen,
-      compareCompletions: (a, b) => compareSqlCompletions(a, b, settingsStore.editorSettings.sortCompletionColumnsAlphabetically),
-      // Keep normal completion lists virtualized; batch-field selection needs every row in the DOM.
-      maxRenderedOptions: batchSelection.expandedRendering ? Number.MAX_SAFE_INTEGER : 100,
-      optionClass: (completion) => ((completion as QueryCompletionOption).dbxBatchColumnSelectionAction ? "cm-batch-column-selection-action" : ""),
-      addToOptions: [
-        { position: 5, render: renderBatchColumnSelectionActionMarker },
-        { position: 10, render: renderBatchColumnSelectionCheckbox },
-      ],
-      override: [async (context: CompletionContext) => provideSqlCompletions(context)],
-    });
+    return [
+      codeMirrorRuntime.snippetMenu?.extensions ?? [],
+      autocompletion({
+        activateOnTyping: true,
+        defaultKeymap: false,
+        selectOnOpen: settingsStore.editorSettings.selectFirstCompletionOnOpen,
+        compareCompletions: (a, b) => compareSqlCompletions(a, b, settingsStore.editorSettings.sortCompletionColumnsAlphabetically),
+        // Keep normal completion lists virtualized; batch-field selection needs every row in the DOM.
+        maxRenderedOptions: batchSelection.expandedRendering ? Number.MAX_SAFE_INTEGER : 100,
+        optionClass: (completion) => ((completion as QueryCompletionOption).dbxBatchColumnSelectionAction ? "cm-batch-column-selection-action" : ""),
+        addToOptions: [
+          { position: 5, render: renderBatchColumnSelectionActionMarker },
+          { position: 10, render: renderBatchColumnSelectionCheckbox },
+        ],
+        override: [async (context: CompletionContext) => provideSqlCompletions(context)],
+      }),
+    ];
   };
 
   const shellLineCommentHighlightPlugin = createShellLineCommentHighlight({ ViewPlugin, Decoration, highlightingFor, syntaxTree });

@@ -475,6 +475,12 @@ describe("normalizeEditorSettings", () => {
     expect(normalizeEditorSettings({ snippetTriggerKey: "enter" as any }).snippetTriggerKey).toBe("tab");
   });
 
+  it("defaults snippetSuggestions to true and preserves the opt-out", () => {
+    expect(normalizeEditorSettings({}).snippetSuggestions).toBe(true);
+    expect(normalizeEditorSettings({ snippetSuggestions: false }).snippetSuggestions).toBe(false);
+    expect(normalizeEditorSettings({ snippetSuggestions: "no" as unknown as boolean }).snippetSuggestions).toBe(true);
+  });
+
   it("selects the first completion candidate by default and preserves the opt-out", () => {
     expect(normalizeEditorSettings({}).selectFirstCompletionOnOpen).toBe(true);
     expect(normalizeEditorSettings({ selectFirstCompletionOnOpen: true }).selectFirstCompletionOnOpen).toBe(true);

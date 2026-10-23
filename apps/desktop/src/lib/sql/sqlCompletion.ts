@@ -6511,6 +6511,32 @@ function buildSnippetItems(prefix: string, snippets: SqlSnippet[], keywordCase?:
     });
 }
 
+/**
+ * Every enabled snippet, ungated: the explicit snippet menu (Ctrl+Alt+Space)
+ * lists them all instead of matching a typed prefix, with CodeMirror's live
+ * filter narrowing the list as the user keeps typing from the word start.
+ */
+export function buildSnippetMenuItems(snippets: SqlSnippet[] | undefined, keywordCase?: SqlKeywordCase, databaseType?: DatabaseType): SqlCompletionItem[] {
+  return (snippets ?? DEFAULT_SQL_SNIPPETS)
+    .filter((snippet) => snippet.enabled !== false)
+    .map((snippet) => {
+      const resolvedBody = resolveSqlSnippetBodyForDatabase(snippet, databaseType);
+      const body = applyBuiltinSnippetKeywordCase(snippet, resolvedBody, keywordCase);
+      const apply = finalizeSnippetCursor(applyBuiltinSnippetKeywordCase(snippet, applyBuiltinSnippetPlaceholders(snippet, resolvedBody), keywordCase));
+      const compactPrefix = snippetCompactText(snippet.prefix);
+      const filterText = compactPrefix.length > 0 && compactPrefix !== snippet.prefix ? compactPrefix : snippet.prefix;
+      return {
+        label: snippet.label,
+        filterText,
+        type: "snippet" as const,
+        detail: body,
+        apply,
+        // Neutral ranking: the menu has no typed prefix to boost against.
+        boost: 0,
+      };
+    });
+}
+
 function activeFunctionSignatures(databaseType?: DatabaseType, driverProfile?: string): Map<string, string[]> {
   const commonFunctionNames = databaseType === "cloudflare-d1" ? CLOUDFLARE_D1_COMMON_FUNCTION_NAMES : COMMON_SQL_FUNCTION_NAMES;
   const signatures = databaseType ? new Map(Array.from(SQL_FUNCTION_SIGNATURES.entries()).filter(([name]) => commonFunctionNames.has(name))) : new Map(SQL_FUNCTION_SIGNATURES);

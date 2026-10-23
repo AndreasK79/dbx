@@ -36,6 +36,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "functionCompletionIncludeParams",
   "sequenceCompletionEnabled",
   "snippetTriggerKey",
+  "snippetSuggestions",
   "sortCompletionColumnsAlphabetically",
   "selectFirstCompletionOnOpen",
   "wordWrap",

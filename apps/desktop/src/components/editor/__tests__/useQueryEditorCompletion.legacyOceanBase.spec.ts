@@ -52,7 +52,7 @@ function createEditor(sql = "CALL APP.R") {
     sqlDriverProfile: computed(() => undefined),
     t: ((key: string) => key) as Options["t"],
     metadata,
-    runtime: { codeMirrorInsertCompletionText: insertCompletionText, codeMirrorSnippetCompletion: snippetCompletion, codeMirrorCompletionStatus: () => null, imeCompositionActive: false },
+    runtime: { codeMirrorInsertCompletionText: insertCompletionText, codeMirrorSnippetCompletion: snippetCompletion, codeMirrorCompletionStatus: () => null, imeCompositionActive: false, snippetMenu: null },
     batchSelection: {
       clearBatchColumnSelectionSession: () => undefined,
       prepareBatchColumnSelectionSession: () => null,

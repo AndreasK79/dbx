@@ -1,6 +1,7 @@
 import { StateEffect } from "@codemirror/state";
 import type { StatementExecutionMarker } from "@/lib/tabs/tabPresentation";
 import { type SqlSemanticDiagnostic } from "@/lib/sql/semantic/diagnostics";
+import type { SnippetMenuController } from "@/lib/editor/queryEditorSnippetMenu";
 
 interface CodeMirrorBindings {
   editorViewModule: typeof import("@codemirror/view") | null;
@@ -38,6 +39,7 @@ interface CodeMirrorBindings {
   buildSqlCompletionExtension: (() => import("@codemirror/state").Extension) | null;
   buildSqlLanguageExtension: (() => import("@codemirror/state").Extension) | null;
   buildSqlSemanticHighlightExtension: (() => import("@codemirror/state").Extension) | null;
+  snippetMenu: SnippetMenuController | null;
   codeMirrorSnippetCompletion: typeof import("@codemirror/autocomplete").snippetCompletion;
   codeMirrorCompletionStatus: typeof import("@codemirror/autocomplete").completionStatus | null;
   codeMirrorAcceptCompletion: typeof import("@codemirror/autocomplete").acceptCompletion | null;
@@ -192,6 +194,7 @@ export function createQueryEditorCodeMirrorRuntime() {
     buildSqlCompletionExtension: null,
     buildSqlLanguageExtension: null,
     buildSqlSemanticHighlightExtension: null,
+    snippetMenu: null,
     codeMirrorSnippetCompletion: undefined!,
     codeMirrorCompletionStatus: null,
     codeMirrorAcceptCompletion: null,

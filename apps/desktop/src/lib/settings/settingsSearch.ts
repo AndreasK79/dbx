@@ -616,6 +616,13 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
     targetId: "snippet-trigger-key",
     keywordKeys: ["settings.snippetTriggerKeyTab", "settings.snippetTriggerKeySpace", "settings.snippetTriggerKeyBoth"],
   },
+  {
+    id: "snippet-suggestions",
+    category: "snippets",
+    titleKey: "settings.snippetSuggestionsEnabled",
+    descriptionKey: "settings.snippetSuggestionsEnabledDescription",
+    targetId: "snippet-suggestions",
+  },
   { id: "sync-webdav", category: "sync", titleKey: "settings.syncWebDavTitle", descriptionKey: "settings.syncWebDavDescription", targetId: "sync-webdav", route: { syncMethodTab: "webdav" } },
   { id: "sync-webdav-endpoint", category: "sync", titleKey: "settings.syncEndpoint", targetId: "sync-webdav", route: { syncMethodTab: "webdav" } },
   { id: "sync-webdav-username", category: "sync", titleKey: "settings.syncUsername", targetId: "sync-webdav", route: { syncMethodTab: "webdav" } },

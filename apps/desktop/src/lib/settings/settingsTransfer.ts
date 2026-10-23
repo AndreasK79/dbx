@@ -286,7 +286,7 @@ const SETTINGS_TRANSFER_CATEGORY_KEYS: Record<SettingsTransferCategoryId, readon
     "globalDateTimeImportFormat",
   ],
   shortcuts: ["shortcuts", "sqlShortcuts"],
-  snippets: ["snippets", "snippetTriggerKey"],
+  snippets: ["snippets", "snippetTriggerKey", "snippetSuggestions"],
   other: ["updateDownloadSource", "updateNotificationsEnabled", "autoDownloadUpdates", "autoUpdateApp", "autoUpdateDrivers", "autoUpdateJdbc", "autoUpdateMcp", "autoUpdatePlugins"],
 };
 

@@ -70,7 +70,7 @@ function createHarness(overrides: Partial<QueryEditorProps> = {}, configureMetad
   const metadata = useQueryEditorCompletionMetadata({ props, view, connectionStore, sqlBehaviorDialect: () => props.dialect, remoteLatencyBudgetMs: 40, maxCompletionTables: 100, onDemandMinPrefix: 2, semanticCompletionEnabled });
   configureMetadata?.(metadata);
   const startCompletion = vi.fn(() => true);
-  const runtime: Options["runtime"] = { codeMirrorStartCompletion: startCompletion, codeMirrorInsertCompletionText: insertCompletionText, codeMirrorSnippetCompletion: snippetCompletion, codeMirrorCompletionStatus: () => null, imeCompositionActive: false };
+  const runtime: Options["runtime"] = { codeMirrorStartCompletion: startCompletion, codeMirrorInsertCompletionText: insertCompletionText, codeMirrorSnippetCompletion: snippetCompletion, codeMirrorCompletionStatus: () => null, imeCompositionActive: false, snippetMenu: null };
   const batchSelection = {
     clearBatchColumnSelectionSession: vi.fn(),
     prepareBatchColumnSelectionSession: vi.fn(() => null),

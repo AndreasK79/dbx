@@ -1534,6 +1534,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         }),
         ...binding(shortcuts.sqlIntentionActions, handleSqlIntentionActions),
         ...createQueryEditorCompletionShortcutBindings(shortcuts.triggerCompletion, triggerSqlCompletion),
+        ...binding(shortcuts.openSnippetMenu, (currentView) => codeMirrorRuntime.snippetMenu?.open(currentView, codeMirrorRuntime.codeMirrorStartCompletion) ?? false),
         ...createQueryEditorSearchKeymap({
           openSearch,
           openReplace,
@@ -2050,6 +2051,9 @@ const completion = useQueryEditorCompletion({
     },
     get imeCompositionActive() {
       return imeCompositionActive;
+    },
+    get snippetMenu() {
+      return codeMirrorRuntime.snippetMenu;
     },
   },
 });

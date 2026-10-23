@@ -979,6 +979,7 @@ export type WebLogoPosition = "left" | "right" | "hidden";
 
 export interface EditorSettings {
   snippetTriggerKey: SnippetTriggerKey;
+  snippetSuggestions: boolean;
   fontFamily: string;
   fontSize: number;
   uiFontFamily: string;
@@ -1401,6 +1402,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   functionCompletionIncludeParams: true,
   sequenceCompletionEnabled: true,
   snippetTriggerKey: "tab",
+  snippetSuggestions: true,
   sortCompletionColumnsAlphabetically: true,
   selectFirstCompletionOnOpen: true,
   wordWrap: false,
@@ -2081,6 +2083,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     functionCompletionIncludeParams: typeof settings.functionCompletionIncludeParams === "boolean" ? settings.functionCompletionIncludeParams : DEFAULT_EDITOR_SETTINGS.functionCompletionIncludeParams,
     sequenceCompletionEnabled: typeof settings.sequenceCompletionEnabled === "boolean" ? settings.sequenceCompletionEnabled : DEFAULT_EDITOR_SETTINGS.sequenceCompletionEnabled,
     snippetTriggerKey: settings.snippetTriggerKey === "space" || settings.snippetTriggerKey === "both" ? settings.snippetTriggerKey : DEFAULT_EDITOR_SETTINGS.snippetTriggerKey,
+    snippetSuggestions: typeof settings.snippetSuggestions === "boolean" ? settings.snippetSuggestions : DEFAULT_EDITOR_SETTINGS.snippetSuggestions,
     sortCompletionColumnsAlphabetically: typeof settings.sortCompletionColumnsAlphabetically === "boolean" ? settings.sortCompletionColumnsAlphabetically : DEFAULT_EDITOR_SETTINGS.sortCompletionColumnsAlphabetically,
     selectFirstCompletionOnOpen: typeof settings.selectFirstCompletionOnOpen === "boolean" ? settings.selectFirstCompletionOnOpen : DEFAULT_EDITOR_SETTINGS.selectFirstCompletionOnOpen,
     wordWrap: settings.wordWrap ?? DEFAULT_EDITOR_SETTINGS.wordWrap,
@@ -3002,6 +3005,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.functionCompletionIncludeParams !== undefined) editorSettings.value.functionCompletionIncludeParams = partial.functionCompletionIncludeParams === true;
     if (partial.sequenceCompletionEnabled !== undefined) editorSettings.value.sequenceCompletionEnabled = partial.sequenceCompletionEnabled === true;
     if (partial.snippetTriggerKey !== undefined) editorSettings.value.snippetTriggerKey = partial.snippetTriggerKey === "space" || partial.snippetTriggerKey === "both" ? partial.snippetTriggerKey : "tab";
+    if (partial.snippetSuggestions !== undefined) editorSettings.value.snippetSuggestions = partial.snippetSuggestions === true;
     if (partial.sortCompletionColumnsAlphabetically !== undefined) editorSettings.value.sortCompletionColumnsAlphabetically = partial.sortCompletionColumnsAlphabetically === true;
     if (partial.selectFirstCompletionOnOpen !== undefined) editorSettings.value.selectFirstCompletionOnOpen = partial.selectFirstCompletionOnOpen === true;
     if (partial.wordWrap !== undefined) editorSettings.value.wordWrap = partial.wordWrap;

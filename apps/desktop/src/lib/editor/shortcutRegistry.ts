@@ -13,6 +13,7 @@ export type ShortcutActionId =
   | "saveSql"
   | "acceptCompletion"
   | "triggerCompletion"
+  | "openSnippetMenu"
   | "indentMore"
   | "indentLess"
   | "insertLineBelow"
@@ -277,6 +278,15 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutTriggerCompletion",
     scope: "editor",
     defaultShortcut: "Alt+/",
+  },
+  {
+    // DBeaver-style explicit snippet menu: swaps the normal suggestions for
+    // the snippet list, typed text filters it. Ignores the "Show snippets in
+    // autocomplete" toggle — that one only cleans up typing suggestions.
+    id: "openSnippetMenu",
+    labelKey: "settings.shortcutOpenSnippetMenu",
+    scope: "editor",
+    defaultShortcut: "Mod+Alt+Space",
   },
   {
     id: "indentMore",

@@ -1112,6 +1112,7 @@ function editableSnippet(snippet: SqlSnippet): SqlSnippet {
 
 const editSnippets = ref<SqlSnippet[]>(settingsStore.editorSettings.snippets.map(editableSnippet));
 const editSnippetTriggerKey = ref<SnippetTriggerKey>(settingsStore.editorSettings.snippetTriggerKey);
+const editSnippetSuggestions = ref(settingsStore.editorSettings.snippetSuggestions);
 
 // --- Snippet filter ---
 const snippetFilter = ref("");
@@ -1417,6 +1418,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     toolbarItems: { ...editToolbarItems.value },
     snippets: editSnippets.value,
     snippetTriggerKey: editSnippetTriggerKey.value,
+    snippetSuggestions: editSnippetSuggestions.value,
     sqlShortcuts: editSqlShortcuts.value,
     sqlVariableSubstitutionEnabled: editSqlVariableSubstitutionEnabled.value,
     sqlVariableSyntaxOverrides: editSqlVariableSyntaxOverrides.value,
@@ -2255,6 +2257,7 @@ function syncEditorSettingsDraftFromStore() {
   editToolbarItems.value = { ...settingsStore.editorSettings.toolbarItems };
   editSnippets.value = settingsStore.editorSettings.snippets.map(editableSnippet);
   editSnippetTriggerKey.value = settingsStore.editorSettings.snippetTriggerKey;
+  editSnippetSuggestions.value = settingsStore.editorSettings.snippetSuggestions;
   editSqlShortcuts.value = mergeDefaultSqlShortcuts(settingsStore.editorSettings.sqlShortcuts.map(editableSqlShortcut));
   editSqlVariableSubstitutionEnabled.value = settingsStore.editorSettings.sqlVariableSubstitutionEnabled;
   editSqlVariableSyntaxOverrides.value = normalizeSqlVariableSyntaxOverrides(settingsStore.editorSettings.sqlVariableSyntaxOverrides);
@@ -2428,6 +2431,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   toolbarItems: editToolbarItems,
   snippets: editSnippets,
   snippetTriggerKey: editSnippetTriggerKey,
+  snippetSuggestions: editSnippetSuggestions,
   sqlShortcuts: editSqlShortcuts,
   sqlVariableSubstitutionEnabled: editSqlVariableSubstitutionEnabled,
   sqlVariableSyntaxOverrides: editSqlVariableSyntaxOverrides,
@@ -3055,6 +3059,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
   } else if (tab === "snippets") {
     editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
     editSnippetTriggerKey.value = DEFAULT_EDITOR_SETTINGS.snippetTriggerKey;
+    editSnippetSuggestions.value = DEFAULT_EDITOR_SETTINGS.snippetSuggestions;
   } else if (tab === "updates") {
     editAutoUpdateApp.value = DEFAULT_EDITOR_SETTINGS.autoUpdateApp;
     editAutoUpdateDrivers.value = DEFAULT_EDITOR_SETTINGS.autoUpdateDrivers;
@@ -3230,6 +3235,7 @@ function resetAllDefaults() {
   editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
   editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
   editSnippetTriggerKey.value = DEFAULT_EDITOR_SETTINGS.snippetTriggerKey;
+  editSnippetSuggestions.value = DEFAULT_EDITOR_SETTINGS.snippetSuggestions;
   editSqlShortcuts.value = DEFAULT_SQL_SHORTCUTS.map(editableSqlShortcut);
 }
 
@@ -11363,6 +11369,16 @@ onUnmounted(() => {
                     <SelectItem value="both">{{ t("settings.snippetTriggerKeyBoth") }}</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              <div data-settings-search-id="snippet-suggestions" :class="['settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2', settingsSearchTargetClass('snippet-suggestions')]">
+                <div class="min-w-0 space-y-1">
+                  <Label for="editor-snippet-suggestions">{{ t("settings.snippetSuggestionsEnabled") }}</Label>
+                  <p class="text-xs leading-tight text-muted-foreground">
+                    {{ t("settings.snippetSuggestionsEnabledDescription") }}
+                  </p>
+                </div>
+                <Switch id="editor-snippet-suggestions" v-model="editSnippetSuggestions" class="mt-0.5" />
               </div>
 
               <div class="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">

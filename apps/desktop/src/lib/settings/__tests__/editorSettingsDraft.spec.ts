@@ -146,6 +146,12 @@ describe("EDITOR_SETTINGS_DRAFT_KEYS", () => {
     expect(draft.snippetTriggerKey).toBe("space");
   });
 
+  it("includes the snippet autocomplete toggle in draft keys and draft conversion", () => {
+    expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("snippetSuggestions");
+    const draft = editorSettingsDraftFromSettings(makeSettings({ snippetSuggestions: false }));
+    expect(draft.snippetSuggestions).toBe(false);
+  });
+
   it("includes data grid type colors", () => {
     expect(EDITOR_SETTINGS_DRAFT_KEYS).toContain("colorizeDataGridCellTypes");
   });

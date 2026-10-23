@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildSnippetItemsForTest, buildSqlCompletionItems } from "@/lib/sql/sqlCompletion";
+import { buildSnippetItemsForTest, buildSnippetMenuItems, buildSqlCompletionItems } from "@/lib/sql/sqlCompletion";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS } from "@/lib/sql/sqlSnippetTemplates";
 import type { SqlSnippet } from "@/types/database";
 
@@ -512,6 +512,38 @@ describe("buildSnippetItems", () => {
 
     // $1/$2 are valid PostgreSQL bind parameters, not tabstops; \$0 is escaped.
     expect(items[0].apply).toBe("EXECUTE stmt($1, $2) -- \\$0 stays");
+  });
+});
+
+describe("buildSnippetMenuItems", () => {
+  // The explicit snippet menu (Ctrl+Alt+Space) has no typed prefix to match:
+  // it lists everything enabled and lets CodeMirror filter as the user types.
+  it("lists every enabled snippet ungated by a typed prefix", () => {
+    const items = buildSnippetMenuItems(TEST_SNIPPETS);
+
+    expect(items.map((item) => item.label)).toEqual(["select all", "insert row"]);
+    expect(items[0]).toEqual(expect.objectContaining({ filterText: "sel", type: "snippet", apply: "SELECT *\nFROM my_table;" }));
+  });
+
+  it("drops disabled snippets and falls back to the built-ins when none are configured", () => {
+    expect(buildSnippetMenuItems([{ ...TEST_SNIPPETS[0], enabled: false }])).toEqual([]);
+
+    const defaults = buildSnippetMenuItems(undefined);
+    expect(defaults).toHaveLength(DEFAULT_SQL_SNIPPETS.length);
+    expect(defaults.every((item) => item.type === "snippet")).toBe(true);
+  });
+
+  it("keeps the hyphen-free spelling as the filter text for hyphenated triggers", () => {
+    const items = buildSnippetMenuItems([{ id: "ticket", label: "IC-1001", prefix: "IC-1001", body: "SELECT 1001;" }]);
+
+    expect(items).toEqual([expect.objectContaining({ label: "IC-1001", filterText: "IC1001" })]);
+  });
+
+  it("applies built-in placeholders and database syntax in the menu items", () => {
+    const items = buildSnippetMenuItems([BUILTIN_SELECT], undefined, "oracle");
+
+    expect(items[0].detail).toBe("SELECT *\nFROM table\nWHERE ROWNUM <= 100;");
+    expect(items[0].apply).toBe("SELECT *\nFROM ${table}\nWHERE ROWNUM <= 100;");
   });
 });
 
