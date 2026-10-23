@@ -8080,6 +8080,11 @@ fn build_custom_type_ddl(
                 warnings: all,
             }
         }
+        CustomTypeKind::Object | CustomTypeKind::Collection | CustomTypeKind::Other => CustomTypeDdl {
+            sql: String::new(),
+            complete: false,
+            warnings: vec!["Not a PostgreSQL custom type category".to_string()],
+        },
     }
 }
 
@@ -8154,6 +8159,9 @@ pub async fn get_custom_type_details(pool: &Pool, schema: &str, name: &str) -> R
             warnings.extend(custom_type_range_attributes(client, info.oid, true, &mut properties).await);
         }
         CustomTypeKind::Base => {}
+        CustomTypeKind::Object | CustomTypeKind::Collection | CustomTypeKind::Other => {
+            return Err("not a PostgreSQL custom type category".to_string());
+        }
     }
 
     let ddl = build_custom_type_ddl(schema, name, kind, &info, &members, &properties, &warnings);
@@ -8165,6 +8173,7 @@ pub async fn get_custom_type_details(pool: &Pool, schema: &str, name: &str) -> R
         members,
         properties,
         ddl: Some(ddl),
+        oracle_metadata: None,
     })
 }
 

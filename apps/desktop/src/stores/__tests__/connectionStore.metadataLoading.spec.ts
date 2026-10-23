@@ -4693,6 +4693,7 @@ describe("connectionStore metadata loading", () => {
       checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
       deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
       getCustomTypeDetails,
+      listInstalledAgents: vi.fn().mockResolvedValue([]),
       loadSchemaCache: vi.fn().mockResolvedValue(null),
       saveSchemaCache: vi.fn().mockResolvedValue(undefined),
       saveConnections: vi.fn().mockResolvedValue(undefined),
@@ -4741,6 +4742,148 @@ describe("connectionStore metadata loading", () => {
     expect(typeNode.hasMembers).toBe(true);
     expect(typeNode.children?.map((child) => child.label)).toEqual(["published"]);
     expect(store.isTreeNodeChildrenLoaded(typeNode.id)).toBe(true);
+  });
+
+  it("loads Oracle TYPE attributes on demand, caches known-empty results, retries failures, and ignores stale detail responses", async () => {
+    let resolveStale!: (value: any) => void;
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    const oracleDetails = (attributes: any[]) => ({
+      name: "TYPE_OBJ",
+      schema: "APP",
+      kind: "object",
+      members: [],
+      oracleMetadata: {
+        attributesRead: { state: "available" },
+        methodsRead: { state: "available" },
+        propertiesRead: { state: "available" },
+        collectionRead: { state: "unsupported" },
+        bodyRead: { state: "unsupported" },
+        attributes,
+        methods: [],
+      },
+    });
+    const getCustomTypeDetails = vi
+      .fn()
+      .mockResolvedValueOnce(oracleDetails([]))
+      .mockRejectedValueOnce(new Error("temporary catalog failure"))
+      .mockResolvedValueOnce(oracleDetails([{ name: "STREET", ordinal: 1, typeName: "VARCHAR2" }]))
+      .mockReturnValueOnce(stale)
+      .mockResolvedValueOnce(oracleDetails([{ name: "CITY", ordinal: 1, typeName: "VARCHAR2" }]));
+
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({
+      checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+      deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+      getCustomTypeDetails,
+      listInstalledAgents: vi.fn().mockResolvedValue([]),
+      loadSchemaCache: vi.fn().mockResolvedValue(null),
+      saveSchemaCache: vi.fn().mockResolvedValue(undefined),
+      saveConnections: vi.fn().mockResolvedValue(undefined),
+      saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    const connection = oracleConnection();
+    const typeNode: TreeNode = {
+      id: `${connection.id}:XE:APP:TYPE_OBJ`,
+      label: "TYPE_OBJ",
+      objectName: "TYPE_OBJ",
+      type: "type",
+      connectionId: connection.id,
+      database: "XE",
+      schema: "APP",
+      children: undefined,
+    };
+    store.connections = [connection];
+    store.connectedIds.add(connection.id);
+    store.treeNodes = [{ id: connection.id, label: connection.name, type: "connection", connectionId: connection.id, children: [typeNode] }];
+
+    await store.loadCustomTypeChildren(typeNode, { force: true });
+    expect(typeNode.hasMembers).toBe(false);
+    expect(typeNode.children).toEqual([]);
+    await expect(store.loadCustomTypeChildren(typeNode, { force: true })).rejects.toThrow("temporary catalog failure");
+    await store.loadCustomTypeChildren(typeNode, { force: true });
+    expect(typeNode.hasMembers).toBe(true);
+    expect(typeNode.children?.map((child) => child.label)).toEqual(["STREET"]);
+
+    const staleLoad = store.loadCustomTypeChildren(typeNode, { force: true });
+    await vi.waitFor(() => expect(getCustomTypeDetails).toHaveBeenCalledTimes(4));
+    await store.loadCustomTypeChildren(typeNode, { force: true });
+    resolveStale(oracleDetails([{ name: "STALE", ordinal: 1, typeName: "VARCHAR2" }]));
+    await staleLoad;
+    expect(typeNode.children?.map((child) => child.label)).toEqual(["CITY"]);
+    expect(typeNode.hasMembers).toBe(true);
+  });
+
+  it("keeps Oracle attributes unknown and retryable when a successful detail DTO reports unavailable or incomplete reads", async () => {
+    const oracleDetails = (read: { state: string; reason?: string }, attributes: any[]) => ({
+      name: "TYPE_OBJ",
+      schema: "APP",
+      kind: "object",
+      members: [],
+      oracleMetadata: {
+        attributesRead: read,
+        methodsRead: { state: "available" },
+        propertiesRead: { state: "available" },
+        collectionRead: { state: "unsupported" },
+        bodyRead: { state: "unsupported" },
+        attributes,
+        methods: [],
+      },
+    });
+    const getCustomTypeDetails = vi
+      .fn()
+      .mockResolvedValueOnce(oracleDetails({ state: "unavailable", reason: "Dictionary access denied." }, []))
+      .mockResolvedValueOnce(oracleDetails({ state: "incomplete", reason: "One attribute row could not be read." }, [{ name: "STREET", ordinal: 1, typeName: "VARCHAR2" }]))
+      .mockResolvedValueOnce(oracleDetails({ state: "available" }, []));
+
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({
+      checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+      deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+      getCustomTypeDetails,
+      listInstalledAgents: vi.fn().mockResolvedValue([]),
+      loadSchemaCache: vi.fn().mockResolvedValue(null),
+      saveSchemaCache: vi.fn().mockResolvedValue(undefined),
+      saveConnections: vi.fn().mockResolvedValue(undefined),
+      saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    const connection = oracleConnection();
+    const typeNode: TreeNode = {
+      id: `${connection.id}:XE:APP:TYPE_OBJ`,
+      label: "TYPE_OBJ",
+      objectName: "TYPE_OBJ",
+      type: "type",
+      connectionId: connection.id,
+      database: "XE",
+      schema: "APP",
+      children: undefined,
+    };
+    store.connections = [connection];
+    store.connectedIds.add(connection.id);
+    store.treeNodes = [{ id: connection.id, label: connection.name, type: "connection", connectionId: connection.id, children: [typeNode] }];
+
+    await store.loadCustomTypeChildren(typeNode);
+    expect(typeNode.hasMembers).toBeUndefined();
+    expect(typeNode.children).toEqual([]);
+    expect(store.isTreeNodeChildrenLoaded(typeNode.id)).toBe(false);
+
+    await store.loadCustomTypeChildren(typeNode);
+    expect(typeNode.hasMembers).toBeUndefined();
+    expect(typeNode.children?.map((child) => child.label)).toEqual(["STREET"]);
+    expect(store.isTreeNodeChildrenLoaded(typeNode.id)).toBe(false);
+
+    await store.loadCustomTypeChildren(typeNode);
+    expect(typeNode.hasMembers).toBe(false);
+    expect(typeNode.children).toEqual([]);
+    expect(store.isTreeNodeChildrenLoaded(typeNode.id)).toBe(true);
+    expect(getCustomTypeDetails).toHaveBeenCalledTimes(3);
   });
 
   it("loads more object group children for catalogless databases with empty database string", async () => {
@@ -4846,5 +4989,68 @@ describe("connectionStore metadata loading", () => {
     expect(listTables.mock.calls[1][5]).toBe(200);
     const labels = (tablesGroup.children ?? []).filter((child) => child.type === "table").map((child) => child.label);
     expect(labels).toContain("t_0201");
+  });
+
+  it("expands the catalogless default database on open and refreshes it after saving a schema filter", async () => {
+    const listDatabases = vi.fn().mockResolvedValue([]);
+    const listSchemaInfos = vi.fn().mockResolvedValue([{ name: "APP_USER" }, { name: "APP_USER_ARCHIVE" }, { name: "SYS" }]);
+
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({
+      checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+      deleteSchemaCachePrefix: vi.fn().mockResolvedValue(undefined),
+      listDatabases,
+      listInstalledAgents: vi.fn().mockResolvedValue([]),
+      listObjects: vi.fn().mockResolvedValue([]),
+      listSchemaInfos,
+      listTables: vi.fn().mockResolvedValue([]),
+      loadSchemaCache: vi.fn().mockResolvedValue(null),
+      saveSchemaCache: vi.fn().mockResolvedValue(undefined),
+      saveConnections: vi.fn().mockResolvedValue(undefined),
+      saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
+    }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    // A Zenith (GaussDB 100) server through generic JDBC: no catalogs, users are schemas.
+    const connection = {
+      ...genericJdbcConnection(),
+      id: "zenith-1",
+      name: "Zenith",
+      database: "",
+      connection_string: "jdbc:zenith:@127.0.0.1:1888",
+      jdbc_driver_class: "com.huawei.gauss.jdbc.ZenithDriver",
+    } as ConnectionConfig;
+    const connectionNode: TreeNode = { id: connection.id, label: connection.name, type: "connection", connectionId: connection.id, isExpanded: true, children: [] };
+    store.connections = [connection];
+    store.connectedIds.add(connection.id);
+    store.treeNodes = [connectionNode];
+    store.sidebarLayout = { groups: [], order: [{ type: "connection", id: connection.id }] };
+
+    await store.loadDatabases(connection.id, { force: true });
+    // Saving the filter rebuilds the tree, so always resolve the live node.
+    const findById = (nodes: TreeNode[], id: string): TreeNode | undefined => {
+      for (const node of nodes) {
+        if (node.id === id) return node;
+        const found = findById(node.children ?? [], id);
+        if (found) return found;
+      }
+      return undefined;
+    };
+    const defaultDatabase = () => findById(store.treeNodes, "zenith-1:")!;
+    const schemaLabels = () =>
+      defaultDatabase()
+        .children?.filter((node) => node.type === "schema")
+        .map((node) => node.label);
+    // Opening the connection expands the placeholder default database so the schemas show at once.
+    expect(defaultDatabase().id).toBe("zenith-1:");
+    expect(defaultDatabase().isExpanded).toBe(true);
+    expect(schemaLabels()).toEqual(["APP_USER", "APP_USER_ARCHIVE", "SYS"]);
+
+    await store.setVisibleSchemas(connection.id, "", ["APP_USER"]);
+
+    // The saved filter must show without a manual refresh of the connection.
+    expect(store.getConfig(connection.id)?.visible_schemas).toEqual({ "": ["APP_USER"] });
+    expect(schemaLabels()).toEqual(["APP_USER"]);
   });
 });

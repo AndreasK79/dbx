@@ -81,6 +81,10 @@ import CustomTypeInfoPanel from "@/components/objects/CustomTypeInfoPanel.vue";
 import TablePartitionsPanel from "@/components/structure/TablePartitionsPanel.vue";
 import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue";
 import * as api from "@/lib/backend/api";
+import ObjectDependenciesPanel from "@/components/objects/ObjectDependenciesPanel.vue";
+import { objectDependencyTarget, type ObjectDependencyTarget, type ObjectDetailsSection } from "@/lib/database/objectDependencyDetails";
+import type { SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
+import type { QueryTab } from "@/types/database";
 import type { ColumnInfo, ConnectionConfig, ConstraintInfo, ForeignKeyInfo, IndexInfo, ObjectBrowserViewMode, ObjectBrowserViewport, ObjectInfo, ObjectSourceKind, ObjectStatistics, PgTablePartitioning, SchemaIndexIdentity, TableInfoTab, TreeNode, TriggerInfo } from "@/types/database";
 import { sortTablesByFkDependency, type TableWithFk } from "@/lib/table/tableDependencySort";
 import { isSchemaAware, supportsTableVacuum, supportsTransfer } from "@/lib/database/databaseCapabilities";
@@ -186,7 +190,8 @@ import {
 } from "@/lib/table/objectBrowserRows";
 import { isSourceOnlyObjectBrowserRow, resolveRowClickAction, shouldDeferSingleClick, singleClickRowAction, type ObjectBrowserRowAction } from "@/lib/table/objectBrowserRowAction";
 import { objectBrowserTableSelectionAnchor, objectBrowserTableSelectionRange } from "@/lib/table/objectBrowserSelection";
-import { customTypeCapabilities, sidebarObjectKindsForDatabase, supportsSchemaIndexManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, isOracleFamilyTypeSource, sidebarObjectKindsForDatabase, supportsOracleFamilyTypeManagement, supportsSchemaIndexManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { schemaIndexIdentity, schemaIndexIsSameOwner } from "@/lib/table/schemaIndexNavigation";
 import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
 import { filterObjectBrowserTableColumns } from "@/lib/table/objectBrowserTableInfo";
@@ -229,6 +234,7 @@ const props = defineProps<{
   selectedObjectFilter?: ObjectFilter;
   initialSearchQuery?: string;
   viewport?: ObjectBrowserViewport;
+  propertyRequest?: QueryTab["objectPropertiesRequest"];
 }>();
 
 const emit = defineEmits<{
@@ -240,6 +246,8 @@ const emit = defineEmits<{
   filterChange: [filter: ObjectFilter];
   indexRequestConsumed: [kind: "create" | "view"];
   addToAi: [tables: Array<{ name: string; schema?: string }>];
+  openDependencyObject: [context: ObjectDependencyTarget, target: SqlObjectNavigationTarget];
+  propertyRequestConsumed: [requestId: string];
 }>();
 
 const { t } = useI18n();
@@ -366,6 +374,22 @@ const sidePanelGuard = createSidePanelRequestGuard();
 const sidePanelRef = ref<InstanceType<typeof CustomTypeInfoPanel> | null>(null);
 const tableMetadataCapabilities = computed<TableMetadataCapabilities>(() => getTableMetadataCapabilities(effectiveDatabaseType.value, { connectionType: props.connection.db_type, exactIdentity: sidePanelRow.value?.type === "INDEX" }));
 const effectiveDatabaseType = computed(() => effectiveDatabaseTypeForConnection(props.connection) ?? props.connection.db_type);
+const sourceSection = ref<ObjectDetailsSection>("source");
+const tableRelationsSection = ref<ObjectDetailsSection>("dependencies");
+const propertyFocus = ref<NonNullable<QueryTab["objectPropertiesRequest"]>["focusObject"]>();
+const dependencyTarget = computed(() => {
+  const row = sidePanelRow.value;
+  if (row && sidePanelMode.value === "table-info" && propertyFocus.value)
+    return objectDependencyTarget({ connectionId: props.connection.id, database: props.database, catalog: props.catalog, schema: propertyFocus.value.owner, name: propertyFocus.value.name, objectType: propertyFocus.value.type }, effectiveDatabaseType.value);
+  return row ? objectDependencyTarget({ connectionId: props.connection.id, database: props.database, catalog: props.catalog, schema: row.schema || selectedSchema.value || props.database, name: row.name, objectType: row.type }, effectiveDatabaseType.value) : undefined;
+});
+function viewRelationSql(context: ObjectDependencyTarget, sql: string) {
+  queryStore.createTab(context.connectionId, context.database, t("objectDependencies.viewSql"), "query", context.schema, sql, context.catalog, { forceNew: true });
+}
+function openRelationObject(context: ObjectDependencyTarget, target: SqlObjectNavigationTarget) {
+  if (sidePanelMode.value === "source" && sourceEditing.value && sourceDraft.value !== sourceEditableText.value && !window.confirm(t("objectDependencies.navigateDiscardConfirm"))) return;
+  emit("openDependencyObject", context, target);
+}
 const oracleInvalidObjectsSupported = computed(() => effectiveDatabaseType.value === "oracle" || effectiveDatabaseType.value === "oceanbase-oracle");
 const supportsSchemaIndexes = computed(() => supportsSchemaIndexManagement(effectiveDatabaseType.value));
 const exactIndexList = computed(() => supportsSchemaIndexes.value && objectFilter.value === "indexes");
@@ -1293,7 +1317,8 @@ const tableInfoTabs = computed<TableInfoTabItem[]>(() => {
   if (tableMetadataCapabilities.value.partitions && tableIsPartitioned.value) {
     tabs.push({ id: "partitions", label: t("structureEditor.partitions"), icon: Network, count: tablePartitions.value?.partitions.length });
   }
-  return sidePanelRow.value?.type === "INDEX" ? tabs.filter((tab) => ["info", "ddl", "columns", "indexes"].includes(tab.id)) : tabs;
+  if (dependencyTarget.value) tabs.push({ id: "relations", label: t("objectRelations.title"), icon: Network });
+  return sidePanelRow.value?.type === "INDEX" ? tabs.filter((tab) => ["info", "ddl", "columns", "indexes", "relations"].includes(tab.id)) : tabs;
 });
 
 const tableInfoTabListStyle = computed(() => ({
@@ -1435,7 +1460,7 @@ const filteredTableDdlContent = computed(() => {
   });
 });
 
-async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
+async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab, focusObject?: NonNullable<QueryTab["objectPropertiesRequest"]>["focusObject"]) {
   if (row.type === "INDEX" && (!supportsSchemaIndexes.value || !schemaIndexIdentity(row))) {
     toast(t("schemaIndex.parentUnavailable"), 4000);
     return;
@@ -1452,6 +1477,7 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   }
   sidePanelRow.value = row;
   sidePanelMode.value = "table-info";
+  propertyFocus.value = focusObject;
   sourceRow.value = null;
   const epoch = sidePanelGuard.start();
   // Reset state
@@ -1478,10 +1504,11 @@ async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab) {
   tableTriggersLoaded.value = false;
   tableConstraintsLoaded.value = false;
   tableInfoSearchQuery.value = "";
+  tableRelationsSection.value = focusObject ? "ownership" : "dependencies";
   // Determine initial tab: explicit request > previously activated. Resolve the
   // partition status first so a persisted `partitions` tab is not rejected (and
   // overwritten) before the probe lands.
-  await probeTablePartitionStatus();
+  if (initialTab !== "relations") await probeTablePartitionStatus();
   if (sidePanelGuard.isStale(epoch)) return;
   const firstTab = initialTab ?? tableInfoTab.value;
   await selectTableInfoTab(firstTab);
@@ -1491,7 +1518,7 @@ async function selectTableInfoTab(tab: TableInfoTab) {
   const epoch = sidePanelGuard.capture();
   // The panel can be re-selected (or restored) without `openTableInfo`, so make
   // sure the partition status has been probed before the tab list is consulted.
-  if (!tablePartitionStatusResolved.value) await probeTablePartitionStatus();
+  if (tab !== "relations" && !tablePartitionStatusResolved.value) await probeTablePartitionStatus();
   if (sidePanelGuard.isStale(epoch)) return;
   const nextTab = tableInfoTabs.value.some((item) => item.id === tab) ? tab : tableInfoTabs.value[0]?.id;
   if (!nextTab) return;
@@ -1774,6 +1801,10 @@ async function refreshActiveTableInfo() {
     await refreshActiveSource();
     return;
   }
+  if (sidePanelMode.value === "type-info") {
+    await sidePanelRef.value?.refresh();
+    return;
+  }
   if (sidePanelMode.value !== "table-info" || !sidePanelRow.value) return;
   sidePanelGuard.bump();
 
@@ -1921,7 +1952,7 @@ const canOpenTableStructureEditor = computed(() => sidePanelRow.value?.type === 
 function openTableStructureEditor() {
   const row = sidePanelRow.value;
   if (!row || row.type !== "TABLE" || !canOpenTableStructureEditor.value) return;
-  queryStore.openTableStructure(props.connection.id, props.database, row.schema || selectedSchema.value, row.name, tableInfoTab.value, undefined, props.catalog);
+  queryStore.openTableStructure(props.connection.id, props.database, row.schema || selectedSchema.value, row.name, tableInfoTab.value === "relations" ? "columns" : tableInfoTab.value, undefined, props.catalog);
 }
 
 /**
@@ -1974,7 +2005,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
     props.database === database &&
     props.catalog === catalog &&
     (selectedSchema.value || props.database) === schema;
-  if (objectType === "TYPE" || objectType === "TYPE_BODY" || objectType === "TRIGGER") {
+  if (objectType === "TRIGGER") {
     try {
       const source = await api.getObjectSource(connection.id, database, object.owner, object.name, objectType);
       if (!isCurrentRequest()) return;
@@ -2032,6 +2063,7 @@ async function openInvalidObjectSource(object: { owner: string; name: string; ty
 let sourceIdentity: SourceIdentitySnapshot | undefined;
 
 async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditing?: boolean }) {
+  sourceSection.value = "source";
   selectedRowId.value = row.id;
   // Starting a different object must invalidate slower source requests before
   // any state is reset, otherwise an old response can populate the new row.
@@ -2061,7 +2093,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   try {
     const result = await sidePanelGuard.wait(epoch, api.getObjectSource(connectionId, database, schema, row.name, row.type as ObjectSourceKind, row.signature ?? undefined), metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (sidePanelGuard.isStale(epoch)) return;
-    sourceCanEdit.value = result.editable !== false && !["TRIGGER", "TYPE", "TYPE_BODY"].includes(row.type) && (row.type !== "SEQUENCE" || effectiveDatabaseType.value === "oceanbase-oracle");
+    sourceCanEdit.value = result.editable !== false && (!["TRIGGER", "TYPE", "TYPE_BODY"].includes(row.type) || isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) && (row.type !== "SEQUENCE" || effectiveDatabaseType.value === "oceanbase-oracle");
     const editable = sourceCanEdit.value
       ? await sidePanelGuard.wait(
           epoch,
@@ -2083,7 +2115,7 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
     sourceContent.value = row.type === "SEQUENCE" ? result.source : editable;
     sourceDraft.value = editable;
     // Fresh open always enters edit when allowed; refresh preserves prior edit mode.
-    const enterEditing = sourceCanEdit.value && row.type !== "SEQUENCE" && (options?.preserveEditing ? preserveEditing : true);
+    const enterEditing = sourceCanEdit.value && row.type !== "SEQUENCE" && (options?.preserveEditing ? preserveEditing : !isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type));
     sourceEditing.value = enterEditing;
     if (!sourceCanEdit.value && row.type !== "SEQUENCE") {
       toast(t("objects.sourceReadOnly"), 3000);
@@ -2101,6 +2133,19 @@ async function refreshActiveSource() {
   if (!row || sidePanelMode.value !== "source") return;
   if (sourceEditing.value && !window.confirm(t("objects.refreshDiscardConfirm"))) return;
   await loadSourcePanel(row, { preserveEditing: true });
+}
+
+async function openRequestedProperties() {
+  const request = props.propertyRequest;
+  if (!request || request.connectionId !== props.connection.id || request.database !== props.database || (request.catalog || "") !== (props.catalog || "") || request.schema !== (props.schema || props.database)) return;
+  if (sourceEditing.value && sourceDraft.value !== sourceEditableText.value && !window.confirm(t("objectDependencies.navigateDiscardConfirm"))) {
+    emit("propertyRequestConsumed", request.requestId);
+    return;
+  }
+  const row: ObjectBrowserRow = { id: JSON.stringify([request.objectType, request.schema, request.name]), name: request.name, displayName: request.name, schema: request.schema, type: request.objectType };
+  await openTableInfo(row, request.initialTab, request.focusObject);
+  if (props.propertyRequest?.requestId !== request.requestId) return;
+  emit("propertyRequestConsumed", request.requestId);
 }
 
 function openEventEditor(row: ObjectBrowserRow) {
@@ -2180,11 +2225,46 @@ function requestDrop(row: ObjectBrowserRow) {
     openSchemaIndexEditor(row, "delete");
     return;
   }
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) {
+    void manageTypeDrop(row);
+    return;
+  }
   dropTarget.value = row;
   dropPreviewSql.value = "";
   dropTableCascade.value = false;
   showDropConfirm.value = true;
   void refreshDropPreviewSql();
+}
+
+async function manageTypeDrop(row: ObjectBrowserRow): Promise<boolean> {
+  const connectionId = props.connection.id;
+  const database = props.database;
+  const owner = row.schema || selectedSchema.value || database;
+  const selectedOwner = selectedSchema.value;
+  const databaseType = effectiveDatabaseType.value as "oracle" | "oceanbase-oracle" | "dameng";
+  try {
+    const outcome = await requestOracleTypeManagement({
+      target: { connectionId, database, owner, name: row.name, databaseType },
+      operation: row.type === "TYPE_BODY" ? "delete-body" : "delete-spec",
+      isCurrent: () => props.connection.id === connectionId && props.database === database && selectedSchema.value === selectedOwner && effectiveDatabaseType.value === databaseType,
+    });
+    if (!outcome.complete) return false;
+    if (props.connection.id === connectionId && props.database === database && selectedSchema.value === selectedOwner) {
+      const removed = rows.value.filter((item) => (item.schema || selectedOwner || database) === owner && item.name === row.name && (item.type === row.type || (row.type === "TYPE" && item.type === "TYPE_BODY")));
+      removePinnedObjectBrowserRows(removed);
+      rows.value = rows.value.filter((item) => !removed.includes(item));
+      if (removed.some((item) => item.id === sourceRow.value?.id)) closeSource();
+      try {
+        await reload();
+      } catch (error) {
+        toast(t("objects.typeManagementRefreshFailed", { message: String(error) }), 5000);
+      }
+    }
+    return true;
+  } catch (error) {
+    toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000);
+    return false;
+  }
 }
 
 function requestRename(row: ObjectBrowserRow) {
@@ -2684,6 +2764,11 @@ async function confirmDrop() {
   if (!dropTarget.value) return;
   const row = dropTarget.value;
   if (row.type === "INDEX") return;
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) {
+    await manageTypeDrop(row);
+    dropTarget.value = null;
+    return;
+  }
   let executedSql = "";
   const start = Date.now();
   let successRecorded = false;
@@ -2733,6 +2818,8 @@ async function confirmDrop() {
 
 async function buildDropSqlForRow(row: ObjectBrowserRow, options?: { cascade?: boolean }): Promise<string> {
   if (row.type === "INDEX") throw new Error(t("schemaIndex.editIndividually"));
+  if (isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type)) throw new Error(t("objects.typeManagementUseSave"));
+  if (row.type === "TYPE" || row.type === "TYPE_BODY") throw new Error(t("objects.sourceReadOnly"));
   if (row.type === "TABLE") {
     return buildDropTableSql(tableAdminSqlOptions(row, { cascade: options?.cascade && supportsDropTableCascade(effectiveDatabaseType.value) }));
   }
@@ -3065,6 +3152,18 @@ function requestBatchDropTables() {
   if (selectedTableCount.value === 0) return;
   if (selectedTableRows.value.some((row) => row.type === "INDEX")) {
     toast(t("schemaIndex.editIndividually"), 4000);
+    return;
+  }
+  const selected = [...selectedTableRows.value];
+  const managed = selected.filter((row) => isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type));
+  if (managed.length) {
+    void (async () => {
+      const unique = managed.filter((row) => row.type !== "TYPE_BODY" || !managed.some((other) => other.type === "TYPE" && other.name === row.name && other.schema === row.schema));
+      for (const row of unique) if (!(await manageTypeDrop(row))) return;
+      const remaining = selected.filter((row) => !managed.includes(row));
+      selectedTableIds.value = new Set(remaining.map((row) => row.id));
+      if (remaining.length) requestBatchDropTables();
+    })();
     return;
   }
   batchDropCascade.value = false;
@@ -4208,6 +4307,22 @@ async function saveSource() {
     if (!sourceIdentity) return;
     const identity = sourceIdentity;
     assertSourceIdentity(identity);
+    if (isOracleFamilyTypeSource(databaseType, row.type)) {
+      const source = sourceDraft.value;
+      const result = await requestOracleTypeManagement({
+        target: { connectionId, database, owner: schema, name: row.name, databaseType: databaseType as "oracle" | "oceanbase-oracle" | "dameng" },
+        operation: row.type === "TYPE_BODY" ? "save-body" : "save-spec",
+        source,
+        baseSource: sourceEditableText.value,
+        isCurrent: () => sidePanelGuard.isFresh(epoch) && sourceRow.value === row && sourceDraft.value === source,
+      });
+      if (!result.complete || sidePanelGuard.isStale(epoch)) return;
+      toast(t("objects.sourceSaved"));
+      sourceEditing.value = false;
+      sourceDraft.value = "";
+      await loadSourcePanel(row);
+      return;
+    }
     const statements = await buildExecutableObjectSourceStatements({
       databaseType,
       objectType: row.type as ObjectSourceKind,
@@ -4774,6 +4889,7 @@ watch(
 );
 
 // ---- CustomContextMenu helpers ----
+watch(() => props.propertyRequest?.requestId, openRequestedProperties, { immediate: true, flush: "post" });
 
 function exportDataSubmenu(item: ObjectBrowserRow): ContextMenuItem {
   const formats: ContextMenuItem[] = [
@@ -5007,12 +5123,16 @@ function getPackageMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
 function getTypeMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
   const items: ContextMenuItem[] = [];
   const capabilities = customTypeCapabilities(effectiveDatabaseType.value);
-  // Verified PG-family types open the read-only details panel; Xugu keeps its
-  // “view source” entry for TYPE/TYPE_BODY rows.
+  // Oracle-family types expose source alongside read-only TYPE details; Xugu
+  // keeps its source entry for TYPE/TYPE_BODY rows.
   if (supportsTypeObjectSource(effectiveDatabaseType.value)) {
     items.push({ label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 });
   }
-  if (capabilities.details) {
+  if (supportsOracleFamilyTypeManagement(effectiveDatabaseType.value)) {
+    items.push({ label: t("contextMenu.editObject"), action: () => openSourceTab(item), icon: PencilLine });
+    items.push({ label: t("contextMenu.dropObject"), action: () => requestDrop(item), icon: Trash2, variant: "destructive" });
+  }
+  if (capabilities.details && item.type === "TYPE") {
     items.push({ label: t("contextMenu.viewDetails"), action: () => void openTypeInfo(item), icon: Info });
     if (capabilities.ddl) {
       items.push({ label: t("contextMenu.viewDdl"), action: () => openTypeDdl(item), icon: FileCode });
@@ -5633,7 +5753,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               <span class="block truncate">{{ tab.label }}</span>
             </button>
           </div>
-          <div class="flex items-center gap-1 px-2 py-1.5 border-b shrink-0 bg-background">
+          <div v-if="tableInfoTab !== 'relations'" class="flex items-center gap-1 px-2 py-1.5 border-b shrink-0 bg-background">
             <div class="relative min-w-0 flex-1">
               <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <input v-model="tableInfoSearchQuery" data-table-info-search :placeholder="t('grid.tableInfoSearch')" class="w-full h-7 pl-7 pr-6 text-xs bg-muted/50 rounded border border-border focus:outline-none focus:border-primary/50" @keydown.escape="tableInfoSearchQuery = ''" />
@@ -5648,7 +5768,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
           <div v-if="tableInfoTab === 'ddl' && effectiveDatabaseType === 'oceanbase-oracle'" class="border-b px-3 py-2">
             <DdlStorageToggle :database-type="effectiveDatabaseType" :disabled="tableDdlLoading" />
           </div>
-          <div v-if="tableInfoTab === 'info'" class="flex-1 min-h-0 overflow-auto">
+          <p v-if="propertyFocus && (tableInfoTab === 'indexes' || tableInfoTab === 'relations')" class="break-all border-b px-3 py-2 font-mono text-sm text-muted-foreground">{{ propertyFocus.owner }}.{{ propertyFocus.name }}</p>
+          <ObjectDependenciesPanel v-if="tableInfoTab === 'relations'" :target="dependencyTarget" v-model:section="tableRelationsSection" :include-source="false" @view-sql="viewRelationSql" @open-object="openRelationObject" />
+          <div v-else-if="tableInfoTab === 'info'" class="flex-1 min-h-0 overflow-auto">
             <div v-if="tableOverviewLoading" class="h-full flex items-center justify-center">
               <Loader2 class="w-4 h-4 animate-spin text-muted-foreground" />
             </div>
@@ -5822,7 +5944,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
         </template>
         <!-- Type info mode (read-only user-defined type details) -->
         <template v-else-if="sidePanelMode === 'type-info'">
-          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
+          <CustomTypeInfoPanel ref="sidePanelRef" :connection="props.connection" :database="props.database" :database-type="effectiveDatabaseType" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name || ''" :catalog="props.catalog" @close="closeSidePanel" />
         </template>
         <template v-else-if="sidePanelMode === 'event-editor'">
           <MySqlEventEditor :key="eventEditorKey" :connection="props.connection" :database="props.database" :schema="sidePanelRow?.schema || selectedSchema || props.database" :name="sidePanelRow?.name" :read-only="props.initialEventReadOnly" @saved="onEventSaved" @close="closeSidePanel" />
@@ -5835,35 +5957,56 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             <span v-if="sourceRow?.valid != null" class="shrink-0 rounded border px-1 py-px text-[10px] font-medium" :class="sourceRow.valid ? 'border-emerald-500/30 text-emerald-600' : 'border-destructive/30 text-destructive'">
               {{ t(sourceRow.valid ? "objects.validStatus" : "objects.invalidStatus") }}
             </span>
-            <Button v-if="sourceEditing" variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="sourceSaving || !sourceDraft.trim()" @click="saveSource">
-              <Loader2 v-if="sourceSaving" class="mr-1 h-3 w-3 animate-spin" />
-              {{ t("objects.saveSource") }}
-            </Button>
-            <Button v-if="sourceEditing" variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="sourceSaving" @click="cancelEditSource">
-              {{ t("objects.cancelEdit") }}
-            </Button>
-            <Button v-if="!sourceEditing" variant="ghost" size="icon" class="h-5 w-5" :disabled="!sourceContent" @click="copySource">
-              <Copy class="h-3 w-3" />
-            </Button>
-            <Button v-if="!sourceEditing && sourceCanEdit" variant="ghost" size="icon" class="h-5 w-5" :disabled="!sourceContent" @click="editSource">
-              <PencilLine class="h-3 w-3" />
-            </Button>
-            <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="sourceLoading || sourceSaving" :title="t('structureEditor.refresh')" :aria-label="t('structureEditor.refresh')" @click="refreshActiveSource">
-              <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': sourceLoading }" />
-            </Button>
+            <template v-if="sourceSection === 'source'">
+              <Button v-if="sourceEditing" variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="sourceSaving || !sourceDraft.trim()" @click="saveSource">
+                <Loader2 v-if="sourceSaving" class="mr-1 h-3 w-3 animate-spin" />
+                {{ t("objects.saveSource") }}
+              </Button>
+              <Button v-if="sourceEditing" variant="ghost" size="sm" class="h-6 px-2 text-xs" :disabled="sourceSaving" @click="cancelEditSource">
+                {{ t("objects.cancelEdit") }}
+              </Button>
+              <Button v-if="!sourceEditing" variant="ghost" size="icon" class="h-5 w-5" :disabled="!sourceContent" @click="copySource">
+                <Copy class="h-3 w-3" />
+              </Button>
+              <Button v-if="!sourceEditing && sourceCanEdit" variant="ghost" size="icon" class="h-5 w-5" :disabled="!sourceContent" @click="editSource">
+                <PencilLine class="h-3 w-3" />
+              </Button>
+              <Button variant="ghost" size="icon" class="h-5 w-5" :disabled="sourceLoading || sourceSaving" :title="t('structureEditor.refresh')" :aria-label="t('structureEditor.refresh')" @click="refreshActiveSource">
+                <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': sourceLoading }" />
+              </Button>
+            </template>
             <Button variant="ghost" size="icon" class="h-5 w-5" @click="closeSource">
               <X class="h-3 w-3" />
             </Button>
           </div>
-          <div v-if="sourceLoading" class="flex flex-1 items-center justify-center">
-            <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
-          </div>
-          <div v-else-if="sourceError" class="flex flex-1 items-center justify-center px-4 text-sm text-destructive">
-            {{ sourceError }}
-          </div>
-          <div v-else-if="sourceEditing" class="flex min-h-0 flex-1 flex-col" data-object-source-editor>
+          <ObjectDependenciesPanel :target="dependencyTarget" v-model:section="sourceSection" @view-sql="viewRelationSql" @open-object="openRelationObject">
+            <div v-if="sourceLoading" class="flex flex-1 items-center justify-center">
+              <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+            <div v-else-if="sourceError" class="flex flex-1 items-center justify-center px-4 text-sm text-destructive">
+              {{ sourceError }}
+            </div>
+            <div v-else-if="sourceEditing" class="flex min-h-0 flex-1 flex-col" data-object-source-editor>
+              <QueryEditor
+                v-model="sourceDraft"
+                class="min-h-0 flex-1"
+                :connection-id="props.connection.id"
+                :database="props.database"
+                :schema="selectedSchema"
+                :database-type="props.connection.db_type"
+                :dialect="sourceDialect"
+                :format-dialect="sourceFormatDialect"
+                force-word-wrap
+                @save="sourceSection === 'source' && saveSource()"
+              />
+              <div v-if="sourceSaveError" class="shrink-0 whitespace-pre-wrap break-words border-t px-3 py-2 text-xs text-destructive">
+                {{ sourceSaveError }}
+              </div>
+            </div>
             <QueryEditor
-              v-model="sourceDraft"
+              v-else
+              :key="`source-preview-${sourceRow?.id}`"
+              :model-value="sourceContent"
               class="min-h-0 flex-1"
               :connection-id="props.connection.id"
               :database="props.database"
@@ -5872,27 +6015,10 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               :dialect="sourceDialect"
               :format-dialect="sourceFormatDialect"
               force-word-wrap
-              @save="saveSource"
+              read-only
+              data-object-source-preview
             />
-            <div v-if="sourceSaveError" class="shrink-0 whitespace-pre-wrap break-words border-t px-3 py-2 text-xs text-destructive">
-              {{ sourceSaveError }}
-            </div>
-          </div>
-          <QueryEditor
-            v-else
-            :key="`source-preview-${sourceRow?.id}`"
-            :model-value="sourceContent"
-            class="min-h-0 flex-1"
-            :connection-id="props.connection.id"
-            :database="props.database"
-            :schema="selectedSchema"
-            :database-type="props.connection.db_type"
-            :dialect="sourceDialect"
-            :format-dialect="sourceFormatDialect"
-            force-word-wrap
-            read-only
-            data-object-source-preview
-          />
+          </ObjectDependenciesPanel>
         </template>
       </div>
     </div>

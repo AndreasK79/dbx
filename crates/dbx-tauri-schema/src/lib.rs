@@ -32,6 +32,10 @@ define_registry![
     get_object_source,
     get_event_info,
     get_custom_type_details,
+    get_oracle_type_management_snapshot,
+    build_oracle_type_management_sql,
+    verify_oracle_type_data,
+    prepare_oracle_type_evolution,
     list_schemas,
     list_schema_infos,
     list_data_types,
@@ -93,7 +97,7 @@ mod tests {
 
     #[test]
     fn handles_only_schema_commands() {
-        assert_eq!(COMMANDS.len(), 56);
+        assert_eq!(COMMANDS.len(), 61);
         assert!(handles("list_databases"));
         assert!(handles("load_schema_diff_routines"));
         assert!(handles("prepare_oracle_routine_save"));
@@ -104,6 +108,14 @@ mod tests {
         assert!(handles("update_oracle_routine_operation_references"));
         assert!(handles("list_event_triggers"));
         assert!(handles("list_foreign_servers"));
+        for command in [
+            "get_oracle_type_management_snapshot",
+            "build_oracle_type_management_sql",
+            "verify_oracle_type_data",
+            "prepare_oracle_type_evolution",
+        ] {
+            assert!(handles(command), "{command}");
+        }
         assert!(!handles("prepare_schema_diff"));
         assert!(!handles("load_connections"));
     }

@@ -34,7 +34,7 @@ import { useSidebarRemoteSearch } from "@/composables/useSidebarRemoteSearch";
 import { collectSidebarRemoteSearchResults, mergeSidebarRemoteSearchResults, type SidebarRemoteSearchResult } from "@/lib/sidebar/sidebarRemoteSearch";
 import { isCancelSearchShortcut, isCopySidebarSelectionShortcut, isDisconnectSidebarConnectionShortcut, isEditSidebarConnectionShortcut, isEditSidebarTableStructureShortcut, isPasteSidebarSelectionShortcut, isRefreshDataShortcut, isViewTableDdlShortcut } from "@/lib/editor/keyboardShortcuts";
 import { sidebarNodeSupportsDdlView } from "@/lib/sidebar/sidebarTreeDdlShortcut";
-import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
+import { DEFAULT_DATABASE_TREE_LABEL, hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { objectSourceTargetForTreeNode } from "@/lib/sidebar/treeNodeClick";
 import { supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
 import { copyToClipboard } from "@/lib/common/clipboard";
@@ -813,7 +813,7 @@ const sidebarTreeLeadingWidthItems = computed(() =>
     if (["database", "redis-db", "mongo-db"].includes(node.type) && node.connectionId && typeof node.database === "string" && store.isDefaultDatabase(node.connectionId, node.database)) badges.push(t("editor.defaultDatabase"));
     if (node.type === "schema" && node.connectionId && node.schema && store.isDefaultSchema(node.connectionId, node.schema)) badges.push(t("editor.defaultSchema"));
     if (showSidebarRowProductionBadge(node, config) && isSidebarProductionContainer(node)) badges.push("PROD");
-    const secondary = sidebarTreeSecondaryValue(node, t);
+    const secondary = sidebarTreeSecondaryValue(node, t, config ? effectiveDatabaseTypeForConnection(config) : undefined);
     const leadingExtraWidth = (secondary && node.type === "elasticsearch-index" ? 16 : 0) + (node.type === "oracle-db-links" ? 26 : 0);
     return { id, depth, node, label: sidebarCommentLabel(node), badges, secondary, leadingExtraWidth };
   }),
@@ -3078,7 +3078,7 @@ defineExpose({
       v-if="sidebarVisibleSchemasTarget?.connectionId && sidebarVisibleSchemasTarget.database != null"
       v-model:open="sidebarVisibleSchemasOpen"
       :connection-id="sidebarVisibleSchemasTarget.connectionId"
-      :connection-name="sidebarVisibleSchemasTarget.label"
+      :connection-name="sidebarVisibleSchemasTarget.label === DEFAULT_DATABASE_TREE_LABEL ? t(DEFAULT_DATABASE_TREE_LABEL) : sidebarVisibleSchemasTarget.label"
       :database="sidebarVisibleSchemasTarget.database"
     />
 
