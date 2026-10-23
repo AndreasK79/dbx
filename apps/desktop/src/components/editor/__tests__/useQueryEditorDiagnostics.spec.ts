@@ -160,6 +160,51 @@ describe("QueryEditor diagnostic scheduling ownership", () => {
     expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([]);
   });
 
+  // A positionless batch error still names its culprit ("Unknown column
+  // 'ordernumber'") — underline that token, not the whole statement, so a
+  // single-statement script does not light up entirely.
+  it("underlines the token an aborted batch error names instead of the whole statement", () => {
+    const statement = "select * from orderhead where ordernumber = 262425;";
+    const message = "Statement 1 failed: Unknown column 'ordernumber' in 'where clause'. The manual transaction was rolled back.";
+    const result: QueryResult = {
+      columns: ["Error"],
+      rows: [[message]],
+      affected_rows: 0,
+      execution_time_ms: 0,
+      execution_error: true,
+      statement_index: 0,
+      sourceStatement: statement,
+      sourceFrom: 0,
+      sourceTo: statement.length,
+    };
+    const { diagnostics, currentView } = createHarness({ modelValue: statement, executionError: message, executionErrorResult: result });
+    const identifierAt = statement.indexOf("ordernumber");
+    expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([{ from: identifierAt, to: identifierAt + "ordernumber".length, message }]);
+    currentView.dispatch({ changes: { from: identifierAt, to: identifierAt + "ordernumber".length, insert: "order_no" } });
+    expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([]);
+  });
+
+  it("underlines a double-quoted token a PostgreSQL batch error names", () => {
+    const statement = 'select count(*) from orders where "orderNumber" = 7;';
+    const modelValue = `select 1;\n${statement}`;
+    const sourceFrom = modelValue.indexOf(statement);
+    const message = 'Statement 2 failed: ERROR: column "orderNumber" does not exist. The manual transaction was rolled back.';
+    const result: QueryResult = {
+      columns: ["Error"],
+      rows: [[message]],
+      affected_rows: 0,
+      execution_time_ms: 0,
+      execution_error: true,
+      statement_index: 1,
+      sourceStatement: statement,
+      sourceFrom,
+      sourceTo: sourceFrom + statement.length,
+    };
+    const { diagnostics, currentView } = createHarness({ modelValue, executionError: message, executionErrorResult: result });
+    const identifierAt = statement.indexOf('"orderNumber"') + 1;
+    expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([{ from: sourceFrom + identifierAt, to: sourceFrom + identifierAt + "orderNumber".length, message }]);
+  });
+
   it("retains legacy full-document textual diagnostics", () => {
     const { diagnostics, currentView } = createHarness({ executionError: "syntax error at line 1, column 8", executionErrorSql: "SELECT missing;" });
     expect(diagnostics.sqlErrorDecorationRange(currentView.state)).toEqual([{ from: 7, to: 8, message: "syntax error at line 1, column 8" }]);

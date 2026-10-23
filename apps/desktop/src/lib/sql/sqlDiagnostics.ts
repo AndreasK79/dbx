@@ -77,31 +77,66 @@ export function lineColumnToOffset(sql: string, location: SqlErrorLocation): num
   return Math.min(offset + location.column, offset + lines[location.line].length);
 }
 
+const SQL_IDENTIFIER_PATTERN = /"(?:""|[^"])*"|[\p{L}_$][\p{L}\p{N}_$#]*/gu;
+
+/** Every occurrence of `identifier` in `sql`, quoted tokens unquoted before comparing. */
+function findIdentifierRanges(sql: string, identifier: string): SqlErrorRange[] {
+  const ranges: SqlErrorRange[] = [];
+  for (const match of sql.matchAll(SQL_IDENTIFIER_PATTERN)) {
+    const token = match[0];
+    const tokenStart = match.index;
+    const quoted = token.startsWith('"');
+    const name = quoted ? token.slice(1, -1).replace(/""/g, '"') : token;
+    if (quoted ? name !== identifier : name.toUpperCase() !== identifier.toUpperCase()) continue;
+    ranges.push({ from: tokenStart + (quoted ? 1 : 0), to: tokenStart + token.length - (quoted ? 1 : 0) });
+  }
+  return ranges;
+}
+
 function oracleInvalidIdentifierRange(sql: string, message: string, position: number): SqlErrorRange | null {
   const identifierMatch = /\bORA-00904:\s*"((?:""|[^"])*)"\s*:\s*invalid identifier\b/i.exec(message);
   if (!identifierMatch?.[1]) return null;
 
   const reportedIdentifier = identifierMatch[1].replace(/""/g, '"');
-  const identifierPattern = /"(?:""|[^"])*"|[\p{L}_][\p{L}\p{N}_$#]*/gu;
   let bestRange: SqlErrorRange | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
 
-  for (const match of sql.matchAll(identifierPattern)) {
-    const token = match[0];
-    const tokenStart = match.index;
-    const quoted = token.startsWith('"');
-    const identifier = quoted ? token.slice(1, -1).replace(/""/g, '"') : token;
-    if (quoted ? identifier !== reportedIdentifier : identifier.toUpperCase() !== reportedIdentifier.toUpperCase()) continue;
-
-    const from = tokenStart + (quoted ? 1 : 0);
-    const to = tokenStart + token.length - (quoted ? 1 : 0);
-    const distance = position < from ? from - position : position > to ? position - to : 0;
+  for (const range of findIdentifierRanges(sql, reportedIdentifier)) {
+    const distance = position < range.from ? range.from - position : position > range.to ? position - range.to : 0;
     if (distance >= bestDistance) continue;
     bestDistance = distance;
-    bestRange = { from, to };
+    bestRange = range;
   }
 
   return bestRange;
+}
+
+/**
+ * The spot an engine named in its error text without any position: MySQL,
+ * MariaDB and SQL Server quote the culprit in single quotes ("Unknown column
+ * 'x' in 'where clause'"), PostgreSQL and Oracle in double quotes (column "x"
+ * does not exist), SQLite mentions it bare ("no such column: x"). Qualified
+ * names ('o.ordernumber', 'db.orders') point at their last segment — the
+ * column itself is where the problem is. The first named identifier that the
+ * statement actually contains wins; decoration phrases like 'where clause' or
+ * 'field list' are rejected by the identifier shape.
+ */
+function messageNamedIdentifierRange(sql: string, message: string): SqlErrorRange | null {
+  for (const match of message.matchAll(/'([^']+)'|"((?:""|[^"])*)"/g)) {
+    const quoted = (match[1] ?? match[2]?.replace(/""/g, '"') ?? "").trim();
+    const identifier = quoted.split(".").pop() ?? "";
+    if (!/^[\p{L}_$][\p{L}\p{N}_$#]*$/u.test(identifier)) continue;
+    const [range] = findIdentifierRanges(sql, identifier);
+    if (range) return range;
+  }
+
+  const bare = /\bno such (?:column|table|function):\s*([\p{L}_$][\p{L}\p{N}_$#]*(?:\.[\p{L}_$][\p{L}\p{N}_$#]*)*)/iu.exec(message);
+  const identifier = bare?.[1]?.split(".").pop();
+  if (identifier && /^[\p{L}_$][\p{L}\p{N}_$#]*$/u.test(identifier)) {
+    const [range] = findIdentifierRanges(sql, identifier);
+    if (range) return range;
+  }
+  return null;
 }
 
 /**
@@ -134,7 +169,10 @@ export function sqlErrorMessagePosition(message: string): SqlErrorMessagePositio
 
 export function sqlErrorDecorationRange(sql: string, message: string): SqlErrorRange | null {
   const position = sqlErrorMessagePosition(message);
-  if (!position) return null;
+  // With no position at all, fall back to the token the message names, so a
+  // positionless error still marks the culprit instead of nothing (or, at the
+  // statement level, the whole statement).
+  if (!position) return messageNamedIdentifierRange(sql, message);
 
   if (position.kind === "location") {
     const offset = lineColumnToOffset(sql, position.location);

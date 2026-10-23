@@ -107,9 +107,18 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
       }
       // An aborted batch reports "Statement 2 failed" without any position (a
       // rolled-back manual transaction only names the failing statement), so
-      // underline the whole statement instead of marking nothing.
+      // underline the token the message names inside that statement — "Unknown
+      // column 'ordernumber'" points at ordernumber, not the whole script —
+      // and only fall back to the whole statement when the message names
+      // nothing the statement contains.
       const statementRange = resultSourceRange(sql, props.executionErrorResult, props.executionErrorResult.statement_index, props.databaseType, sqlStatementParameterOptions());
-      return statementRange ? [{ from: statementRange.from, to: statementRange.to, message: props.executionError }] : [];
+      if (statementRange) {
+        const source = props.executionErrorResult.sourceStatement;
+        const tokenRange = source ? resolveSqlErrorDecorationRange(source, props.executionError) : null;
+        if (tokenRange) return [{ from: statementRange.from + tokenRange.from, to: statementRange.from + tokenRange.to, message: props.executionError }];
+        return [{ from: statementRange.from, to: statementRange.to, message: props.executionError }];
+      }
+      return [];
     }
     if (!props.executionErrorSql || !sqlErrorSqlMatchesEditor(currentState.doc.toString(), props.executionErrorSql)) return [];
     const range = resolveSqlErrorDecorationRange(currentState.doc.toString(), props.executionError);
