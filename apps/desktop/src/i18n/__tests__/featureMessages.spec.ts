@@ -61,6 +61,7 @@ const FEATURE_MESSAGES: FeatureMessages[] = [
     keys: under("ai", ["copilotAccount", "copilotSignIn", "copilotSignInHint", "copilotPolling", "copilotSecondsLeft", "copilotOpenVerification", "copilotCancelSignIn", "copilotSignedInAs", "copilotSignedIn", "copilotSignOut", "copilotExpired", "copilotDenied", "copilotTryAgain"]),
     locales: ["en", "zh-CN"],
   },
+  { feature: "editor find whole word (#13287)", keys: ["editor.search.wholeWord"], translated: true },
   { feature: "quick open", keys: ["quickOpen.*", "settings.shortcutGlobalSearch"] },
   {
     feature: "editor tab context menu",
