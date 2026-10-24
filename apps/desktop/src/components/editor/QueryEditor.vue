@@ -1514,9 +1514,11 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         // Line-wise cut (Shift+Delete / Ctrl+X with an empty selection) cannot
         // remove the last line's break natively, so empty lines pile up at the
         // bottom of the editor; our variant joins with the previous line and
-        // leaves every other cut to CodeMirror.
-        { key: "Shift-Delete", preventDefault: true, run: cutQueryEditorLine },
-        { key: "Mod-x", preventDefault: true, run: cutQueryEditorLine },
+        // returns false everywhere else. Deliberately no preventDefault here:
+        // a preventDefault binding swallows the key even when its command
+        // declines (runHandlers flags it prevented), killing the native cut.
+        { key: "Shift-Delete", run: cutQueryEditorLine },
+        { key: "Mod-x", run: cutQueryEditorLine },
         ...binding(shortcuts.moveLineUp, (view) => codeMirrorRuntime.codeMirrorMoveLineUp?.(view) ?? false),
         ...binding(shortcuts.moveLineDown, (view) => codeMirrorRuntime.codeMirrorMoveLineDown?.(view) ?? false),
         ...binding(shortcuts.scrollLineUp, (view) => scrollEditorLine(view, "up")),
