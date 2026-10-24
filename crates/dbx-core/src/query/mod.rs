@@ -3488,6 +3488,31 @@ pub async fn close_query_session(
     }
 }
 
+/// Close only the result cursor held by this transaction; never open a normal
+/// pool or commit/roll back the transaction as part of result cleanup.
+pub async fn close_manual_transaction_query_session(
+    state: &AppState,
+    connection_id: &str,
+    txn_session_id: &str,
+    session_id: &str,
+) -> Result<bool, String> {
+    let connection = {
+        let sessions = state.transaction_sessions.read().await;
+        let Some(session) = sessions.get(txn_session_id) else {
+            return Ok(false);
+        };
+        if session.connection_id != connection_id {
+            return Err("Transaction session belongs to a different connection".to_string());
+        }
+        Arc::clone(&session.connection)
+    };
+    let connection = connection.lock().await;
+    match &*connection {
+        TxnConnection::Agent { client, .. } => client.lock().await.close_query_session(session_id).await,
+        _ => Ok(false),
+    }
+}
+
 pub async fn execute_multi_core(
     state: &AppState,
     connection_id: &str,
@@ -12524,9 +12549,16 @@ for line in sys.stdin:
 import sys
 
 print(json.dumps({{"ready": True}}), flush=True)
+cursor_ids = {{"cursor-1"}}
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get("method")
+    if method == "close_query_session":
+        cursor_id = request.get("params", {{}}).get("sessionId")
+        closed = cursor_id in cursor_ids
+        cursor_ids.discard(cursor_id)
+        print(json.dumps({{"jsonrpc": "2.0", "id": request["id"], "result": closed}}), flush=True)
+        continue
     if method == "execute_query":
         params = request.get("params", {{}})
         sql = params.get("sql", "")
@@ -12602,6 +12634,35 @@ for line in sys.stdin:
             },
         );
         (state, txn_session_id, dir)
+    }
+
+    #[tokio::test]
+    async fn manual_transaction_cursor_cleanup_uses_its_owner_without_ending_transaction() {
+        let (state, txn_id, dir) = manual_transaction_test_state(DatabaseType::Oracle).await;
+        assert!(close_manual_transaction_query_session(&state, "other-connection", &txn_id, "cursor-1").await.is_err());
+        assert!(!close_manual_transaction_query_session(&state, "agent-conn", "missing-txn", "cursor-1")
+            .await
+            .unwrap());
+        // Only the held transaction has an Agent. A lookup through the normal
+        // connection pool cannot close this cursor.
+        assert!(close_manual_transaction_query_session(&state, "agent-conn", &txn_id, "cursor-1").await.unwrap());
+        assert!(!close_manual_transaction_query_session(&state, "agent-conn", &txn_id, "cursor-1").await.unwrap());
+        let result = execute_in_manual_transaction_with_options(
+            &state,
+            &txn_id,
+            "SELECT 1 FROM DUAL",
+            "ORCL",
+            Some("APP"),
+            ManualTransactionExecutionOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result[0].result.rows[0][0], "SELECT 1 FROM DUAL");
+        assert!(state.transaction_sessions.read().await.contains_key(&txn_id));
+        rollback_manual_transaction(&state, &txn_id).await.unwrap();
+        assert!(!close_manual_transaction_query_session(&state, "agent-conn", &txn_id, "cursor-1").await.unwrap());
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn manual_sql_file_request(session_id: &str) -> crate::sql::SqlFileRequest {
@@ -13094,6 +13155,63 @@ for line in sys.stdin:
                 original_bytes: SERVER_LARGE_VALUE_UNKNOWN_BYTES,
                 value_ref: None
             }]
+        );
+    }
+
+    #[test]
+    fn extracts_oracle_rowid_preview_markers_indexed_by_result_position() {
+        // 无主键 Oracle 基表的截断投影以 __DBX_ROWID 开头，marker 下标是结果集
+        // 位置（源列在结果中的下标），不是表列下标——位置校验失败会整组拒识。
+        let mut result = db::QueryResult {
+            columns: vec![
+                "__DBX_ROWID".to_string(),
+                "ID".to_string(),
+                "PAYLOAD".to_string(),
+                format!("{}T_2", crate::sql_dialect::DBX_LARGE_VALUE_BYTES_COLUMN_PREFIX),
+            ],
+            column_types: vec![
+                "varchar2".to_string(),
+                "number".to_string(),
+                "varchar2".to_string(),
+                "varchar2".to_string(),
+            ],
+            column_sortables: vec![true, true, true, true],
+            spatial_columns: Vec::new(),
+            spatial_values: Vec::new(),
+            rows: vec![
+                vec![
+                    serde_json::json!("AAAR1yAAHAAAAFjAAA"),
+                    serde_json::json!(1),
+                    serde_json::json!("x".repeat(1000)),
+                    serde_json::json!("T:999:5231"),
+                ],
+                vec![
+                    serde_json::json!("AAAR1yAAHAAAAFjAAB"),
+                    serde_json::json!(2),
+                    serde_json::Value::Null,
+                    serde_json::Value::Null,
+                ],
+            ],
+            affected_rows: 0,
+            execution_time_ms: 0,
+            server_execute_time_us: None,
+            query_timings_ms: None,
+            truncated: false,
+            session_id: None,
+            has_more: false,
+            elasticsearch_raw_body: None,
+            messages: Vec::new(),
+        };
+
+        let cells = extract_server_large_value_markers(&mut result);
+
+        assert_eq!(result.columns, vec!["__DBX_ROWID", "ID", "PAYLOAD"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][2], serde_json::json!(format!("{}...", "x".repeat(999))));
+        assert_eq!(result.rows[1][2], serde_json::Value::Null);
+        assert_eq!(
+            cells,
+            vec![db::LargeValueCell { row_index: 0, column_index: 2, original_bytes: 5231, value_ref: None }]
         );
     }
 

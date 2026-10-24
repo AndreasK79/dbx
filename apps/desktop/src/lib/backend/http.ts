@@ -1771,7 +1771,8 @@ export async function exportSnapshotResult(request: SnapshotExportRequest, fileP
   anchor.click();
 }
 
-export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string): Promise<boolean> {
+export async function closeQuerySession(connectionId: string, database: string, sessionId: string, clientSessionId?: string, catalog?: string, txnSessionId?: string): Promise<boolean> {
+  if (txnSessionId) throw new Error("Manual transaction management is only available in the desktop app.");
   return post("/api/query/close-session", {
     connectionId,
     database,
@@ -3149,6 +3150,10 @@ export interface SqlFileEntry {
 
 export async function listSqlFilesInFolder(_folderPath: string, _fileFilter?: string, _includeEmptyDirectories?: boolean): Promise<SqlFileEntry[]> {
   throw new Error("Listing SQL files in a folder is only available in the desktop app");
+}
+
+export async function searchSqlFileContents(_roots: string[], _query: string, _fileFilter?: string): Promise<import("@/lib/backend/tauri").SqlFileContentSearchResult> {
+  throw new Error("Searching SQL file contents is only available in the desktop app");
 }
 
 export async function createSqlFileInFolder(_rootPath: string, _directoryPath: string, _fileName: string): Promise<string> {
