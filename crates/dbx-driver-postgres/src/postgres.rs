@@ -2226,6 +2226,7 @@ async fn execute_select_prepared(
     Ok(PreparedSelectOutcome::Complete(Box::new(QueryResult {
         columns,
         column_types,
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns,
         spatial_values,
@@ -2335,6 +2336,7 @@ async fn execute_select_text(
     Ok(QueryResult {
         column_types: matching_pg_text_column_types(&columns, prepared_column_types),
         columns,
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns,
         spatial_values,
@@ -9138,6 +9140,7 @@ pub async fn execute_query_with_max_rows(
             QueryResult {
                 columns: vec![],
                 column_types: Vec::new(),
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: Vec::new(),
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -10008,6 +10011,7 @@ async fn execute_query_with_max_rows_inner(
         affected.map_err(pg_error_to_string).map(|affected| QueryResult {
             columns: vec![],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -16995,6 +16999,7 @@ mod tests {
                 "character_maximum_length".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: Vec::new(),
             spatial_values: Vec::new(),

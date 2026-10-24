@@ -2618,6 +2618,7 @@ impl DbxMcpServer {
                 start_position: Some(start_position),
                 partition: request.partition,
                 offset: request.offset,
+                timestamp: None,
             };
             match self.backend.peek_messages(&resolved.connection, topic, count, options).await {
                 Ok(result) => text(format_peek_messages_result(result, count as usize)),
@@ -4422,6 +4423,7 @@ fn empty_query_result() -> dbx_core::db::QueryResult {
     dbx_core::db::QueryResult {
         columns: Vec::new(),
         column_types: Vec::new(),
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns: Vec::new(),
         spatial_values: Vec::new(),
@@ -5556,6 +5558,7 @@ mod tests {
                 result: dbx_core::db::QueryResult {
                     columns: Vec::new(),
                     column_types: Vec::new(),
+                    deferred_large_value_cells: Vec::new(),
                     column_sortables: Vec::new(),
                     spatial_columns: Vec::new(),
                     spatial_values: Vec::new(),
@@ -6026,6 +6029,7 @@ mod tests {
                 result: dbx_core::db::QueryResult {
                     columns: vec![],
                     column_types: vec![],
+                    deferred_large_value_cells: Vec::new(),
                     column_sortables: vec![],
                     spatial_columns: vec![],
                     spatial_values: vec![],
@@ -9103,6 +9107,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec![],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -9136,6 +9141,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec![],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -9170,6 +9176,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec!["body".to_string()],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],

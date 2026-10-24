@@ -85,6 +85,7 @@ export interface QueryEditorContextMenuActions {
   openFindReplaceFromContextMenu: () => void;
   deleteEmptyLines: () => void;
   selectCurrentStatementFromContextMenu: () => void;
+  copyCurrentStatementFromContextMenu: () => void;
   selectAllSqlFromContextMenu: () => void;
   emitContextObjectAction: (action: QueryContextObjectAction) => void;
   openCodeSnapshot: () => void;
@@ -416,6 +417,12 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
       action: actions.selectCurrentStatementFromContextMenu,
       icon: TextSelect,
       shortcut: shortcuts.selectCurrentStatement,
+    },
+    {
+      sidebarActionId: "editor.contextMenu.copyCurrentStatement",
+      label: t("editor.contextMenu.copyCurrentStatement"),
+      action: actions.copyCurrentStatementFromContextMenu,
+      icon: Copy,
     },
     { label: "", separator: true },
     {

@@ -10,7 +10,7 @@ import type { PluginUiStorageItemRef, SqlFileFailureLogExportPayload, SqlFileFai
 import { FAILURE_LOG_TEXT_TOO_LARGE } from "@/lib/export/failureLogExport";
 import { saveTextFile } from "@/lib/export/saveTextFile";
 import { functionDiffsToWire, functionInfoFromWire, schemaDiffPreparationFromWire, schemaDiffPreparationToWire, type FunctionInfoWire, type SchemaDiffPreparationWire } from "./functionInfoTransport";
-import type { OracleRoutineSnapshot, OracleRoutineOperation, OracleRoutineOperationObservation, OracleRoutineSaveInput, OracleRoutinePlanInput, OracleRoutinePlan } from "@/types/schemaDiff";
+import type { OracleRoutineSnapshot, OracleRoutineOperation, OracleRoutineOperationObservation, OracleRoutineSaveInput, OracleRoutinePlanInput, OracleRoutinePlan, OracleRoutineReadOptions } from "@/types/schemaDiff";
 
 export function databaseBackupCommand<T = unknown>(command: DatabaseBackupCommand): Promise<T> {
   return post("/api/database-backups", command);
@@ -1437,8 +1437,10 @@ export async function listFunctions(connectionId: string, database: string, sche
   return (await get<FunctionInfoWire[]>(`/api/schema/functions?${qs({ connection_id: connectionId, database, schema })}`)).map(functionInfoFromWire);
 }
 
-export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string, selectedRoutines?: string[]): Promise<OracleRoutineSnapshot> {
-  return get(`/api/schema/diff-routines?${qs({ connection_id: connectionId, database, schema, selected_routines: selectedRoutines === undefined ? undefined : JSON.stringify(selectedRoutines) })}`);
+export function loadSchemaDiffRoutines(connectionId: string, database: string, schema: string, selectedRoutines?: string[], options?: OracleRoutineReadOptions): Promise<OracleRoutineSnapshot> {
+  return get(
+    `/api/schema/diff-routines?${qs({ connection_id: connectionId, database, schema, selected_routines: selectedRoutines === undefined ? undefined : JSON.stringify(selectedRoutines), object_kinds: options?.objectKinds === undefined ? undefined : JSON.stringify(options.objectKinds), selected_objects: options?.selectedObjects === undefined ? undefined : JSON.stringify(options.selectedObjects) })}`,
+  );
 }
 
 export function prepareOracleRoutineSave(input: OracleRoutineSaveInput): Promise<OracleRoutineOperation> {
@@ -1617,6 +1619,7 @@ export async function executeMulti(
     maxResultBytes?: number;
     resultKeyColumns?: string[];
     tableDataPreview?: boolean;
+    deferLobs?: boolean;
     resultSessionId?: string;
     clientSessionId?: string;
     timeoutSecs?: number;
@@ -1673,6 +1676,7 @@ export async function executeMultiWithProgress(
     maxResultBytes?: number;
     resultKeyColumns?: string[];
     tableDataPreview?: boolean;
+    deferLobs?: boolean;
     resultSessionId?: string;
     clientSessionId?: string;
     timeoutSecs?: number;
@@ -1850,6 +1854,7 @@ export async function executeInManualTransaction(
   _executionId?: string,
   _timeoutSecs?: number,
   _boundStatements?: BlobBoundStatement[],
+  _deferLobs?: boolean,
 ): Promise<QueryResult[]> {
   throw new Error("Manual transaction management is only available in the desktop app.");
 }

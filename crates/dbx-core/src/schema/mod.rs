@@ -3314,6 +3314,7 @@ mod tests {
         db::QueryResult {
             columns: columns.iter().map(|column| (*column).to_string()).collect(),
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: Vec::new(),
             spatial_values: Vec::new(),
@@ -4433,6 +4434,7 @@ done
         let result = db::QueryResult {
             columns: vec!["Table".to_string(), "Extra".to_string(), "CREATE TABLE".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4463,6 +4465,7 @@ done
         let result = db::QueryResult {
             columns: vec!["Table".to_string(), "Create Table".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4492,6 +4495,7 @@ done
         let result = db::QueryResult {
             columns: vec!["name".to_string(), "definition".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4518,6 +4522,7 @@ done
         let result = db::QueryResult {
             columns: vec!["View".to_string(), "Extra".to_string(), "CREATE VIEW".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4548,6 +4553,7 @@ done
         let result = db::QueryResult {
             columns: vec!["name".to_string(), "definition".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5639,6 +5645,7 @@ for line in sys.stdin:
         let result = super::db::QueryResult {
             columns: vec!["table_name".to_string(), "table_type".to_string()],
             column_types: vec![],
+            deferred_large_value_cells: Vec::new(),
             column_sortables: vec![],
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5677,6 +5684,7 @@ for line in sys.stdin:
                 "comment".to_string(),
             ],
             column_types: vec![],
+            deferred_large_value_cells: Vec::new(),
             column_sortables: vec![],
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5931,6 +5939,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5951,6 +5960,7 @@ for line in sys.stdin:
         let empty = db::QueryResult {
             columns: vec!["COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5979,6 +5989,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["AUTO_INCREMENT".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6024,6 +6035,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["TABLE_NAME".to_string(), "COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6198,6 +6210,7 @@ for line in sys.stdin:
                 "COMMENTS".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6517,6 +6530,7 @@ done
                 "TOTAL_BYTES".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6695,6 +6709,7 @@ done
                 "TOTAL_BYTES".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -12005,15 +12020,37 @@ async fn managed_object_source<T: serde::de::DeserializeOwned + Send + 'static>(
     object_type: &db::ObjectSourceKind,
     signature: Option<&str>,
     relation_name: Option<&str>,
+    include_source_origin: bool,
     timeout: Option<Duration>,
 ) -> Result<T, String> {
     match pool {
         PoolKind::Agent(client) => {
-            client
-                .lock()
-                .await
-                .get_object_source_with_identity(database, schema, name, object_type, signature, relation_name, timeout)
-                .await
+            let mut client = client.lock().await;
+            if include_source_origin {
+                client
+                    .get_object_source_with_origin(
+                        database,
+                        schema,
+                        name,
+                        object_type,
+                        signature,
+                        relation_name,
+                        timeout,
+                    )
+                    .await
+            } else {
+                client
+                    .get_object_source_with_identity(
+                        database,
+                        schema,
+                        name,
+                        object_type,
+                        signature,
+                        relation_name,
+                        timeout,
+                    )
+                    .await
+            }
         }
         PoolKind::ExternalDriver { config, session, .. } => {
             let mut params = serde_json::json!({
@@ -12026,6 +12063,9 @@ async fn managed_object_source<T: serde::de::DeserializeOwned + Send + 'static>(
             // An empty signature identifies the zero-argument overload; absence means unknown.
             if let Some(signature) = signature {
                 params["signature"] = serde_json::Value::String(signature.to_string());
+            }
+            if include_source_origin {
+                params["include_source_origin"] = serde_json::json!(true);
             }
             session.invoke_with_timeout("getObjectSource", params, timeout).await
         }
@@ -12082,6 +12122,7 @@ async fn get_object_source_once(
                 &object_type,
                 signature,
                 None,
+                false,
                 agent_metadata_timeout(Some(config.as_ref())),
             )
             .await?;
@@ -12142,6 +12183,7 @@ async fn get_object_source_once(
                     &object_type,
                     signature,
                     relation_name,
+                    false,
                     agent_metadata_timeout(db_config.as_ref()),
                 )
                 .await?;
