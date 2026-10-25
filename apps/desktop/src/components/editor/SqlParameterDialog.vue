@@ -47,6 +47,7 @@ const syntaxLabels: Record<SqlParameterSyntax, string> = {
   positional: "?",
   named: ":name",
   shell: "${name}",
+  "bracketed-shell": "[${name}]",
   mybatis: "#{name}",
   sqlserver: "@name",
   substitution: "&name",

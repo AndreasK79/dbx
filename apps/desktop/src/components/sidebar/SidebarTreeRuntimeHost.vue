@@ -15,6 +15,8 @@ import { canDropDatabaseNode, notifyDatabaseBrowserMutation } from "@/lib/databa
 import { canDropDatabaseTables, canEmptyDatabaseTables, useDatabaseTableEmpty } from "@/composables/useDatabaseTableEmpty";
 import { useI18n } from "vue-i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
+import { normalizeBackendError } from "@/lib/backend/errorUtils";
+import { isConnectionTimeoutErrorMessage } from "@/lib/sql/queryError";
 import {
   Ban,
   BarChart3,
@@ -204,6 +206,7 @@ import { executeOceanbaseTableClone, executeOceanbaseTableCloneData, oceanbaseCl
 import type { DuplicateTableStructurePlan } from "@/lib/database/dbAdminSql";
 import { useOceanbaseCloneDialog } from "@/composables/useOceanbaseCloneDialog";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
+import { redisFlushDbPreview } from "@/lib/redis/redisCommandPreview";
 import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { prepareOracleViewRename, executeOracleViewRename, OracleViewRenameFailure, type OracleViewRenamePlan } from "@/lib/table/oracleViewRename";
 import { prepareOracleRoutineRename, executeOracleRoutineRename, OracleRoutineRenameFailure, type OracleRoutineRenamePlan } from "@/lib/table/oracleRoutineRename";
@@ -548,6 +551,7 @@ const emit = defineEmits<{
   "open-object-source": [node: TreeNode, initialEditing: boolean, initialSection?: ObjectDetailsSection];
   "open-procedure": [node: TreeNode];
   "open-settings": [initialTab: string];
+  "open-connection-settings": [connectionId: string];
   "open-data": [node: TreeNode, requireSelection: boolean, openMode: DataTabOpenMode, runner: (node: TreeNode, request: SidebarDataOpenRequest) => Promise<void>];
   "open-visible-databases": [node: TreeNode];
   "open-visible-schemas": [node: TreeNode];
@@ -903,7 +907,7 @@ async function toggle(requestId = beginNavigationRequest()) {
       if (!isCurrentNavigationRequest(requestId)) return;
       const errMsg = e?.message || String(e);
       if (errMsg.includes(CONNECTION_ATTEMPT_CANCELLED_MESSAGE)) return;
-      toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+      toastConnectFailed(node.connectionId, e);
       openDriverStoreForInstallError(errMsg, node);
     }
     return;
@@ -1045,7 +1049,7 @@ async function toggle(requestId = beginNavigationRequest()) {
       }
       const errMsg = e?.message || String(e);
       if (errMsg.includes(CONNECTION_ATTEMPT_CANCELLED_MESSAGE)) return;
-      toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+      toastConnectFailed(node.connectionId, e);
       openDriverStoreForInstallError(errMsg);
     }
     return;
@@ -1238,7 +1242,7 @@ async function toggle(requestId = beginNavigationRequest()) {
     if (!wasExpanded) node.isExpanded = false;
     const errMsg = e?.message || String(e);
     if (errMsg.includes(CONNECTION_ATTEMPT_CANCELLED_MESSAGE)) return;
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
     openDriverStoreForInstallError(errMsg);
   }
 }
@@ -1326,13 +1330,22 @@ function openDriverStoreForInstallError(errMsg: string, node: TreeNode = activeN
   if (focus) window.dispatchEvent(new CustomEvent("dbx-open-driver-store", { detail: focus }));
 }
 
+// 连接/取数失败的统一 toast（issue #13233）：命中「连接超时」类错误时附带「修改超时时间」
+// 动作，点击后经 open-connection-settings 事件链打开该连接的编辑对话框高级页（与查询结果
+// 错误区的同名入口一致）。非超时错误保持原有纯提示行为，不带动作。
+function toastConnectFailed(connectionId: string | undefined, error: unknown) {
+  const rawMessage = (error as { message?: string } | undefined)?.message || String(error);
+  const action = connectionId && isConnectionTimeoutErrorMessage(rawMessage, normalizeBackendError(error) ?? undefined) ? { label: t("editor.changeConnectionTimeout"), onClick: () => emit("open-connection-settings", connectionId) } : undefined;
+  toast(t("connection.connectFailed", { message: translateBackendError(t, error) }), 5000, action);
+}
+
 async function loadMoreObjectGroupChildren() {
   const node = activeNode.value;
   const searchFilter = node.loadMore?.parentId ? connectionStore.sidebarTableSearchQueries[node.loadMore.parentId]?.trim() || "" : "";
   try {
     await connectionStore.loadMoreObjectGroupChildren(node, { searchFilter });
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -1341,7 +1354,7 @@ async function loadAllObjectGroupChildren() {
   try {
     await connectionStore.loadAllObjectGroupChildren(node);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -1991,7 +2004,7 @@ async function openObjectBrowser(eventReadOnly = false, openEventEditor: boolean
       await toggle();
     }
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
     openDriverStoreForInstallError(e?.message || String(e));
   }
 }
@@ -2053,7 +2066,7 @@ async function openDatabaseBrowser() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openDatabaseBrowser(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
     openDriverStoreForInstallError(e?.message || String(e));
   }
 }
@@ -2070,7 +2083,7 @@ async function openProfileDatabaseWorkspace() {
     const target = workspace.resolveTarget?.(node.database, "database") ?? { database: node.database };
     queryStore.openDriverProfileWorkspace(node.connectionId, target.database, t(workspace.tabTitleKey), workspace.mode, workspace.tabScope, target.branch);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2089,7 +2102,7 @@ async function openProfileConnectionWorkspace() {
     const target = workspace.resolveTarget?.(database, "connection") ?? { database };
     queryStore.openDriverProfileWorkspace(node.connectionId, target.database, t(workspace.tabTitleKey), workspace.mode, workspace.tabScope, target.branch);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2101,7 +2114,7 @@ async function openUserAdmin() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openUserAdmin(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2113,7 +2126,7 @@ async function openXuguUserPermissions() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openXuguUserAdmin(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e?.message || String(e)) }), 5000);
+    toastConnectFailed(node.connectionId, e?.message || String(e));
   }
 }
 
@@ -2125,7 +2138,7 @@ async function openProcessList() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openProcessList(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2137,7 +2150,7 @@ async function openSqlServerActivityTrace() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openSqlServerActivityTrace(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2159,7 +2172,7 @@ async function openServerDashboard() {
       queryStore.openMysqlDashboard(node.connectionId);
     }
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2171,7 +2184,7 @@ async function openDamengUsers() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openDamengUsers(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2183,7 +2196,7 @@ async function openDamengRoles() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openDamengRoles(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2195,7 +2208,7 @@ async function openDamengJobAdmin() {
     connectionStore.activeConnectionId = node.connectionId;
     queryStore.openDamengJobAdmin(node.connectionId);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
   }
 }
 
@@ -2238,6 +2251,7 @@ async function newQuery(options: { reuseQueryTabByScope?: boolean } = {}) {
           database: node.database,
           schema: node.schema,
           includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+          defaultSchema: config?.default_schema,
           quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
           keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
           tableName: node.label,
@@ -2257,7 +2271,7 @@ async function newQuery(options: { reuseQueryTabByScope?: boolean } = {}) {
     if (openDefault) await queryStore.openDefaultQuery({ connectionId: node.connectionId, database });
     else queryStore.createTab(node.connectionId, database, undefined, "query", connection.default_schema);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
     openDriverStoreForInstallError(e?.message || String(e));
   }
 }
@@ -2305,7 +2319,7 @@ async function loadTemplateContext(allowView = false, node: TreeNode = activeNod
   }
 
   const identifierQuote = connectionStore.connectionIdentifierQuote(node.connectionId);
-  return { node, dbType, driverProfile: config?.driver_profile, identifierQuote, tableSchema, columns, tableType };
+  return { node, dbType, driverProfile: config?.driver_profile, identifierQuote, tableSchema, columns, tableType, defaultSchema: config?.default_schema };
 }
 
 type TableTemplateContext = NonNullable<Awaited<ReturnType<typeof loadTemplateContext>>>;
@@ -2340,6 +2354,7 @@ async function newSelectTemplate() {
             database: context.node.database,
             schema: context.tableSchema,
             includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+            defaultSchema: context.defaultSchema,
             quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
             keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
             tableName: context.node.label,
@@ -2360,6 +2375,7 @@ async function newSelectTemplate() {
       database: context.node.database,
       schema: context.tableSchema,
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+      defaultSchema: context.defaultSchema,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
       keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
       tableName: context.node.label,
@@ -2367,7 +2383,7 @@ async function newSelectTemplate() {
     });
     openSqlTemplateTab(context.node.connectionId!, context.node.database!, context.node.schema, context.node.catalog, sql);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(activeNode.value.connectionId, e);
   }
 }
 
@@ -2413,6 +2429,7 @@ function insertTemplateOptions(context: TableTemplateContext, rowCount: number) 
     database: context.node.database,
     schema: context.tableSchema,
     includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+    defaultSchema: context.defaultSchema,
     quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
     tableName: context.node.label,
     columns: context.columns,
@@ -2439,7 +2456,7 @@ async function runInsertTemplate(rowCount: number, prefetchedContexts?: TableTem
     const title = contexts.length === 1 ? undefined : `INSERT - ${contexts.map((context) => context.node.label).join(", ")}`;
     openSqlTemplateTab(tabTarget.connectionId!, tabTarget.database!, tabTarget.schema, tabTarget.catalog, sql, title);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(activeNode.value.connectionId, e);
   }
 }
 
@@ -2458,6 +2475,7 @@ async function newUpdateTemplate() {
             database: context.node.database,
             schema: context.tableSchema,
             includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+            defaultSchema: context.defaultSchema,
             quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
             tableName: context.node.label,
             columns: context.columns,
@@ -2477,13 +2495,14 @@ async function newUpdateTemplate() {
       database: context.node.database,
       schema: context.tableSchema,
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+      defaultSchema: context.defaultSchema,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
       tableName: context.node.label,
       columns: context.columns,
     });
     openSqlTemplateTab(context.node.connectionId!, context.node.database!, context.node.schema, context.node.catalog, sql);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(activeNode.value.connectionId, e);
   }
 }
 
@@ -2502,6 +2521,7 @@ async function newDeleteTemplate() {
             database: context.node.database,
             schema: context.tableSchema,
             includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+            defaultSchema: context.defaultSchema,
             quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
             tableName: context.node.label,
             columns: context.columns,
@@ -2521,13 +2541,14 @@ async function newDeleteTemplate() {
       database: context.node.database,
       schema: context.tableSchema,
       includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
+      defaultSchema: context.defaultSchema,
       quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
       tableName: context.node.label,
       columns: context.columns,
     });
     openSqlTemplateTab(context.node.connectionId!, context.node.database!, context.node.schema, context.node.catalog, sql);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(activeNode.value.connectionId, e);
   }
 }
 
@@ -2695,7 +2716,7 @@ async function refresh() {
         toast(t("connection.objectCacheRefreshFailed", { message: translateBackendError(t, e) }), 5000);
         return;
       }
-      toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+      toastConnectFailed(node.connectionId, e);
       openDriverStoreForInstallError(e?.message || String(e), node);
     }
     return;
@@ -2703,7 +2724,7 @@ async function refresh() {
   try {
     await connectionStore.refreshTreeNode(node);
   } catch (e: any) {
-    toast(t("connection.connectFailed", { message: translateBackendError(t, e) }), 5000);
+    toastConnectFailed(node.connectionId, e);
     openDriverStoreForInstallError(e?.message || String(e), node);
   }
 }
@@ -6446,15 +6467,19 @@ routeDangerDialog(showClearElasticsearchIndexConfirm, () => {
   });
 });
 
-routeDangerDialog(showFlushRedisDbConfirm, () =>
-  dangerRequest({
+routeDangerDialog(showFlushRedisDbConfirm, () => {
+  const node = sidebarDangerTarget.value ?? activeNode.value;
+  const connectionId = node.connectionId ?? activeNode.value.connectionId;
+  const isCluster = connectionId ? connectionStore.getConfig(connectionId)?.redis_connection_mode === "cluster" : false;
+  return dangerRequest({
     title: t("redis.flushDb"),
     message: t("redis.flushDbMessage"),
-    details: t("redis.flushDbDetails", { db: activeNode.value.database }),
+    detailsText: t("redis.flushDbDetails", { db: node.database ?? "" }),
+    sql: redisFlushDbPreview(node.database, isCluster),
     confirmLabel: t("redis.flushDbConfirm"),
     confirm: confirmFlushRedisDb,
-  }),
-);
+  });
+});
 
 routeDangerDialog(showDropSchemaConfirm, () =>
   dangerRequest({

@@ -5477,6 +5477,7 @@ onUnmounted(() => {
             @start-resize="startSidebarResize"
             @collapse="setSidebarOpen(false)"
             @open-settings="(initialTab) => openSettings(initialTab ?? 'appearance')"
+            @open-connection-settings="(connectionId) => openConnectionSettings(connectionId, 'advanced')"
             @add-to-ai="addToAi"
             @open-dependency-object="onOpenDependencyObject"
             @mousedown="rememberSidebarSearchSurface"
