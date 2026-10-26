@@ -2746,8 +2746,13 @@ watch(
   { deep: true },
 );
 
+// Upstream's 133de5e0b wrote this wrapper calling itself instead of the
+// composable's prefetchCompletionTables — an unconditional stack overflow on
+// every query tab (prefetch-completion is true whenever the tab is a query
+// tab without a source view), which kills the component before CodeMirror
+// mounts: no cursor, nothing typed. Fixed locally pending an upstream fix.
 function prefetchCompletionTablesIfEnabled() {
-  if (props.prefetchCompletion) prefetchCompletionTablesIfEnabled();
+  if (props.prefetchCompletion) void completionMetadata.prefetchCompletionTables();
 }
 
 watch(
