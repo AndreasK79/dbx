@@ -68,7 +68,6 @@ export type ShortcutActionId =
   | "saveAllTabs"
   | "closeWindow"
   | "focusSearch"
-  | "focusDatabaseSelect"
   | "quickOpen"
   | "globalSearch"
   | "openConnectionPicker"
@@ -591,17 +590,6 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutFocusSearch",
     scope: "global",
     defaultShortcut: "Mod+F",
-  },
-  {
-    id: "focusDatabaseSelect",
-    labelKey: "settings.shortcutFocusDatabaseSelect",
-    scope: "global",
-    // F3 与 grid 作用域的 goToNextPage 同键（跨作用域重叠仅提示，见
-    // findCrossScopeShortcutConflicts 的注释）：焦点在结果网格内时网格的
-    // 翻页监听器 stopPropagation 优先；编辑器内搜索面板打开时 F3 仍是
-    // 查找下一个（codemirrorSearchKeymap 的条件绑定），面板关闭时冒泡
-    // 到 App.vue 打开数据库选择下拉。
-    defaultShortcut: "F3",
   },
   {
     id: "quickOpen",

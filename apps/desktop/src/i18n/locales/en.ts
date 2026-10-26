@@ -11041,7 +11041,6 @@ export default {
     shortcutReopenClosedTab: "Reopen closed tab",
     shortcutCloseWindow: "Close window",
     shortcutFocusSearch: "Focus current view search",
-    shortcutFocusDatabaseSelect: "Open database selector dropdown",
     shortcutQuickOpen: "Quick open (search all database objects)",
     shortcutGlobalSearch: "Global file content search",
     shortcutOpenConnectionPicker: "Open connection picker",

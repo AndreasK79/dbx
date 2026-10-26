@@ -28,7 +28,6 @@ Every action below is rebindable in **Settings → Shortcuts** (`apps/desktop/sr
 | `Ctrl+R` | Replace | Opens the find/replace panel |
 | `Ctrl+G` | Go to line | Jumps to a line number |
 | `Ctrl+F` | Focus current view search | Global-scope twin of find: focuses the search of whatever surface is active |
-| `F3` | Open database selector dropdown | Hands focus to the database selector; while the find panel is open, F3 is find-next instead |
 | `Ctrl+P` | Quick open | Search every database object (tables, views, routines…) and open it |
 | `Ctrl+Alt+F` | Global file content search | Full-text search across saved SQL files |
 | `Ctrl+Alt+C` | Open connection picker | Opens the connection picker |

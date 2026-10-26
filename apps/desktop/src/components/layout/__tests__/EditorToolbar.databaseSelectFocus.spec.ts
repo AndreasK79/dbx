@@ -64,7 +64,7 @@ vi.mock("@/components/common/ProductionContextBadge.vue", () => ({
 import EditorToolbar from "../EditorToolbar.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 
-type ToolbarExposed = { openDatabaseSelect: () => boolean };
+type ToolbarExposed = { openDatabasePicker: () => boolean };
 
 function flushAnimationFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -150,10 +150,10 @@ describe("EditorToolbar database select focus hand-off", () => {
     }
   });
 
-  it("focuses the query editor after picking a database from the F3-opened dropdown", async () => {
+  it("focuses the query editor after picking a database from the shortcut-opened dropdown", async () => {
     const toolbar = await mountToolbar();
     try {
-      expect(toolbar.toolbar().openDatabaseSelect()).toBe(true);
+      expect(toolbar.toolbar().openDatabasePicker()).toBe(true);
 
       toolbar.selectButton()!.click();
       await nextTick();
@@ -183,10 +183,10 @@ describe("EditorToolbar database select focus hand-off", () => {
     }
   });
 
-  it("does not focus the editor after closing the F3-opened dropdown without a selection", async () => {
+  it("does not focus the editor after closing the shortcut-opened dropdown without a selection", async () => {
     const toolbar = await mountToolbar();
     try {
-      expect(toolbar.toolbar().openDatabaseSelect()).toBe(true);
+      expect(toolbar.toolbar().openDatabasePicker()).toBe(true);
 
       toolbar.closeButton()!.click();
       await nextTick();

@@ -78,20 +78,6 @@ describe("shortcutRegistry editor actions", () => {
     expect(shortcutToCodeMirrorKey("Mod+Alt+,")).toBe("Mod-Alt-,");
   });
 
-  it("registers focus database select as a global shortcut defaulting to F3", () => {
-    expect(SHORTCUT_DEFINITIONS.find((item) => item.id === "focusDatabaseSelect")).toMatchObject({
-      id: "focusDatabaseSelect",
-      labelKey: "settings.shortcutFocusDatabaseSelect",
-      scope: "global",
-      defaultShortcut: "F3",
-    });
-    expect(DEFAULT_SHORTCUT_SETTINGS.focusDatabaseSelect).toBe("F3");
-    // F3 is shared with the grid-scope goToNextPage default on purpose (grid
-    // pagination wins inside DataGrid via its stopPropagation listener); the
-    // overlap is cross-scope, so it must stay informational, never blocking.
-    expect(findShortcutConflict("focusDatabaseSelect", "F3", normalizeShortcutSettings())).toBeNull();
-  });
-
   it("registers commit transaction as a global shortcut defaulting to Shift+Mod+C", () => {
     expect(SHORTCUT_DEFINITIONS.find((item) => item.id === "commitTransaction")).toMatchObject({
       id: "commitTransaction",

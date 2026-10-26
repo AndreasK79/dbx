@@ -76,7 +76,6 @@ defineExpose({
   },
   focusWhere: () => activeEditorGroup()?.focusWhere() ?? false,
   openGoToColumn: () => activeEditorGroup()?.openGoToColumn() ?? false,
-  openDatabaseSelect: () => activeEditorGroup()?.openDatabaseSelect() ?? false,
   openConnectionPicker: () => activeEditorGroup()?.openConnectionPicker() ?? false,
   openDatabasePicker: () => activeEditorGroup()?.openDatabasePicker() ?? false,
   openSchemaPicker: () => activeEditorGroup()?.openSchemaPicker() ?? false,

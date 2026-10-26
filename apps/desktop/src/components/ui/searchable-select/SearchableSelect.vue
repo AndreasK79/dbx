@@ -353,9 +353,6 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
-// Opens the dropdown from outside (toolbar picker shortcuts, and the F3
-// focusDatabaseSelect shortcut); the open watcher focuses the search input
-// and highlights the selection.
 defineExpose({
   openDropdown: () => {
     if (props.disabled) return false;

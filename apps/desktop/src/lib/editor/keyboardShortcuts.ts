@@ -366,10 +366,6 @@ export function isGoToNextPageShortcut(event: ShortcutLikeEvent, shortcuts?: Par
   return matchesShortcut(event, actionShortcut("goToNextPage", shortcuts));
 }
 
-export function isFocusDatabaseSelectShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
-  return matchesShortcut(event, actionShortcut("focusDatabaseSelect", shortcuts));
-}
-
 export function isGoToLastPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
   return matchesShortcut(event, actionShortcut("goToLastPage", shortcuts));
 }

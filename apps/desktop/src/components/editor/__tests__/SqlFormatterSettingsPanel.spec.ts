@@ -9,7 +9,7 @@ vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string, values?: Record<
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock("@/lib/common/clipboard", () => ({ copyToClipboard: vi.fn() }));
 vi.mock("@/lib/export/saveTextFile", () => ({ saveTextFile: vi.fn() }));
-vi.mock("@/lib/editor/codemirrorSearchKeymap", () => ({ searchKeymapWithoutShortcutConflicts: vi.fn() }));
+vi.mock("@/lib/editor/codemirrorSearchKeymap", () => ({ searchKeymapWithoutModD: vi.fn() }));
 vi.mock("@lucide/vue", async () => {
   const { createPassthroughStub } = await import("@/components/grid/__tests__/vueHostHarness");
   const icon = createPassthroughStub("Icon", "i");

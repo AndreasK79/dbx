@@ -84,7 +84,6 @@ defineExpose({
   openSchemaPicker: () => toolbarRef.value?.openSchemaPicker() ?? false,
   focusWhere: () => activeSurfaceRef.value?.focusWhere() ?? false,
   openGoToColumn: () => activeSurfaceRef.value?.openGoToColumn() ?? false,
-  openDatabaseSelect: () => toolbarRef.value?.openDatabaseSelect() ?? false,
   openTableStructureEditor: (initialTab?: TableInfoTab) => activeSurfaceRef.value?.openTableStructureEditor?.(initialTab) ?? false,
   // Same action as the toolbar's commit button (Shift+Mod+C default). Only
   // reports handled when the active tab holds a committable transaction, so

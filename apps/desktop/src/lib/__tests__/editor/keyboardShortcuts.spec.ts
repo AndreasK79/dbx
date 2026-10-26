@@ -16,7 +16,6 @@ import {
   isExecuteSqlInNewResultTabShortcut,
   isExecuteSqlShortcut,
   isDefaultQueryShortcutTarget,
-  isFocusDatabaseSelectShortcut,
   isGoToColumnShortcut,
   isFocusWhereShortcut,
   isGoToFirstPageShortcut,
@@ -327,17 +326,6 @@ describe("keyboard shortcut matching", () => {
     expect(matcher({ key: "F8", altKey: true }, shortcuts)).toBe(false);
     expect(matcher({ key, altKey: true, isComposing: true }, shortcuts)).toBe(false);
     expect(matcher({ key, altKey: true })).toBe(false);
-  });
-
-  it("matches only the configured focus-database-select shortcut", () => {
-    const shortcuts = { focusDatabaseSelect: "Alt+F3" } as const;
-
-    expect(isFocusDatabaseSelectShortcut({ key: "F3" })).toBe(true);
-    expect(isFocusDatabaseSelectShortcut({ key: "F3", altKey: true }, shortcuts)).toBe(true);
-    expect(isFocusDatabaseSelectShortcut({ key: "F3" }, shortcuts)).toBe(false);
-    expect(isFocusDatabaseSelectShortcut({ key: "F3", altKey: true }, { focusDatabaseSelect: "" })).toBe(false);
-    expect(isFocusDatabaseSelectShortcut({ key: "F3", altKey: true, isComposing: true }, shortcuts)).toBe(false);
-    expect(isFocusDatabaseSelectShortcut({ key: "F3", altKey: true })).toBe(false);
   });
 
   it("matches only the configured commit-transaction shortcut", () => {

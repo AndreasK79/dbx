@@ -164,24 +164,23 @@ const { loadSchemaOptions, getSchemaOptionsForDb, isLoadingSchemas, isSchemaAwar
 
 const toolbarRootRef = ref<HTMLElement | null>(null);
 const toolbarActionsRef = ref<HTMLElement | null>(null);
-// Set while the database dropdown was opened programmatically via the F3
-// shortcut (openDatabaseSelect): picking a database then — Enter or click —
-// hands focus to the query editor. Cleared when the dropdown closes without
-// a selection (Escape / outside click), restoring the plain trigger focus.
+// Set while the database dropdown was opened programmatically via the
+// Ctrl+Alt+D picker shortcut (openDatabasePicker): picking a database then —
+// Enter or click — hands focus to the query editor. Cleared when the dropdown
+// closes without a selection (Escape / outside click), restoring the plain
+// trigger focus.
 const databaseSelectOpenedViaShortcut = ref(false);
 const toolbarTier = ref<EditorToolbarTier>(0);
 
-// F3 (settings.shortcutFocusDatabaseSelect): open the database selector's
-// dropdown programmatically. False when the selector is not rendered (single
-// database / connection types without one) so the caller leaves F3 alone.
 defineExpose({
-  openDatabaseSelect: () => {
+  openConnectionPicker: () => connectionPickerRef.value?.openDropdown() ?? false,
+  // Ctrl+Alt+D (settings.shortcutOpenDatabasePicker): open the database
+  // selector's dropdown programmatically, arming the focus hand-off above.
+  openDatabasePicker: () => {
     const opened = databasePickerRef.value?.openDropdown() ?? false;
     if (opened) databaseSelectOpenedViaShortcut.value = true;
     return opened;
   },
-  openConnectionPicker: () => connectionPickerRef.value?.openDropdown() ?? false,
-  openDatabasePicker: () => databasePickerRef.value?.openDropdown() ?? false,
   openSchemaPicker: () => schemaPickerRef.value?.openDropdown() ?? false,
 });
 

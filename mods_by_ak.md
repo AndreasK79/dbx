@@ -4,7 +4,7 @@ Personal mods on top of dbx, in order — all verified (specs + typecheck), buil
 
 - **Snippets** — VS Code import/export, list filter, bulk delete with shift-click ranges (#2, #3, #5, #12, #39), quick-add from the editor's context menu (#24), `$0` final cursor position (#23), a typed table/column name outranks a colliding snippet trigger (#28), a partially typed prefix keeps tables/columns ahead of snippets (#44), triggers containing spaces or hyphens match their separator-free spelling (#45), and a toggle removes them from typing autocomplete while Ctrl+Alt+Space lists them on demand (#52)
 - **Result grid** — DBeaver-style FK drill-through (#4) with a Back button / Alt+← that retraces the drill chain (#43), copy-SQL buttons for indexes, foreign keys, and constraints (#6, #7, #9), CSV export options dialog (#19) with a type-aware "strings" quote mode in export and copy extractors (#42), uncheck-all / show-only-filtered in the Columns dropdown (#33)
-- **Keyboard** — VS Code-style Ctrl+D occurrence selection (#13), F3 opens the database selector and hands focus to the editor (#18, #21), Ctrl+Shift+C commits the transaction (#22), Alt+1..5 copy a first-row value (#30), Ctrl+Alt+Enter replaces all in the find/replace panels (#35), Shift+Delete / Ctrl+X cut lines off the bottom of the editor (#53), configurable shortcut for "Convert to delimited text" (#1)
+- **Keyboard** — VS Code-style Ctrl+D occurrence selection (#13), Ctrl+Alt+D database picks hand focus back to the editor (#21), Ctrl+Shift+C commits the transaction (#22), Alt+1..5 copy a first-row value (#30), Ctrl+Alt+Enter replaces all in the find/replace panels (#35), Shift+Delete / Ctrl+X cut lines off the bottom of the editor (#53), configurable shortcut for "Convert to delimited text" (#1)
 - **Dialogs** — Enter confirms everywhere: delimited list (#8), SQL parameters (#14), danger confirms (#16), update center (#29); the SQL parameter dialog also stays open on outside clicks (#17)
 - **Search & parameters** — double-Shift database object search that opens the object's definition (#20, #25), with type filter chips and the sidebar's icons/colors (#34); unfilled SQL parameters send NULL (#26)
 - **Errors** — full PostgreSQL error reports with failed statements' notices (#36), live notice streaming and a readable error banner (#37), query/edit errors never finish silently (#38), an aborted batch underlines the statement the error names (#50)
@@ -77,8 +77,7 @@ DangerConfirmDialog.vue, Button.vue, __tests__/DangerConfirmDialog.spec.ts
 The dialog is modeless: no overlay, clicking outside doesn't dismiss it, and the editor behind stays interactive — text can be selected and copied into a parameter while it's on screen. Escape/Cancel/Execute/Ignore still close it; Escape now closes an open value-history suggestion popover first instead of being swallowed by it.
 SqlParameterDialog.vue, __tests__/SqlParameterDialog.spec.ts
 
-18. F3 opens the database selector dropdown
-Rebindable. The dropdown opens with its filter input focused and the current database highlighted — type, arrow keys, Enter. F3 keeps its meaning where it already had one (grid: next page; open editor search panel: find-next); the fix that made it work is that CodeMirror's stock F3 binding no longer marks the key handled when its panel is closed, so it reaches the global handler.
+18. F3 opens the database selector dropdown — REMOVED (October 2026): redundant with upstream's Ctrl+Alt+D openDatabasePicker, which opens the same toolbar dropdown. The fork machinery (registry entry, App.vue handler, openDatabaseSelect expose chain, conditional F3 binding in codemirrorSearchKeymap) was reverted; codemirrorSearchKeymap.ts is byte-identical to upstream again.
 shortcutRegistry.ts, keyboardShortcuts.ts, codemirrorSearchKeymap.ts, App.vue, SqlEditorWorkspace.vue, EditorGroup.vue, EditorToolbar.vue, SearchableSelect.vue, QueryEditor.vue, SqlFormatterSettingsPanel.vue
 
 19. CSV export options dialog
@@ -89,8 +88,8 @@ CsvExportDialog.vue, csvExportDialog.ts, csvQuoteMode.ts, exportFormats.ts, useD
 Pressing Shift twice quickly (within 400 ms, no other key between — typing capitals never trips it) opens a search dialog scoped to the active database: every table, view, materialized view, procedure, function, and trigger, filtered with the quick-open matching (exact → initials → prefix → pinyin → word-prefix → substring → fuzzy, highlighted). Tables/views/materialized views open as data tabs; routines open their source. Schema-aware engines fan out over the database's schemas (parallel queries capped at 50, system schemas filtered first — postgres carries one numbered pg_toast_N schema per table) so a schema-less tab doesn't produce an empty list; numbered pg_toast_ schemas are now classified as system everywhere.
 doubleShiftGesture.ts, useDatabaseObjectSearch.ts, DatabaseObjectSearchDialog.vue, App.vue, visibleDatabases.ts, en.ts, zh-CN.ts
 
-21. Focus moves to the query editor after picking a database with F3
-Enter or click in an F3-opened selector hands focus to the query editor (deferred one frame past the popover's own focus restore). Click-opened dropdowns behave as before; dismissing the F3 dropdown with Escape or an outside click cancels the hand-off.
+21. Focus moves to the query editor after picking a database with the picker shortcut
+Enter or click in a Ctrl+Alt+D-opened selector hands focus to the query editor (deferred one frame past the popover's own focus restore). Click-opened dropdowns behave as before; dismissing the shortcut-opened dropdown with Escape or an outside click cancels the hand-off. (Originally rode the fork's F3 shortcut, #18; rewired onto openDatabasePicker when #18 was removed.)
 EditorToolbar.vue, EditorGroup.vue, QueryEditorSurface.vue, ContentArea.vue, querySurfaces.ts, QueryEditor.vue, __tests__/EditorToolbar.databaseSelectFocus.spec.ts
 
 22. Ctrl+Shift+C commits the transaction

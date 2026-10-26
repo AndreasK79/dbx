@@ -394,8 +394,8 @@ describe("SearchableSelect programmatic open", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // The option list teleports to body and keyboard focus lands in the
-    // filter input, ready to type — this is what F3 (focusDatabaseSelect)
-    // activates.
+    // filter input, ready to type — this is what the toolbar picker
+    // shortcuts (Ctrl+Alt+C/D/R) activate.
     expect(document.body.textContent).toContain("LineString");
     expect(document.activeElement?.tagName).toBe("INPUT");
     expect(emitted.open).toEqual([true]);

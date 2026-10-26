@@ -148,7 +148,6 @@ import {
   isExecuteAllSqlShortcut,
   isExecuteSqlShortcut,
   isDefaultQueryShortcutTarget,
-  isFocusDatabaseSelectShortcut,
   isFocusSearchShortcut,
   isFocusWhereShortcut,
   isGoToColumnShortcut,
@@ -4846,15 +4845,6 @@ async function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     contentAreaRef.value?.refreshData();
-    return;
-  }
-  // F3 (default) opens the toolbar's database selector. The grid's pagination
-  // listener runs first inside DataGrid (stopPropagation) and the editor's
-  // search keymap only yields F3 here while its search panel is closed, so
-  // this branch never steals a more specific in-context F3.
-  if (isFocusDatabaseSelectShortcut(e, shortcuts) && contentAreaRef.value?.openDatabaseSelect()) {
-    e.preventDefault();
-    e.stopPropagation();
     return;
   }
   // Ctrl+Shift+C (default) commits the active tab's transaction — the toolbar

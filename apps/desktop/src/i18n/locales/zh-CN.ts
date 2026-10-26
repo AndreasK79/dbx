@@ -11011,7 +11011,6 @@ export default withEnglishFallback({
     shortcutToggleSidebar: "切换侧边栏",
     shortcutToggleZenMode: "切换禅模式",
     shortcutFocusSearch: "聚焦当前页面搜索",
-    shortcutFocusDatabaseSelect: "打开数据库选择下拉框",
     shortcutQuickOpen: "快速打开 (搜索所有数据库对象)",
     shortcutGlobalSearch: "全局文件内容搜索",
     shortcutOpenConnectionPicker: "打开连接选择器",
