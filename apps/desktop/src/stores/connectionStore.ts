@@ -3493,6 +3493,15 @@ export const useConnectionStore = defineStore("connection", () => {
       .finally(() => staleTreeRefreshIds.delete(liveNode.id));
   }
 
+  /**
+   * 「连接后自动展开对象树」开关（#13302）：关闭时连接/数据库节点加载完成后不再强制展开，
+   * 默认关闭以避免模式多的库全量展开造成的元数据请求与渲染开销。手动展开不受影响：
+   * 用户点击节点时 UI 已先置位 isExpanded，这里的 gating 只拦「加载完成后代为展开」的路径。
+   */
+  function sidebarAutoExpandTreeOnConnect(): boolean {
+    return useSettingsStore().editorSettings.sidebarExpandTreeOnConnect;
+  }
+
   // The metadata tree cache must not persist UI state. isExpanded flags written
   // while a schema was expanded would replay that expansion on every cache hit
   // (a manual collapse never rewrites the cache), so opening a connection would
@@ -3539,7 +3548,7 @@ export const useConnectionStore = defineStore("connection", () => {
     }
     const normalizedChildren = sortSidebarTreeChildrenForParent(targetNode, childrenWithLinkedServers, config?.db_type);
     setChildren(targetNode, targetNode.type === "connection" && targetNode.connectionId ? withSavedSqlRoot(targetNode.connectionId, normalizedChildren, targetNode) : normalizedChildren);
-    targetNode.isExpanded = true;
+    if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     logMetadataLoadTrace(metadataTraceLogger, trace, "cache-hit", {
       cacheStatus: decoded.isStale ? "stale" : "hit",
       resultCount: normalizedChildren.length,
@@ -3989,10 +3998,23 @@ export const useConnectionStore = defineStore("connection", () => {
     const querySchema = connectionObjectTreeQuerySchema(config, parent.database, parent.schema);
     const objectTypes = sidebarIndexedObjectGroupTypes.has(parent.type) ? (objectTypesForGroupNode(parent.type) ?? undefined) : undefined;
     const pageSize = sidebarObjectGroupPageSize();
+    // 搜索索引必须与连接的表过滤器保持一致：用户右键设置的过滤条件在正常加载路径
+    // 由服务端（SQL LIKE）执行，索引若不带同一过滤器，过滤掉的表就会在搜索时重新出现。
+    // scope 的各字段与保存过滤器的 tableNameFilterScopeForNode 使用同一节点，键必须一致。
+    const tableNameFilter = effectiveTableNameFilterForNode(
+      parent,
+      activeTableNameFilterForScope({
+        connectionId,
+        database: parent.database,
+        schema: parent.schema,
+        nodeKind: parent.type,
+        catalog: parent.catalog,
+      }),
+    );
     const entries: TableInfo[] = [];
     for (let offset = 0; ; offset += pageSize) {
       if (!sidebarTableSearchIndexGenerationIsCurrent(connectionId, cacheKey, connectionGeneration, scopeGeneration)) return [];
-      const page = await listTablesWithOptionalTableNameFilter(connectionId, parent.database, querySchema, undefined, pageSize, offset, objectTypes, parent.catalog);
+      const page = await listTablesWithOptionalTableNameFilter(connectionId, parent.database, querySchema, undefined, pageSize, offset, objectTypes, parent.catalog, tableNameFilter);
       entries.push(...page);
       if (page.length < pageSize) break;
     }
@@ -5043,7 +5065,7 @@ export const useConnectionStore = defineStore("connection", () => {
       // Schema loading records its own error on the node; keep the database list usable.
     }
     const liveNode = findNode(treeNodes.value, defaultNodeId);
-    if (liveNode) liveNode.isExpanded = true;
+    if (sidebarAutoExpandTreeOnConnect() && liveNode) liveNode.isExpanded = true;
   }
 
   async function reloadSchemaChildren(connectionId: string, database?: string) {
@@ -5985,7 +6007,7 @@ export const useConnectionStore = defineStore("connection", () => {
           const children = buildXuguTablespaceChildren(targetNode, tablespaces);
           setChildren(targetNode, children);
           targetNode.objectCount = children.length;
-          targetNode.isExpanded = true;
+          if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
         } catch (error) {
           // Storage metadata is an optional, read-only enhancement. A user
           // without SYS_* view access should see an empty group rather than a
@@ -5995,7 +6017,7 @@ export const useConnectionStore = defineStore("connection", () => {
           if (targetNode) {
             setChildren(targetNode, []);
             targetNode.objectCount = 0;
-            targetNode.isExpanded = true;
+            if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
           }
         } finally {
           finishTreeNodeLoad(load);
@@ -6193,7 +6215,7 @@ export const useConnectionStore = defineStore("connection", () => {
             }
           }
           const liveNode = treeNodeLoadTarget(load);
-          if (liveNode) liveNode.isExpanded = true;
+          if (sidebarAutoExpandTreeOnConnect() && liveNode) liveNode.isExpanded = true;
           if (options?.force) void loadSidebarDatabaseStorage(connectionId, { force: true });
         } catch (e) {
           recordMetadataLoadError(connectionId, e, load);
@@ -6269,7 +6291,7 @@ export const useConnectionStore = defineStore("connection", () => {
       // reveal the rest on demand, unless the user explicitly asked to see all.
       const { visible, hasMore } = options?.showAll ? { visible: databaseNodes, hasMore: false } : limitRedisDatabaseList(databaseNodes, useSettingsStore().editorSettings.redisDatabaseDisplayLimit);
       setChildren(targetNode, withSavedSqlRoot(connectionId, hasMore ? [...visible, buildLoadMoreNode(targetNode, visible.length, databaseNodes.length - visible.length)] : visible, targetNode));
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6313,7 +6335,7 @@ export const useConnectionStore = defineStore("connection", () => {
         );
       }
       setChildren(targetNode, withSavedSqlRoot(connectionId, children, targetNode));
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6340,7 +6362,7 @@ export const useConnectionStore = defineStore("connection", () => {
           targetNode,
         ),
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6376,7 +6398,7 @@ export const useConnectionStore = defineStore("connection", () => {
           targetNode,
         ),
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6398,7 +6420,7 @@ export const useConnectionStore = defineStore("connection", () => {
         isExpanded: false,
       };
       setChildren(node, [consoleNode]);
-      node.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) node.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e);
       throw e;
@@ -6447,7 +6469,7 @@ export const useConnectionStore = defineStore("connection", () => {
         );
       }
       const liveNode = treeNodeLoadTarget(load);
-      if (liveNode) liveNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect() && liveNode) liveNode.isExpanded = true;
     });
   }
 
@@ -6498,7 +6520,7 @@ export const useConnectionStore = defineStore("connection", () => {
         });
       }
       setChildren(targetNode, children);
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6562,7 +6584,7 @@ export const useConnectionStore = defineStore("connection", () => {
         ),
         { trustEmptyConnectionChildren: dbs.length > 0 && visibleDbs.length === 0 },
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
       throw e;
@@ -6598,7 +6620,7 @@ export const useConnectionStore = defineStore("connection", () => {
             isExpanded: false,
           })),
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
       throw e;
@@ -6676,7 +6698,7 @@ export const useConnectionStore = defineStore("connection", () => {
           targetNode,
         ),
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     } catch (e) {
       const targetNode = treeNodeLoadTarget(load);
       if (targetNode && getConfig(connectionId)?.db_type === "meilisearch") {
@@ -6699,7 +6721,7 @@ export const useConnectionStore = defineStore("connection", () => {
             targetNode,
           ),
         );
-        targetNode.isExpanded = true;
+        if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
       }
       recordMetadataLoadError(connectionId, e, load);
       throw e;
@@ -6730,7 +6752,7 @@ export const useConnectionStore = defineStore("connection", () => {
           targetNode,
         ),
       );
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6756,7 +6778,7 @@ export const useConnectionStore = defineStore("connection", () => {
       const targetNode = treeNodeLoadTarget(load);
       if (!targetNode) return;
       setChildren(targetNode, isMilvus && database ? collectionChildren : withSavedSqlRoot(connectionId, collectionChildren, targetNode));
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     });
   }
 
@@ -6794,7 +6816,7 @@ export const useConnectionStore = defineStore("connection", () => {
       const targetNode = treeNodeLoadTarget(load);
       if (!targetNode) return;
       setChildren(targetNode, children);
-      targetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect()) targetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
       throw e;
@@ -6887,7 +6909,7 @@ export const useConnectionStore = defineStore("connection", () => {
           setChildren(targetNode, children);
           await savePersistedTreeChildren(cacheKey, children);
           const currentTargetNode = treeNodeLoadTarget(load);
-          if (currentTargetNode) currentTargetNode.isExpanded = true;
+          if (sidebarAutoExpandTreeOnConnect() && currentTargetNode) currentTargetNode.isExpanded = true;
         } catch (e) {
           recordMetadataLoadError(connectionId, e, load);
           throw e;
@@ -6927,7 +6949,7 @@ export const useConnectionStore = defineStore("connection", () => {
       setChildren(targetNode, children);
       await savePersistedTreeChildren(cacheKey, children);
       const currentTargetNode = treeNodeLoadTarget(load);
-      if (currentTargetNode) currentTargetNode.isExpanded = true;
+      if (sidebarAutoExpandTreeOnConnect() && currentTargetNode) currentTargetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
       throw e;
@@ -8825,6 +8847,12 @@ export const useConnectionStore = defineStore("connection", () => {
 
   async function refreshTreeNodeForTableNameFilter(node: TreeNode, scopeKey: string, revision: number) {
     invalidateMetadataCachesForNode(node);
+    // 侧栏搜索索引的生命周期独立于元数据缓存：过滤器变更后若不失效旧索引，
+    // 顶部搜索会继续用未过滤的索引把过滤掉的表重新列出来。
+    const searchIndexScope = sidebarTableSearchIndexScopeForNode(node);
+    if (searchIndexScope) {
+      await invalidateSidebarTableSearchIndexScopes([searchIndexScope], (scope) => scope.parentNodeId === node.id);
+    }
     // !node.tableName is generic: table-level structure groups (columns/indexes/fkeys/constraints/partitions/table triggers)
     // stay off the schema-level object-group loader, not just triggers.
     if (objectTypesForGroupNode(node.type) && !node.tableName) {

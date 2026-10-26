@@ -154,6 +154,7 @@ import * as api from "@/lib/backend/api";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { isMacOS } from "@/lib/backend/platform";
 import { resolveSqlDialectId } from "@/lib/sql/semantic/dialect";
+import { queryEditorStatementDatabaseType } from "@/lib/mongo/mongoSql";
 import { kingbaseSqlDatabaseType } from "@/lib/database/jdbcDialect";
 import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionReferencedTable } from "@/lib/sql/sqlCompletion";
 
@@ -175,7 +176,12 @@ function sqlSyntaxDialect() {
 
 function queryEditorSelectionLanguage(): "sql" | "text" {
   const databaseType = props.databaseType;
+  if (databaseType === "mongodb" && props.mongoQueryLanguage === "sql") return "sql";
   return databaseType === "redis" || databaseType === "mongodb" || databaseType === "elasticsearch" || databaseType === "easysearch" || databaseType === "meilisearch" || databaseType === "solr" || databaseType === "victoriametrics" ? "text" : "sql";
+}
+
+function statementDatabaseType() {
+  return queryEditorStatementDatabaseType(props.databaseType, props.mongoQueryLanguage);
 }
 
 const COMPLETION_REMOTE_LATENCY_BUDGET_MS = 120;
@@ -529,6 +535,7 @@ let previewContextRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let editorIsActive = true;
 
 let imeCompositionActive = false;
+let imeCompositionRecovered = false;
 let pendingImeModelEmit = false;
 const postCompositionKeyGuard = createQueryEditorPostCompositionKeyGuard();
 let postCompositionKeyGuardCleanup: (() => void) | null = null;
@@ -1217,12 +1224,12 @@ function emitContextObjectAction(action: QueryContextObjectAction) {
 }
 
 function executableStatementRangeStartingAt(currentView: EditorViewType, lineFrom: number) {
-  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, props.databaseType, sqlStatementParameterOptions());
+  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, statementDatabaseType(), sqlStatementParameterOptions());
   return executableStatementRangeStartingAtLine(executableStatementRangeCache, lineFrom);
 }
 
 function executableStatementRangeAtPosition(currentView: EditorViewType, position: number): SqlTextRange | null {
-  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, props.databaseType, sqlStatementParameterOptions());
+  executableStatementRangeCache = executableStatementRangeCacheForDoc(executableStatementRangeCache, currentView.state.doc, statementDatabaseType(), sqlStatementParameterOptions());
   return executableStatementRangeAtCursor(executableStatementRangeCache, position);
 }
 
@@ -1931,7 +1938,7 @@ async function formatCurrentSql() {
     let formatted: string;
     let formattedAsSql = false;
     let formatDiagnostic: SqlFormatterDiagnostic | undefined;
-    if (props.databaseType === "mongodb") {
+    if (props.databaseType === "mongodb" && props.mongoQueryLanguage !== "sql") {
       formatted = formatMongoShellText(source, settingsStore.editorSettings.sqlFormatter);
     } else {
       const esRequest = detectAndFormatElasticsearchRequests(source, props.databaseType, settingsStore.editorSettings.sqlFormatter.tabWidth);
@@ -2135,7 +2142,12 @@ const { editorIndentUnit, handleTab, handleEnter, acceptCompletionOrNextSnippetF
 });
 
 function isEditorComposing(currentView: EditorViewType): boolean {
-  return imeCompositionActive || currentView.compositionStarted || currentView.composing;
+  if (imeCompositionActive) return true;
+  // A real key with isComposing=false proves the IME stalled before sending
+  // compositionend. Ignore the stale CodeMirror flags until the next
+  // compositionstart, otherwise every shortcut stays blocked.
+  if (imeCompositionRecovered) return false;
+  return currentView.compositionStarted || currentView.composing;
 }
 
 async function flushImeComposition() {
@@ -2474,16 +2486,20 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
             return insertDroppedTableReference(currentView, event);
           },
           blur(_event, currentView) {
+            imeCompositionActive = false;
+            imeCompositionRecovered = false;
             documentState.recordSelection(currentView);
             return false;
           },
           compositionstart() {
             imeCompositionActive = true;
+            imeCompositionRecovered = false;
             completion.invalidateRequests();
             return false;
           },
           compositionend() {
             imeCompositionActive = false;
+            imeCompositionRecovered = false;
             window.setTimeout(flushImeComposition, 0);
             return false;
           },
@@ -2730,10 +2746,16 @@ watch(
   { deep: true },
 );
 
+function prefetchCompletionTablesIfEnabled() {
+  if (props.prefetchCompletion) prefetchCompletionTablesIfEnabled();
+}
+
 watch(
   () => props.connectionId,
   () => {
+    completion.invalidateRequests();
     refreshCompletionCache();
+    prefetchCompletionTablesIfEnabled();
     setSemanticDiagnostics([]);
     scheduleSemanticDiagnostics();
   },
@@ -2742,7 +2764,9 @@ watch(
 watch(
   () => props.database,
   () => {
+    completion.invalidateRequests();
     refreshCompletionCache();
+    prefetchCompletionTablesIfEnabled();
     setSemanticDiagnostics([]);
     scheduleSemanticDiagnostics();
   },
@@ -2751,7 +2775,9 @@ watch(
 watch(
   () => props.catalog,
   () => {
+    completion.invalidateRequests();
     refreshCompletionCache();
+    prefetchCompletionTablesIfEnabled();
     setSemanticDiagnostics([]);
     scheduleSemanticDiagnostics();
   },
@@ -2760,7 +2786,9 @@ watch(
 watch(
   () => props.schema,
   () => {
+    completion.invalidateRequests();
     refreshCompletionCache();
+    prefetchCompletionTablesIfEnabled();
     setSemanticDiagnostics([]);
     scheduleSemanticDiagnostics();
   },
@@ -2776,6 +2804,8 @@ watch(
   },
 );
 
+prefetchCompletionTablesIfEnabled();
+
 watch([() => props.clientSessionId, () => props.completionContextVersion], () => {
   completion.invalidateRequests();
   refreshCompletionCache();
@@ -2784,7 +2814,7 @@ watch([() => props.clientSessionId, () => props.completionContextVersion], () =>
 });
 
 watch(
-  [() => props.tabId, () => props.databaseType, () => props.dialect, sqlSyntaxDialect, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode],
+  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode],
   () => {
     completion.invalidateRequests();
     refreshCompletionCache();
@@ -3161,6 +3191,11 @@ function unfoldAll(): boolean {
 function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: EditorViewType | null = view.value): boolean {
   if (props.isExecuting) return true;
   if (event?.repeat) return true;
+  if (event && !event.isComposing && event.keyCode !== 229 && event.key !== "Process") {
+    // A stalled IME can drop compositionend; a real key proves it is over.
+    imeCompositionActive = false;
+    imeCompositionRecovered = true;
+  }
   return (currentView ? isEditorComposing(currentView) : false) || (event ? postCompositionKeyGuard.blocks(event) : false);
 }
 

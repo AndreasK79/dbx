@@ -79,6 +79,7 @@ import {
   splitSiblingDbPrefix,
   type MongoAggregateSafetyOptions,
 } from "@/lib/mongo/mongoShellCommand";
+import { prepareMongoQueryText, type MongoQueryLanguage } from "@/lib/mongo/mongoSql";
 import { refreshLoadedMongoIndexes } from "@/lib/mongo/mongoIndexMetadata";
 import { redisCommandResultToQueryResult } from "@/lib/redis/redisQueryResult";
 import { nextRedisCommandDb } from "@/lib/redis/redisCommandSession";
@@ -6210,6 +6211,12 @@ export const useQueryStore = defineStore("query", () => {
     return start;
   }
 
+  function setMongoQueryLanguage(id: string, language: MongoQueryLanguage) {
+    const tab = tabs.value.find((item) => item.id === id);
+    if (!tab || tab.mongoQueryLanguage === language) return;
+    tab.mongoQueryLanguage = language === "sql" ? "sql" : undefined;
+  }
+
   function setAutoCommit(id: string, autoCommit: boolean) {
     const tab = tabs.value.find((t) => t.id === id);
     if (tab) {
@@ -8400,7 +8407,7 @@ export const useQueryStore = defineStore("query", () => {
       sourceTraceId: options?.sourceTraceId,
       sqlLength: sql.length,
     });
-    const queryBaseSql = options?.resultBaseSql ?? sql;
+    let queryBaseSql = options?.resultBaseSql ?? sql;
     let sqlToExecute = sql;
     let resultSortedSql = options?.resultSortedSql;
     let queryMetadataSql = queryBaseSql;
@@ -8442,7 +8449,22 @@ export const useQueryStore = defineStore("query", () => {
       const executionTarget = resumedExecutionTarget ?? options?.executionTarget;
       const usesExternalExecutionTarget = !!executionTarget;
       let conn = connStore.getConfig(executionConnectionId);
-      const parsedMongoCommands = conn?.db_type === "mongodb" ? splitMongoCommandRanges(sql) : undefined;
+      let mongoGeneratedShell: string | undefined;
+      let mongoSqlConsidered = false;
+      const applyMongoSql = (dbType: string | undefined) => {
+        if (mongoSqlConsidered || dbType !== "mongodb") return;
+        mongoSqlConsidered = true;
+        const prepared = prepareMongoQueryText(sqlToExecute, tab.mongoQueryLanguage, dbType, tab.mongoGeneratedShell);
+        if (!prepared.generatedShell) return;
+        mongoGeneratedShell = prepared.generatedShell;
+        sqlToExecute = prepared.sql;
+        queryBaseSql = prepared.sql;
+        queryMetadataSql = prepared.sql;
+        tab.lastExecutedSql = prepared.sql;
+        tab.mongoGeneratedShell = prepared.sql;
+      };
+      applyMongoSql(conn?.db_type);
+      const parsedMongoCommands = conn?.db_type === "mongodb" ? splitMongoCommandRanges(sqlToExecute) : undefined;
       let mongoCommands = parsedMongoCommands ?? [];
       const mongoNeedsConnection = mongoCommands.some(({ command }) => command.kind !== "use");
 
@@ -8461,7 +8483,8 @@ export const useQueryStore = defineStore("query", () => {
       }
       conn = connStore.getConfig(executionConnectionId);
       if (parsedMongoCommands === undefined && conn?.db_type === "mongodb") {
-        mongoCommands = splitMongoCommandRanges(sql);
+        applyMongoSql(conn.db_type);
+        mongoCommands = splitMongoCommandRanges(sqlToExecute);
       }
       const effectiveDbType = effectiveDatabaseTypeForConnection(conn);
       if (effectiveDbType === "mysql") {
@@ -8681,6 +8704,9 @@ export const useQueryStore = defineStore("query", () => {
           const commandTiming = createQueryRequestTiming(commandIndex === 0 ? startedAt : commandStartedAt);
           const annotateMongoResult = (result: QueryResult): QueryResult => {
             const annotated = annotateQueryResultSource(result, sourceStatement, undefined, undefined, sourceRange);
+            if (mongoGeneratedShell) {
+              annotated.messages = [...(annotated.messages ?? []), { severity: "INFO", code: "mongo-shell", message: sourceStatement }];
+            }
             if ("collection" in mongoCommand) {
               annotated.sourceQualifier = currentDatabase || undefined;
               annotated.sourceName = mongoCommand.collection;
@@ -11913,6 +11939,7 @@ export const useQueryStore = defineStore("query", () => {
     updateObjectBrowserFilter,
     updateDatabaseSearchState,
     updateNacosConfigEditorViewport,
+    setMongoQueryLanguage,
     setAutoCommit,
     markManualTransactionDirty,
     commitTransaction,
