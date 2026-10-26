@@ -58,9 +58,11 @@ export interface QueryEditorContextMenuState {
   expandSelectStar: (() => void) | undefined;
   canExplain?: boolean;
   hasContent?: boolean;
+  canDebugPlSql?: boolean;
 }
 
 export interface QueryEditorContextMenuActions {
+  debugPlSqlFromContextMenu?: () => void;
   executeFromContextMenu: () => void;
   executeAllFromContextMenu?: () => void;
   executeInNewResultTabFromContextMenu: () => void;
@@ -189,6 +191,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
                 },
               ]
             : []),
+          ...(state.canDebugPlSql && actions.debugPlSqlFromContextMenu ? [{ sidebarActionId: "plDebug.start.title", label: t("plDebug.start.title"), action: actions.debugPlSqlFromContextMenu, icon: Play }] : []),
           {
             sidebarActionId: "settings.shortcutExecuteSqlInNewResultTab",
             label: t("settings.shortcutExecuteSqlInNewResultTab"),

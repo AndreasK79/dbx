@@ -1152,6 +1152,7 @@ export interface ObjectSource {
   editable?: boolean;
   /** Optional structured metadata exposed by generic JDBC sidecars. */
   routine_parameters?: RoutineParameterMetadata[];
+  trigger?: TriggerInfo | null;
 }
 
 export interface MysqlEventInfo {
@@ -1579,6 +1580,43 @@ export interface TriggerInfo {
   comment?: string | null;
   created_at?: string | null;
   statement?: string | null;
+  oracle_metadata?: OracleTriggerMetadata | null;
+}
+
+/** Missing metadata means a provider has not established exact identity. */
+export interface MetadataReadOptions {
+  identityMode?: "exact";
+  catalog?: string;
+}
+
+export interface OracleTriggerParent {
+  owner: string;
+  name: string;
+  objectType: "TABLE" | "VIEW";
+  objectId?: string | null;
+}
+
+export interface OracleTriggerReadState {
+  state: "available" | "empty" | "denied" | "unavailable" | "unsupported" | "error" | "incomplete";
+  message?: string | null;
+}
+
+export interface OracleTriggerMetadata {
+  contractVersion: 1;
+  identityMode: "exact";
+  engine: "oracle" | "oceanbase-oracle" | "dm";
+  engineVersion?: string | null;
+  owner: string;
+  name: string;
+  scope: "TABLE" | "VIEW" | "SCHEMA" | "DATABASE" | "TIMER" | "OTHER" | "UNKNOWN";
+  scopeType?: string | null;
+  scopeOwner?: string | null;
+  parent?: OracleTriggerParent | null;
+  objectId?: string | null;
+  lastDdlTime?: string | null;
+  definition?: { origin: string; format: "ddl" | "declaration" | "body"; complete: boolean } | null;
+  errors?: { sequence: number; line: number; position: number; text: string; severity?: string | null }[] | null;
+  reads: Partial<Record<"identity" | "scope" | "parent" | "enabled" | "validity" | "definition" | "errors", OracleTriggerReadState>>;
 }
 
 export interface ConstraintInfo {
@@ -1751,6 +1789,8 @@ export interface QueryResult {
   appended_from_row_count?: number;
   /** Set for synthesized query execution failures. */
   execution_error?: true;
+  /** Frontend execution that published this result; absent on older cached results. */
+  sourceExecutionId?: string;
   /** Set only for SQL Server informational messages emitted by the backend. */
   server_message?: true;
   /** Manual-transaction UX marker for sticky proven-read-only dialects (Oracle,
@@ -1820,11 +1860,31 @@ export interface QueryResult {
   total_is_exact?: boolean;
   truncated?: boolean;
   /** Variable-length cells represented by bounded previews in `rows`. */
-  large_value_cells?: Array<{ row_index: number; column_index: number; original_bytes: number; value_ref?: string }>;
+  large_value_cells?: Array<{
+    row_index: number;
+    column_index: number;
+    /** With value_ref, zero can mean an unknown byte size, not an empty value. */
+    original_bytes: number;
+    value_ref?: string;
+  }>;
   /** Frontend-only original result connection, independent of the currently active tab. */
   large_value_context?: { connectionId: string; database: string; clientSessionId?: string; txnSessionId?: string; catalog?: string };
   /** Retained result refs also cover cells already hydrated into complete local values. */
   large_value_refs?: string[];
+  /** Frontend-only dispatch identity; absent on results without captured provenance. */
+  legacy_export_source?: {
+    connectionId: string;
+    database: string;
+    schema?: string;
+    catalog?: string;
+    databaseType?: DatabaseType;
+    connectionFingerprint: string;
+    identifierQuote?: string;
+    serverVersion?: string;
+    statementSql?: string;
+    hiddenPrimaryKeys?: Array<{ sourceName: string; alias: string }>;
+    ordinaryReadSafe: boolean;
+  };
   session_id?: string | null;
   /** Frontend-only owner of a manual transaction's result cursor, including retained runs. */
   manual_transaction_session_id?: string;
@@ -2130,6 +2190,7 @@ export type TreeNodeType =
   | "oracle-db-link"
   | "group-jobs"
   | "group-packages"
+  | "group-package-bodies"
   | "group-partitions"
   | "group-extensions"
   | "group-foreign-servers"
@@ -2145,6 +2206,7 @@ export type TreeNodeType =
   | "dameng-users"
   | "dameng-roles"
   | "dameng-job-admin"
+  | "database-job-admin"
   | "saved-sql-root"
   | "saved-sql-folder"
   | "saved-sql-file"
@@ -2395,6 +2457,11 @@ export interface TableStructureEditorDraft {
     details: string;
     remaining: import("@/lib/table/tableStructureEditorSql").OracleForeignKeyDefinition[];
     uncertainSteps: string[];
+  };
+  oracleTriggerStructureRecovery?: {
+    target: import("@/lib/database/oracleTriggerStructurePlan").OracleTriggerStructureTarget;
+    steps: import("@/lib/database/oracleTriggerPlan").OracleTriggerStructureStepResult[];
+    details: string;
   };
   constraintsLoaded?: boolean;
   triggers: import("@/lib/table/tableStructureEditorSql").EditableStructureTrigger[];
@@ -2713,8 +2780,10 @@ export interface QueryTab {
     | "dameng-users"
     | "dameng-roles"
     | "dameng-jobs"
+    | "database-jobs"
     | "processlist"
     | "sqlserver-trace"
+    | "pl-debug"
     | "mysql-dashboard"
     | "postgres-dashboard"
     | "xugu-dashboard"
@@ -2739,6 +2808,8 @@ export interface QueryTab {
   };
   /** Ephemeral navigation intent; it is consumed by HBaseBrowser and is not persisted. */
   hbaseCreateTableOnOpen?: boolean;
+  /** Connection-level native Job selection; bodies and backend context IDs are not persisted. */
+  nativeJobAdmin?: { kind: "scheduler"; owner: string; name: string } | { kind: "legacy"; jobId: string } | { kind: "dameng-native"; jobId: string; name: string };
   mqTenant?: string;
   mqInitialTab?: "topics";
   mqttInitialTopic?: string;
@@ -2802,6 +2873,7 @@ export interface QueryTab {
   };
   ddlViewer?: {
     schema?: string;
+    explicitOwner?: string;
     tableName: string;
     objectType?: ObjectSourceKind;
     formatDialect?: SqlFormatDialect;

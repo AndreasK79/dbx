@@ -32,8 +32,10 @@ pub struct SchemaQuery {
     pub include_postgres_access: Option<bool>,
     pub portable: Option<bool>,
     pub execution_id: Option<String>,
+    pub identity_mode: Option<dbx_core::schema::MetadataIdentityMode>,
     pub exact_identity: Option<bool>,
     pub separate_indexes: Option<bool>,
+    pub explicit_owner: Option<String>,
 }
 
 async fn run_cancellable<T, F>(state: &Arc<WebState>, execution_id: Option<String>, future: F) -> Result<T, AppError>
@@ -359,7 +361,7 @@ pub async fn list_objects(
                 })
                 .collect::<Vec<_>>())
         } else {
-            dbx_core::schema::list_objects_core(
+            dbx_core::schema::list_objects_core_with_options(
                 &state.app,
                 &connection_id,
                 &database,
@@ -369,6 +371,7 @@ pub async fn list_objects(
                 q.offset,
                 object_types.as_deref(),
                 table_name_filter.as_ref(),
+                &dbx_core::schema::MetadataReadOptions { identity_mode: q.identity_mode, catalog },
             )
             .await
         }
@@ -418,7 +421,7 @@ pub async fn get_object_source(
     let schema = q.schema.as_deref().unwrap_or("");
     let name = q.table.as_deref().unwrap_or("");
     let object_type = q.object_type.ok_or_else(|| AppError::from("Missing object_type".to_string()))?;
-    let result = dbx_core::schema::get_object_source_core(
+    let result = dbx_core::schema::get_object_source_core_with_options(
         &state.app,
         &q.connection_id,
         database,
@@ -427,6 +430,7 @@ pub async fn get_object_source(
         object_type,
         q.signature.as_deref(),
         q.relation_name.as_deref(),
+        &dbx_core::schema::MetadataReadOptions { identity_mode: q.identity_mode, catalog: q.catalog },
     )
     .await
     .map_err(AppError::from)?;
@@ -840,9 +844,16 @@ pub async fn list_triggers(
             .await
             .map_err(AppError::from)?
     } else {
-        dbx_core::schema::list_triggers_core(&state.app, &q.connection_id, database, schema, table)
-            .await
-            .map_err(AppError::from)?
+        dbx_core::schema::list_triggers_core_with_options(
+            &state.app,
+            &q.connection_id,
+            database,
+            schema,
+            table,
+            &dbx_core::schema::MetadataReadOptions { identity_mode: q.identity_mode, catalog: q.catalog },
+        )
+        .await
+        .map_err(AppError::from)?
     };
     Ok(Json(serde_json::to_value(result).map_err(|e| AppError::from(e.to_string()))?))
 }
@@ -988,6 +999,7 @@ pub async fn get_ddl(
             schema,
             table,
             &result,
+            q.explicit_owner.as_deref().or_else(|| q.exact_identity.unwrap_or(false).then_some(schema)),
         )
         .await
         .map_err(AppError::from)?

@@ -608,6 +608,7 @@ async fn live_mysql_csv_temporal_export_round_trip_preserves_dbx_force_text_valu
             source_column: column.clone(),
             target_column: column.clone(),
             target_data_type: None,
+            generator: None,
         })
         .collect::<Vec<_>>();
     let batch = build_import_insert_batch_from_rows(
@@ -1388,6 +1389,7 @@ INSERT INTO install_check (id) VALUES (1), (2);
         part_cooldown_ms: 0,
         skip_relational_constraints: false,
         failure_log_enabled: true,
+        resolve_includes: false,
         encoding: Default::default(),
     };
 
@@ -1480,6 +1482,7 @@ INSERT INTO children (parent_id) VALUES (LAST_INSERT_ID());
         part_cooldown_ms: 0,
         skip_relational_constraints: false,
         failure_log_enabled: true,
+        resolve_includes: false,
         encoding: Default::default(),
     };
 
@@ -1556,6 +1559,7 @@ async fn live_sql_file_import_preserves_raw_mysql_binary_literal_bytes() {
         part_cooldown_ms: 0,
         skip_relational_constraints: false,
         failure_log_enabled: true,
+        resolve_includes: false,
         encoding: Default::default(),
     };
 

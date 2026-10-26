@@ -4,6 +4,9 @@ import { isModifierDoubleTapShortcut, matchesModifierDoubleTapShortcut } from "@
 export type ShortcutActionId =
   | "executeSql"
   | "executeAllSql"
+  | "stepInto"
+  | "stepOut"
+  | "stepOver"
   | "executeSqlInNewResultTab"
   | "explainSql"
   | "formatSql"
@@ -115,7 +118,7 @@ export type ShortcutActionId =
   | "copyResultColumn4"
   | "copyResultColumn5";
 
-export type ShortcutScope = "global" | "editor" | "grid" | "search" | "sidebar";
+export type ShortcutScope = "global" | "debug" | "editor" | "grid" | "search" | "sidebar";
 
 export interface ShortcutDefinition {
   id: ShortcutActionId;
@@ -201,6 +204,9 @@ const EDIT_TABLE_STRUCTURE_DEFAULT = "Mod+Shift+D";
 const TAB_NAVIGATION_HISTORY_ACTIONS: ShortcutActionId[] = ["navigateTabHistoryBack", "navigateTabHistoryForward"];
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
+  { id: "stepInto", labelKey: "plDebug.toolbar.stepIn", scope: "debug", defaultShortcut: "Mod+I" },
+  { id: "stepOut", labelKey: "plDebug.toolbar.stepOut", scope: "debug", defaultShortcut: "Mod+O" },
+  { id: "stepOver", labelKey: "plDebug.toolbar.stepOver", scope: "debug", defaultShortcut: "Mod+P" },
   {
     id: "scrollLineUp",
     labelKey: "settings.shortcutScrollLineUp",

@@ -16,7 +16,7 @@ import { mergeSqlSemanticReferenceAnalysis } from "@/lib/sql/semantic/references
 import { sqlServerUseDatabaseBeforeCursor } from "@/lib/sql/sqlCompletionLookupTarget";
 import { lineColumnToOffset, sqlErrorDecorationRange as resolveSqlErrorDecorationRange, sqlErrorSqlMatchesEditor } from "@/lib/sql/sqlDiagnostics";
 import { resultSourceRange } from "@/lib/tabs/tabPresentation";
-import { scalarPositionToUtf16Offset, sqlErrorEditorOffset } from "@/lib/sql/errorPosition";
+import { sqlErrorEditorRange } from "@/lib/sql/errorPosition";
 import { analyzeMysqlRoutineSyntax, supportsMysqlRoutineSyntaxDiagnostics } from "@/lib/sql/mysqlRoutineSyntaxDiagnostics";
 import { buildOracleSyntaxDiagnostics } from "@/lib/sql/oracleSyntaxDiagnostics";
 import { buildSqlServerRoutineSyntaxDiagnostics } from "@/lib/sql/sqlServerRoutineSyntaxDiagnostics";
@@ -97,14 +97,8 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
     if (!props.executionError) return [];
     if (props.executionErrorResult?.sourceStatement) {
       const sql = currentState.doc.toString();
-      const mapped = sqlErrorEditorOffset({ editorSql: sql, result: props.executionErrorResult, resultIndex: props.executionErrorResult.statement_index, databaseType: props.databaseType, parameterOptions: sqlStatementParameterOptions() });
-      if (mapped && mapped.offset < sql.length) {
-        const source = props.executionErrorResult.sourceStatement;
-        const sourceRange = source ? resolveSqlErrorDecorationRange(source, props.executionError) : null;
-        const sourceOffset = source ? scalarPositionToUtf16Offset(source, mapped.line, mapped.column) : undefined;
-        const width = sourceRange && sourceRange.from === sourceOffset ? sourceRange.to - sourceRange.from : (sql.codePointAt(mapped.offset) ?? 0) > 0xffff ? 2 : 1;
-        return [{ from: mapped.offset, to: Math.min(sql.length, mapped.offset + width), message: props.executionError }];
-      }
+      const mapped = sqlErrorEditorRange({ editorSql: sql, result: props.executionErrorResult, resultIndex: props.executionErrorResult.statement_index, databaseType: props.databaseType, parameterOptions: sqlStatementParameterOptions() });
+      if (mapped && mapped.from < sql.length) return [{ from: mapped.from, to: Math.min(sql.length, mapped.to), message: props.executionError }];
       // An aborted batch reports "Statement 2 failed" without any position (a
       // rolled-back manual transaction only names the failing statement), so
       // underline the token the message names inside that statement — "Unknown
@@ -121,7 +115,7 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
       return [];
     }
     if (!props.executionErrorSql || !sqlErrorSqlMatchesEditor(currentState.doc.toString(), props.executionErrorSql)) return [];
-    const range = resolveSqlErrorDecorationRange(currentState.doc.toString(), props.executionError);
+    const range = resolveSqlErrorDecorationRange(currentState.doc.toString(), props.executionError, props.databaseType);
     if (!range) return [];
     return [
       {

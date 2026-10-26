@@ -555,6 +555,7 @@ mod tests {
                     source_column: column.to_string(),
                     target_column: column.to_string(),
                     target_data_type: None,
+                    generator: None,
                 })
                 .collect(),
             mode: TableImportMode::Append,
