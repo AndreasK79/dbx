@@ -54,6 +54,19 @@ describe("mysql reserved-word column completion quoting", () => {
     const items = buildSqlCompletionItems(sql, sql.length, { ...mysqlInput, databaseType: "postgres" as const });
     expect(items.find((item) => item.type === "column" && item.label === "call")?.apply).toBe("call");
   });
+
+  it("backticks the mysql-only reserved words trigger and while", () => {
+    const columns = [
+      { name: "trigger", table: "dxcc_exceptions" },
+      { name: "while", table: "dxcc_exceptions" },
+    ];
+    const input = { ...mysqlInput, columnsByTable: new Map([["dxcc_exceptions", columns]]) };
+    for (const name of ["trigger", "while"]) {
+      const sql = `SELECT * FROM dxcc_exceptions WHERE ${name}`;
+      const items = buildSqlCompletionItems(sql, sql.length, input);
+      expect(items.find((item) => item.type === "column" && item.label === name)?.apply, name).toBe(`\`${name}\``);
+    }
+  });
 });
 
 describe("mysql reserved-word quoting beyond completion", () => {
