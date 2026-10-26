@@ -105,6 +105,7 @@ const POSTGRES_RESERVED_IDENTIFIER_KEYWORDS = new Set([
   "verbose",
   "when",
   "where",
+  "while",
   "window",
   "with",
 ]);
@@ -290,6 +291,7 @@ const MYSQL_ONLY_RESERVED_IDENTIFIER_KEYWORDS = new Set([
   "tinyblob",
   "tinyint",
   "tinytext",
+  "trigger",
   "undo",
   "unlock",
   "unsigned",
