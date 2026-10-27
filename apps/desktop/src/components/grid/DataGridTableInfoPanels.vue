@@ -181,7 +181,7 @@ const overviewRows = computed(() => {
               <span v-if="index.index_type" class="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{{ index.index_type }}</span>
             </div>
             <div class="mt-2 font-mono text-[11px] text-muted-foreground break-all">
-              {{ index.columns.join(", ") }}
+              {{ index.columns.map((column, columnIndex) => column + (index.key_directions?.[columnIndex]?.toUpperCase() === "DESC" ? " DESC" : "")).join(", ") }}
             </div>
           </div>
           <div class="flex shrink-0 flex-col items-end gap-1">
