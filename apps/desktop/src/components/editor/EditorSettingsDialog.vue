@@ -1152,11 +1152,22 @@ function editableSnippet(snippet: SqlSnippet): SqlSnippet {
 const editSnippets = ref<SqlSnippet[]>(settingsStore.editorSettings.snippets.map(editableSnippet));
 const editSnippetTriggerKey = ref<SnippetTriggerKey>(settingsStore.editorSettings.snippetTriggerKey);
 
+// --- Snippet filter ---
+const snippetFilter = ref("");
+
+const visibleSnippets = computed(() => {
+  const query = snippetFilter.value.trim().toLocaleLowerCase();
+  if (!query) return editSnippets.value;
+  return editSnippets.value.filter((snippet) => snippet.label.toLocaleLowerCase().includes(query) || snippet.prefix.toLocaleLowerCase().includes(query) || snippet.body.toLocaleLowerCase().includes(query));
+});
+
 // --- Snippet bulk selection ---
 const selectedSnippetIds = ref<Set<string>>(new Set());
 
 const selectedSnippetCount = computed(() => editSnippets.value.reduce((count, snippet) => count + (selectedSnippetIds.value.has(snippet.id) ? 1 : 0), 0));
-const allSnippetsSelected = computed(() => editSnippets.value.length > 0 && editSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
+// Select-all follows the current filter (it selects exactly the visible rows);
+// rows hidden by the filter keep their selection state.
+const allSnippetsSelected = computed(() => visibleSnippets.value.length > 0 && visibleSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
 
 function toggleSnippetSelected(snippet: SqlSnippet, checked: boolean) {
   const update = new Set(selectedSnippetIds.value);
@@ -1167,7 +1178,7 @@ function toggleSnippetSelected(snippet: SqlSnippet, checked: boolean) {
 
 function toggleAllSnippetsSelected(checked: boolean) {
   const next = new Set(selectedSnippetIds.value);
-  for (const snippet of editSnippets.value) {
+  for (const snippet of visibleSnippets.value) {
     if (checked) next.add(snippet.id);
     else next.delete(snippet.id);
   }
@@ -11529,6 +11540,19 @@ LIMIT 100;</pre
                 >
               </div>
 
+              <div class="flex items-center gap-2">
+                <div class="relative w-full max-w-sm">
+                  <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input v-model="snippetFilter" :placeholder="t('settings.snippetsFilterPlaceholder')" class="pl-8" autocomplete="off" spellcheck="false" />
+                </div>
+                <p v-if="snippetFilter.trim()" class="whitespace-nowrap text-xs text-muted-foreground">
+                  {{ t("settings.snippetsFilterCount", { shown: visibleSnippets.length, total: editSnippets.length }) }}
+                </p>
+                <Button v-if="snippetFilter" variant="ghost" size="sm" class="h-7 shrink-0 px-2" :aria-label="t('settings.snippetsFilterClear')" @click="snippetFilter = ''">
+                  <X class="h-3.5 w-3.5" />
+                </Button>
+              </div>
+
               <div class="overflow-x-auto rounded-md border">
                 <table class="w-full min-w-[760px] text-sm">
                   <thead>
@@ -11552,7 +11576,12 @@ LIMIT 100;</pre
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="snippet in editSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
+                    <tr v-if="visibleSnippets.length === 0" class="hover:bg-muted/30">
+                      <td colspan="6" class="px-3 py-8 text-center text-sm text-muted-foreground">
+                        {{ t("settings.snippetsFilterNoMatch") }}
+                      </td>
+                    </tr>
+                    <tr v-for="snippet in visibleSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
                       <td class="px-3 py-2">
                         <input type="checkbox" class="h-3.5 w-3.5 accent-primary" :checked="selectedSnippetIds.has(snippet.id)" :aria-label="t('settings.snippetsSelectSnippet')" @change="toggleSnippetSelected(snippet, ($event.target as HTMLInputElement).checked)" />
                       </td>
