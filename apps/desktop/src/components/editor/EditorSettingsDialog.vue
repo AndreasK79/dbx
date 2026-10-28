@@ -276,6 +276,7 @@ import { normalizeExcludedCompletionItems } from "@/lib/editor/excludedCompletio
 import { normalizeRedisKeyTemplates } from "@/lib/redis/redisKeyTemplates";
 import { REDIS_DATABASE_DISPLAY_LIMIT_MIN, REDIS_DATABASE_DISPLAY_LIMIT_MAX, REDIS_DATABASE_DISPLAY_LIMIT_OPTIONS } from "@/lib/redis/redisDatabaseAlias";
 import { currentStatementFrameRangeTo } from "@/lib/sql/currentStatementFrame";
+import { applySnippetRangeSelection } from "@/lib/sql/snippetRangeSelection";
 import { currentStatementFrameLayer } from "@/lib/editor/codemirrorCurrentStatementFrameLayer";
 import { buildQueryEditorLineNumbersExtension } from "@/lib/editor/queryEditorLineNumbers";
 import { normalizeSqlFormatterSettings, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
@@ -1169,7 +1170,36 @@ const selectedSnippetCount = computed(() => editSnippets.value.reduce((count, sn
 // rows hidden by the filter keep their selection state.
 const allSnippetsSelected = computed(() => visibleSnippets.value.length > 0 && visibleSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
 
-function toggleSnippetSelected(snippet: SqlSnippet, checked: boolean) {
+// Anchor for shift range selection: the last plain-clicked checkbox row. It
+// never drives rendering, so it does not need to be reactive.
+let snippetSelectionAnchorId: string | undefined;
+// Whether this click can form a range: the change handler spreads the clicked
+// row's post-toggle state across the whole span from the anchor. Nothing here
+// is preventDefault'ed — canceled checkbox clicks rebound after the render
+// falls back on WebView2, so the range logic rides the native toggle instead:
+// whatever the clicked row toggles to, the whole range follows, and the visual
+// state can never diverge from the selection set.
+let snippetRangeClickPending = false;
+
+function handleSnippetCheckboxClick(event: MouseEvent, snippet: SqlSnippet) {
+  snippetRangeClickPending = event.shiftKey && !!applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id);
+  if (!snippetRangeClickPending) snippetSelectionAnchorId = snippet.id;
+}
+
+function handleSnippetCheckboxChange(snippet: SqlSnippet, checked: boolean) {
+  const pending = snippetRangeClickPending;
+  snippetRangeClickPending = false;
+  const next = pending ? applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id, checked) : null;
+  if (next) {
+    // A range formed: the anchor stays put so further shift-clicks can extend
+    // other spans; the anchor row is an endpoint of this span, so its checked
+    // state unifies with the span and :checked aligns it on the next render.
+    selectedSnippetIds.value = next;
+    return;
+  }
+  // Plain toggle, or a shift-click with no usable anchor (nothing plain-clicked
+  // yet, the anchor filtered out or deleted, or the clicked row is the anchor
+  // itself)
   const update = new Set(selectedSnippetIds.value);
   if (checked) update.add(snippet.id);
   else update.delete(snippet.id);
@@ -11583,7 +11613,14 @@ LIMIT 100;</pre
                     </tr>
                     <tr v-for="snippet in visibleSnippets" :key="snippet.id" class="border-b last:border-b-0 hover:bg-muted/30" :class="snippet.enabled === false ? 'text-muted-foreground' : ''">
                       <td class="px-3 py-2">
-                        <input type="checkbox" class="h-3.5 w-3.5 accent-primary" :checked="selectedSnippetIds.has(snippet.id)" :aria-label="t('settings.snippetsSelectSnippet')" @change="toggleSnippetSelected(snippet, ($event.target as HTMLInputElement).checked)" />
+                        <input
+                          type="checkbox"
+                          class="h-3.5 w-3.5 accent-primary"
+                          :checked="selectedSnippetIds.has(snippet.id)"
+                          :aria-label="t('settings.snippetsSelectSnippet')"
+                          @click="handleSnippetCheckboxClick($event, snippet)"
+                          @change="handleSnippetCheckboxChange(snippet, ($event.target as HTMLInputElement).checked)"
+                        />
                       </td>
                       <td class="px-3 py-2">{{ snippet.label }}</td>
                       <td class="px-3 py-2">
