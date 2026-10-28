@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch, type CSSProperties } from "vue";
-import { Check, GripVertical, ListChecks, Search } from "@lucide/vue";
+import { Check, GripVertical, ListChecks, Search, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -59,6 +59,7 @@ interface ColumnDragState {
 let columnDragState: ColumnDragState | null = null;
 
 const columnLayoutOptions = computed(() => props.grid?.filteredColumnLayoutOptions(columnSearch.value) ?? []);
+const hasColumnSearch = computed(() => columnSearch.value.trim().length > 0);
 const columnReorderEnabled = computed(() => columnSearch.value.trim() === "");
 const virtualized = computed(() => columnLayoutOptions.value.length > DATA_GRID_COLUMN_LAYOUT_VIRTUAL_THRESHOLD);
 const virtualWindow = computed(() =>
@@ -86,7 +87,6 @@ const renderedOptionsStyle = computed<CSSProperties | undefined>(() => {
   };
 });
 const canHideAllColumns = computed(() => (props.grid?.visibleColumnCount ?? 0) > 1);
-const canShowOnlyFilteredColumns = computed(() => columnSearch.value.trim() !== "" && columnLayoutOptions.value.length > 0);
 
 /** Hides every displayable column in one batch ("uncheck all"). The shared
  *  visibility rules keep at least one column visible, so the first column
@@ -95,18 +95,6 @@ function hideAllColumns() {
   const grid = props.grid;
   if (!grid) return;
   grid.hideColumns(grid.orderedColumnLayoutOptions.map((option) => option.index));
-}
-
-/** Makes the visible set exactly the columns matching the current search:
- *  matching columns are checked (including previously hidden ones) and every
- *  other column is hidden in the same batch. */
-function showOnlyFilteredColumns() {
-  const grid = props.grid;
-  if (!grid) return;
-  const filteredIndexes = new Set(columnLayoutOptions.value.map((option) => option.index));
-  if (filteredIndexes.size === 0) return;
-  grid.showAllColumns();
-  grid.hideColumns(grid.orderedColumnLayoutOptions.filter((option) => !filteredIndexes.has(option.index)).map((option) => option.index));
 }
 
 function columnLayoutRowStyle(option: DataGridColumnLayoutOption): CSSProperties {
@@ -130,6 +118,10 @@ function resetListScroll() {
 
 function onListScroll(event: Event) {
   listScrollTop.value = (event.currentTarget as HTMLElement).scrollTop;
+}
+
+function clearColumnSearch() {
+  columnSearch.value = "";
 }
 
 function removeColumnDragListeners() {
@@ -343,7 +335,12 @@ onBeforeUnmount(resetColumnDragState);
       </div>
       <div class="flex items-center gap-1.5 border-b px-2 py-1.5">
         <Search class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <input v-model="columnSearch" autocapitalize="off" autocorrect="off" spellcheck="false" class="h-6 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground" :placeholder="t('grid.searchColumns')" />
+        <div class="relative min-w-0 flex-1">
+          <input v-model="columnSearch" autocapitalize="off" autocorrect="off" spellcheck="false" class="h-6 w-full bg-transparent pr-7 text-xs outline-none placeholder:text-muted-foreground" :placeholder="t('grid.searchColumns')" />
+          <button v-if="hasColumnSearch" type="button" class="absolute right-0 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" :aria-label="t('common.clear')" :title="t('common.clear')" @click="clearColumnSearch">
+            <X class="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <div ref="listRef" data-column-layout-list class="max-h-72 overflow-auto" :style="{ maxHeight: `${DATA_GRID_COLUMN_LAYOUT_VIEWPORT_HEIGHT}px` }" @scroll="onListScroll">
         <div class="relative" :style="listContentStyle">
@@ -413,9 +410,6 @@ onBeforeUnmount(resetColumnDragState);
           <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-column-hide-all :disabled="!canHideAllColumns" @click="hideAllColumns()">
             {{ t("grid.hideAllColumns") }}
           </Button>
-          <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" data-column-show-filtered :disabled="!canShowOnlyFilteredColumns" @click="showOnlyFilteredColumns()">
-            {{ t("grid.showOnlyFilteredColumns") }}
-          </Button>
           <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="(grid?.displayableColumnCount ?? 0) <= 1" @click="grid?.invertColumnVisibility()">
             {{ t("grid.invertColumnVisibility") }}
           </Button>
@@ -424,6 +418,17 @@ onBeforeUnmount(resetColumnDragState);
           </Button>
           <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="(grid?.hiddenColumnCount ?? 0) === 0" @click="grid?.showAllColumns()">
             {{ t("grid.showAllColumns") }}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-7 px-2 text-xs"
+            data-column-show-selected
+            :disabled="!grid?.showOnlyColumns || !hasColumnSearch || columnLayoutOptions.length === 0"
+            :title="t('grid.showSelectedColumnsHint')"
+            @click="grid?.showOnlyColumns?.(columnLayoutOptions.map((option) => option.index))"
+          >
+            {{ t("grid.showSelectedColumns") }}
           </Button>
         </div>
       </div>

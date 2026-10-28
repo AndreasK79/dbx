@@ -389,7 +389,6 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
   },
   { id: "navigation-sidebar-scroll", category: "navigation", titleKey: "settings.sidebarAllowHorizontalScroll", descriptionKey: "settings.sidebarAllowHorizontalScrollDescription", targetId: "navigation" },
   { id: "navigation-sidebar-tooltips", category: "navigation", titleKey: "settings.sidebarShowTooltips", descriptionKey: "settings.sidebarShowTooltipsDescription", targetId: "navigation" },
-  { id: "navigation-sidebar-user-admin", category: "navigation", titleKey: "settings.sidebarShowUserAdmin", descriptionKey: "settings.sidebarShowUserAdminDescription", targetId: "navigation" },
   { id: "navigation-sidebar-indent", category: "navigation", titleKey: "settings.sidebarIndent", descriptionKey: "settings.sidebarIndentDescription", targetId: "navigation" },
   { id: "navigation-sidebar-font-size", category: "navigation", titleKey: "settings.sidebarFontSize", descriptionKey: "settings.sidebarFontSizeDescription", targetId: "navigation" },
   { id: "navigation-sidebar-density", category: "navigation", titleKey: "settings.sidebarDensity", descriptionKey: "settings.sidebarDensityDescription", targetId: "navigation" },
@@ -947,14 +946,16 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
   },
   { id: "mcp-permission-preview-title", category: "mcp", titleKey: "settings.mcpAccessTreeTitle", targetId: "mcp-connections", route: { mcpManagementTab: "permissions" } },
   { id: "backups-background-worker", category: "backups", titleKey: "databaseBackup.backgroundWorker", targetId: "backups", visible: desktopOnly },
-  ...MCP_TOOL_OPTIONS.map((tool): SettingsSearchDefinition => ({
-    id: `mcp-tool-${tool.name}`,
-    category: "mcp",
-    titleKey: tool.labelKey,
-    keywordTexts: [tool.name],
-    targetId: "mcp-capabilities",
-    route: { mcpManagementTab: "capabilities", mcpCapabilityTarget: { kind: "tool", toolName: tool.name } },
-  })),
+  ...MCP_TOOL_OPTIONS.map(
+    (tool): SettingsSearchDefinition => ({
+      id: `mcp-tool-${tool.name}`,
+      category: "mcp",
+      titleKey: tool.labelKey,
+      keywordTexts: [tool.name],
+      targetId: "mcp-capabilities",
+      route: { mcpManagementTab: "capabilities", mcpCapabilityTarget: { kind: "tool", toolName: tool.name } },
+    }),
+  ),
 ];
 
 export function resolveSettingsSearchEntries(definitions: readonly SettingsSearchDefinition[], context: SettingsSearchContext, translate: Translate, categoryLabels: Readonly<Record<SettingsCategory, string>>): SettingsSearchEntry[] {

@@ -434,31 +434,30 @@ describe("column layout popover bulk visibility actions", () => {
     expect(host.querySelector<HTMLButtonElement>("[data-column-hide-all]")!.disabled).toBe(true);
   });
 
-  it("shows only the filtered columns: show all first, then hide the complement in one batch", async () => {
-    const { host, hideColumns, showAllColumns } = await mountPopover(4);
+  it("shows only the searched columns from Show selected", async () => {
+    const gridState = createGrid(4, { showOnlyColumns: vi.fn() });
+    const { host } = await mountPopover(4, gridState);
 
     await typeColumnSearch(host, "column_1");
-    const showFiltered = host.querySelector<HTMLButtonElement>("[data-column-show-filtered]")!;
-    expect(showFiltered).not.toBeNull();
-    expect(showFiltered.disabled).toBe(false);
-    showFiltered.click();
+    const showSelected = host.querySelector<HTMLButtonElement>("[data-column-show-selected]")!;
+    expect(showSelected).not.toBeNull();
+    expect(showSelected.disabled).toBe(false);
+    showSelected.click();
 
-    expect(showAllColumns).toHaveBeenCalledOnce();
-    expect(hideColumns).toHaveBeenCalledOnce();
-    expect(hideColumns).toHaveBeenCalledWith([0, 2, 3]);
-    expect(showAllColumns.mock.invocationCallOrder[0]).toBeLessThan(hideColumns.mock.invocationCallOrder[0]);
+    expect(gridState.grid.showOnlyColumns).toHaveBeenCalledOnce();
+    expect(gridState.grid.showOnlyColumns).toHaveBeenCalledWith([1]);
   });
 
-  it("keeps Show filtered only disabled until the search matches a column", async () => {
-    const { host, hideColumns, showAllColumns } = await mountPopover(3);
+  it("keeps Show selected disabled until the search matches a column", async () => {
+    const gridState = createGrid(3, { showOnlyColumns: vi.fn() });
+    const { host } = await mountPopover(3, gridState);
 
-    const showFiltered = host.querySelector<HTMLButtonElement>("[data-column-show-filtered]")!;
-    expect(showFiltered.disabled).toBe(true);
-    showFiltered.click();
-    expect(hideColumns).not.toHaveBeenCalled();
-    expect(showAllColumns).not.toHaveBeenCalled();
+    const showSelected = host.querySelector<HTMLButtonElement>("[data-column-show-selected]")!;
+    expect(showSelected.disabled).toBe(true);
+    showSelected.click();
+    expect(gridState.grid.showOnlyColumns).not.toHaveBeenCalled();
 
     await typeColumnSearch(host, "no-such-column");
-    expect(showFiltered.disabled).toBe(true);
+    expect(showSelected.disabled).toBe(true);
   });
 });

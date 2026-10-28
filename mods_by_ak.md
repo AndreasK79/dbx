@@ -3,7 +3,7 @@ Personal mods on top of dbx, in order — all verified (specs + typecheck), buil
 **TLDR**
 
 - **Snippets** — VS Code import/export, list filter, bulk delete with shift-click ranges (#2, #3, #5, #12, #39), quick-add from the editor's context menu (#24), `$0` final cursor position (#23), a typed table/column name outranks a colliding snippet trigger (#28), a partially typed prefix keeps tables/columns ahead of snippets (#44), triggers containing spaces or hyphens match their separator-free spelling (#45), and a toggle removes them from typing autocomplete while Ctrl+Alt+Space lists them on demand (#52)
-- **Result grid** — DBeaver-style FK drill-through (#4) with a Back button / Alt+← that retraces the drill chain (#43), copy-SQL buttons for indexes, foreign keys, and constraints (#6, #7, #9), CSV export options dialog (#19) with a type-aware "strings" quote mode in export and copy extractors (#42), uncheck-all / show-only-filtered in the Columns dropdown (#33)
+- **Result grid** — DBeaver-style FK drill-through (#4) with a Back button / Alt+← that retraces the drill chain (#43), copy-SQL buttons for indexes, foreign keys, and constraints (#6, #7, #9), CSV export options dialog (#19) with a type-aware "strings" quote mode in export and copy extractors (#42), uncheck-all in the Columns dropdown (#33)
 - **Keyboard** — VS Code-style Ctrl+D occurrence selection (#13), Ctrl+Alt+D database picks hand focus back to the editor (#21), Ctrl+Shift+C commits the transaction (#22), Alt+1..5 copy a first-row value (#30), Ctrl+Alt+Enter replaces all in the find/replace panels (#35), Shift+Delete / Ctrl+X cut lines off the bottom of the editor (#53), configurable shortcut for "Convert to delimited text" (#1)
 - **Dialogs** — Enter confirms everywhere: delimited list (#8), SQL parameters (#14), danger confirms (#16), update center (#29); the SQL parameter dialog also stays open on outside clicks (#17)
 - **Search & parameters** — double-Shift database object search that opens the object's definition (#20, #25), with type filter chips and the sidebar's icons/colors (#34); unfilled SQL parameters send NULL (#26)
@@ -136,8 +136,8 @@ TableStructureEditor.vue, en.ts, zh-CN.ts, __tests__/TableStructureEditor.column
 A `hotfix` cargo profile (inherits release, no LTO + incremental + codegen-units 16, own target dir) cuts small-edit rebuilds from ~24 min to a few minutes — release's fat LTO + single codegen unit re-optimizes the whole dependency graph on every rebuild, and the embedded frontend forces one every build. Build from src-tauri: `pnpm build` then `cargo build --profile hotfix --features custom-protocol` — the feature flag is mandatory (without it the exe launches but serves the dev-server URL). Costs a few percent of Rust-side speed and a ~89 MB exe vs ~70.
 Cargo.toml (workspace root, [profile.hotfix])
 
-33. Uncheck-all and show-only-filtered in the result grid's Columns dropdown
-Two bulk actions next to Invert / Reset order / Show all: "Hide all" unchecks everything (the first column stays checked — a fully unchecked state is unrepresentable downstream) and "Show filtered only" makes the visible set exactly the popover's search matches. Both ride the existing batch-visibility handles, so every grid hosting the popover gets them.
+33. Uncheck-all in the result grid's Columns dropdown
+"Hide all" unchecks everything in one batch next to Invert / Reset order / Show all (the first column stays checked — a fully unchecked state is unrepresentable downstream), riding the existing batch-visibility handles so every grid hosting the popover gets it. The mod's original "Show filtered only" button was retired when upstream's "Show selected" (#13367, v0.6.60) landed doing the same thing natively.
 DataGridColumnLayoutPopover.vue, en.ts, zh-CN.ts, __tests__/dataGridColumnLayoutPopover.spec.ts
 
 34. Type filter and sidebar icon/color coding in the double-Shift object search
