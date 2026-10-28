@@ -97,4 +97,34 @@ describe("searchKeymapWithoutShortcutConflicts", () => {
     expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "F3" }), "editor")).toBe(true);
     view.destroy();
   });
+
+  describe("custom panel predicate (DBX's custom search panel)", () => {
+    it("honors a closed predicate even when the stock search state still holds a panel — DBX's stale-panel case after its first search", () => {
+      const view = new EditorView({
+        parent: document.createElement("div"),
+        state: EditorState.create({
+          extensions: [keymap.of(searchKeymapWithoutShortcutConflicts(searchKeymap, () => false)), search({ top: true })],
+        }),
+      });
+      // DBX's EditorSearchPanel opens the CodeMirror panel state but hides
+      // its own UI without dispatching the close effect, so the stock
+      // searchPanelOpen(state) stays true forever after the first search.
+      openSearchPanel(view);
+
+      expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "F3" }), "editor")).toBe(false);
+      view.destroy();
+    });
+
+    it("consumes F3 as find-next when the custom predicate reports the panel open", () => {
+      const view = new EditorView({
+        parent: document.createElement("div"),
+        state: EditorState.create({
+          extensions: [keymap.of(searchKeymapWithoutShortcutConflicts(searchKeymap, () => true)), search({ top: true })],
+        }),
+      });
+
+      expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "F3" }), "editor")).toBe(true);
+      view.destroy();
+    });
+  });
 });

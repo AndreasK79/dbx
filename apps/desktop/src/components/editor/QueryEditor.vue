@@ -2321,7 +2321,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
         initializedRuntime.vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
         initializedRuntime.defaultKeymapComp.of(defaultKeymapExtension()),
-        keymap.of([...searchKeymapWithoutShortcutConflicts(searchKeymap), ...historyKeymap, ...foldKeymapWithoutAllBindings(foldKeymap, initializedRuntime.codeMirrorFoldAll, initializedRuntime.codeMirrorUnfoldAll), ...completionKeymap]),
+        keymap.of([...searchKeymapWithoutShortcutConflicts(searchKeymap, () => searchPanelRef.value?.isOpen() ?? false), ...historyKeymap, ...foldKeymapWithoutAllBindings(foldKeymap, initializedRuntime.codeMirrorFoldAll, initializedRuntime.codeMirrorUnfoldAll), ...completionKeymap]),
         Prec.highest(keymap.of([{ key: "Space", run: handleSpace }])),
         initializedRuntime.sqlLanguageComp.of(sqlExtensions.buildSqlLanguageExtension()),
         initializedRuntime.sqlSemanticHighlightComp.of(sqlExtensions.buildSqlSemanticHighlightExtension()),

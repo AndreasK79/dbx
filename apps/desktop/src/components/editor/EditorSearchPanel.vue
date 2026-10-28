@@ -521,6 +521,10 @@ defineExpose({
   openSearch,
   openReplace,
   closeSearch,
+  // Live visibility for the F3 conditional binding (codemirrorSearchKeymap):
+  // the stock searchPanelOpen(state) stays true once this panel has opened,
+  // because hiding it never clears CodeMirror's search-state panel.
+  isOpen: () => searchVisible.value,
   scheduleDocumentSearchUpdate,
 });
 </script>

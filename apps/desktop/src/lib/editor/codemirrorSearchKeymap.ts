@@ -19,16 +19,23 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
  *   「查找下一个」；面板关闭时返回 false 放行，让 keydown 冒泡到
  *   App.vue 的全局 handleKeydown 执行用户配置的动作。
  */
-export function searchKeymapWithoutShortcutConflicts(searchKeymap: readonly KeyBinding[]): KeyBinding[] {
+export function searchKeymapWithoutShortcutConflicts(searchKeymap: readonly KeyBinding[], isSearchPanelOpen: (view: EditorView) => boolean = (view) => searchPanelOpen(view.state)): KeyBinding[] {
   return searchKeymap
     .filter((binding) => binding.key !== "Mod-d")
     .map((binding) =>
       // The stock binding carries preventDefault: true, which marks the key
       // handled (and default-prevented) even when run returns false — that
-      // would swallow the F3 meant for the global database-select shortcut.
-      // With it dropped, a true return from findNext still prevents the
-      // default (handled keydowns are always prevented); a false return now
-      // really lets the event bubble to App.vue.
-      binding.key === "F3" ? { ...binding, run: (view: EditorView) => (searchPanelOpen(view.state) ? findNext(view) : false), preventDefault: false } : binding,
+      // would swallow the F3 meant for whatever global action the user
+      // remapped onto it. With it dropped, a true return from findNext still
+      // prevents the default (handled keydowns are always prevented); a false
+      // return now really lets the event bubble to App.vue.
+      //
+      // The stock searchPanelOpen(state) predicate only tests whether a panel
+      // exists in CodeMirror's search state — DBX's custom search panel hides
+      // itself without ever dispatching the close effect, so the stock check
+      // turns permanently true after the first search in a tab and F3 would
+      // reopen the panel forever. The query editor therefore passes
+      // EditorSearchPanel's live visibility (searchVisible) instead.
+      binding.key === "F3" ? { ...binding, run: (view: EditorView) => (isSearchPanelOpen(view) ? findNext(view) : false), preventDefault: false } : binding,
     );
 }
