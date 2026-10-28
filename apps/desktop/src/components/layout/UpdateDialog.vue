@@ -212,6 +212,49 @@ function handleOpenChange(nextOpen: boolean) {
   open.value = false;
 }
 
+// The primary action changes with the update state and the selected tab, so Enter
+// routes through one gate-checked handler instead of a fixed submit button: every
+// branch re-checks its button's disabled conditions, keeping Enter inert exactly
+// while the visible control is disabled (downloading, installing, gated by tasks…).
+function handlePrimarySubmit() {
+  if (selectedTab.value !== "app") {
+    if (isAnyComponentUpdating.value) return;
+    const category = selectedCategory.value;
+    if (!category || !selectedCategoryHasUpdate.value || props.isInstallingUpdate || props.isUpdatingAll) return;
+    emit("install-component-updates", category);
+    return;
+  }
+  // Mirrors appUpdateActionsVisible: a prepared package stays actionable even
+  // when the remote no longer reports the release (#13562), so only the plain
+  // download branch still requires a downloadable remote update.
+  if (!appUpdateActionsVisible.value) return;
+  if (props.updateReady) {
+    if (props.activeTaskCount > 0 || props.isIgnoringUpdate || props.isUpdatingAll) return;
+    emit("restart");
+    return;
+  }
+  if (props.isInstallingUpdate || props.isDownloadingUpdate) return;
+  if (props.updateDownloaded) {
+    if (props.activeTaskCount > 0 || props.isIgnoringUpdate || props.isUpdatingAll) return;
+    emit("install-downloaded");
+    return;
+  }
+  if (!canDownloadAndInstallUpdate(props.updateInfo, isDesktop) || props.checkingUpdates || props.isIgnoringUpdate) return;
+  emit("download-in-background");
+}
+
+function handleFormKeydown(event: KeyboardEvent) {
+  if (event.key !== "Enter" || event.repeat) return;
+  // Buttons, links, and editable controls act on Enter natively (tab switching, the
+  // source dropdown, release-note links); only bare surfaces fall through to the
+  // dialog's primary action — the form has no text fields, so implicit submission
+  // alone would never fire from e.g. the initially focused dialog panel.
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("button, a, input, textarea, select, [contenteditable='true']")) return;
+  event.preventDefault();
+  handlePrimarySubmit();
+}
+
 function openExternalUrl(url: string) {
   if (isTauriRuntime()) {
     import("@tauri-apps/plugin-shell").then(({ open }) => open(url));
