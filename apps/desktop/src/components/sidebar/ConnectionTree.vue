@@ -2146,7 +2146,7 @@ function findSchemaNode(nodes: TreeNode[], connId: string, database: string, sch
 }
 
 function onSearchToggle(node: TreeNode) {
-  if (!isTreeSearchFiltering.value || !node.children) return;
+  if (!isTreeSearchFiltering.value) return;
   const next = new Set(searchCollapsedIds.value);
   if (node.isExpanded) {
     next.add(node.id);
@@ -2156,7 +2156,10 @@ function onSearchToggle(node: TreeNode) {
         if (child.children?.length) collectDescendants(child.children);
       }
     };
-    collectDescendants(node.children);
+    // A table reached through search has no children until its groups load;
+    // expanding still has to clear its id, otherwise the collapse-all seed keeps
+    // the freshly loaded children hidden and the row looks unexpandable (#13856).
+    if (node.children?.length) collectDescendants(node.children);
   } else {
     next.delete(node.id);
   }

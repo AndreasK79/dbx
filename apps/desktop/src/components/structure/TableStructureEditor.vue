@@ -5826,38 +5826,34 @@ function columnIndexContextMenuItems(targets: EditableStructureColumn[]): Contex
       disabled: () => disabled() || primaryColumns.length > 0 || targets.some(isPrimaryKeyDisabled),
       action: () => setColumnsPrimaryKey(targets),
     },
-    ...([false, true] as const).map(
-      (unique): ContextMenuItem => ({
-        label: t(unique ? "structureEditor.createUniqueIndex" : "structureEditor.createNormalIndex"),
-        icon: KeyRound,
-        iconClass: indexIconClass(unique ? "unique" : "index"),
-        disabled: () =>
-          disabled() ||
-          !structureCapabilities.value.createIndex ||
-          indexes.value.some(
-            (index) =>
-              !index.markedForDrop &&
-              !index.isPrimary &&
-              index.isUnique === unique &&
-              !index.filter &&
-              (!index.indexType || index.indexType.toUpperCase() === "BTREE") &&
-              index.columns.length === targets.length &&
-              index.columns.every((name, position) => structureColumnComparisonKey(name) === structureColumnComparisonKey(targets[position].name)),
-          ),
-        action: () => createIndexFromColumns(targets, unique),
-      }),
-    ),
+    ...([false, true] as const).map((unique): ContextMenuItem => ({
+      label: t(unique ? "structureEditor.createUniqueIndex" : "structureEditor.createNormalIndex"),
+      icon: KeyRound,
+      iconClass: indexIconClass(unique ? "unique" : "index"),
+      disabled: () =>
+        disabled() ||
+        !structureCapabilities.value.createIndex ||
+        indexes.value.some(
+          (index) =>
+            !index.markedForDrop &&
+            !index.isPrimary &&
+            index.isUnique === unique &&
+            !index.filter &&
+            (!index.indexType || index.indexType.toUpperCase() === "BTREE") &&
+            index.columns.length === targets.length &&
+            index.columns.every((name, position) => structureColumnComparisonKey(name) === structureColumnComparisonKey(targets[position].name)),
+        ),
+      action: () => createIndexFromColumns(targets, unique),
+    })),
     ...["FULLTEXT", "SPATIAL"]
       .filter((type) => indexTypeOptions.value.includes(type))
-      .map(
-        (type): ContextMenuItem => ({
-          label: t(type === "FULLTEXT" ? "structureEditor.createFulltextIndex" : "structureEditor.createSpatialIndex"),
-          icon: KeyRound,
-          iconClass: indexIconClass(type === "FULLTEXT" ? "fulltext" : "spatial"),
-          disabled: () => disabled() || !structureCapabilities.value.createIndex || !!specialIndexColumnIssue(structureDialect.value, type, targets),
-          action: () => createIndexFromColumns(targets, false, type),
-        }),
-      ),
+      .map((type): ContextMenuItem => ({
+        label: t(type === "FULLTEXT" ? "structureEditor.createFulltextIndex" : "structureEditor.createSpatialIndex"),
+        icon: KeyRound,
+        iconClass: indexIconClass(type === "FULLTEXT" ? "fulltext" : "spatial"),
+        disabled: () => disabled() || !structureCapabilities.value.createIndex || !!specialIndexColumnIssue(structureDialect.value, type, targets),
+        action: () => createIndexFromColumns(targets, false, type),
+      })),
   ];
   const addItems: ContextMenuItem[] = indexes.value
     .filter((index) => !index.markedForDrop && !index.isPrimary)
@@ -8904,7 +8900,8 @@ watch(
                                 @update:model-value="(v: string | number) => updatePostgresGeometryColumn(column, postgresGeometryTypeValue(column.dataType), String(v))"
                               />
                             </div>
-                            <p v-if="!postgresGeometryTypeValue(column.dataType) && postgresGeometrySridValue(column.dataType)" class="text-[length:var(--structure-font-size)] text-muted-foreground leading-tight">
+                            <!-- The virtual row reserves exactly one line for this hint, so it must not wrap (#13835). -->
+                            <p v-if="!postgresGeometryTypeValue(column.dataType) && postgresGeometrySridValue(column.dataType)" class="truncate text-[length:var(--structure-font-size)] text-muted-foreground leading-tight" :title="t('structureEditor.geometryEmptyTypeHint')">
                               {{ t("structureEditor.geometryEmptyTypeHint") }}
                             </p>
                           </div>

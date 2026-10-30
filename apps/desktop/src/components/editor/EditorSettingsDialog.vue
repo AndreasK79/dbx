@@ -536,13 +536,12 @@ function onLocaleOpenChange(open: boolean) {
   if (!open) restoreLocaleOptionPreview();
 }
 
-const appThemePaletteOptions = computed(
-  (): Array<{ value: AppThemePalette; label: string; previewColor: string }> =>
-    APP_THEME_PALETTES.map((palette) => ({
-      value: palette.value,
-      label: t(palette.labelKey),
-      previewColor: palette.previewColor,
-    })),
+const appThemePaletteOptions = computed((): Array<{ value: AppThemePalette; label: string; previewColor: string }> =>
+  APP_THEME_PALETTES.map((palette) => ({
+    value: palette.value,
+    label: t(palette.labelKey),
+    previewColor: palette.previewColor,
+  })),
 );
 const selectedThemePaletteOption = computed(() => appThemePaletteOptions.value.find((option) => option.value === themePalette.value) ?? appThemePaletteOptions.value[0]);
 const selectedLocaleOption = computed(() => LOCALE_OPTIONS.find((locale) => locale.value === currentLocale()) ?? LOCALE_OPTIONS[0]);
@@ -2912,6 +2911,13 @@ async function applySettings() {
 }
 
 async function applySettingsAndClose() {
+  // With nothing staged there is nothing to persist, so the button only closes.
+  // It used to be disabled in that state, which read as "the button does
+  // nothing" (#13862).
+  if (!hasChanges()) {
+    closeSettings();
+    return;
+  }
   if (await applySettingsForResult()) {
     closeSettings();
   }
@@ -11918,8 +11924,7 @@ onUnmounted(() => {
 SELECT t.*
 FROM ${1:table} t
 WHERE t.del_flag = 0
-LIMIT 100;</pre
-                >
+LIMIT 100;</pre>
               </div>
 
               <div class="flex items-center gap-2">
@@ -14372,7 +14377,7 @@ LIMIT 100;</pre
         <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettings">
           {{ t("settings.apply") }}
         </Button>
-        <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettingsAndClose">
+        <Button :disabled="hasApplyBlocker" @click="applySettingsAndClose">
           {{ t("settings.applyAndClose") }}
         </Button>
       </DialogFooter>
@@ -14448,7 +14453,7 @@ LIMIT 100;</pre
         <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettings">
           {{ t("settings.apply") }}
         </Button>
-        <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettingsAndClose">
+        <Button :disabled="hasApplyBlocker" @click="applySettingsAndClose">
           {{ t("settings.applyAndClose") }}
         </Button>
       </DialogFooter>
@@ -14473,7 +14478,7 @@ LIMIT 100;</pre
         <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettings">
           {{ t("settings.apply") }}
         </Button>
-        <Button :disabled="!hasChanges() || hasApplyBlocker" @click="applySettingsAndClose">
+        <Button :disabled="hasApplyBlocker" @click="applySettingsAndClose">
           {{ t("settings.applyAndClose") }}
         </Button>
       </DialogFooter>
