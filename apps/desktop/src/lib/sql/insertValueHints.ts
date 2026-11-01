@@ -623,7 +623,7 @@ export function findEnclosingDollarQuoteStartInText(doc: SqlTextSlice, position:
       chunkEnd = Math.min(chunkEnd + DOLLAR_QUOTE_CHUNK_TAIL_EXTENSION, end);
     }
     const chunk = doc.sliceString(scanned, chunkEnd);
-    for (let local = 0; local < chunk.length; ) {
+    for (let local = 0; local < chunk.length;) {
       const index = scanned + local;
       if (index >= end) break;
       if (chunk[local] === "$") {
@@ -823,4 +823,13 @@ export function parseInsertValueHintsAtCursor(sql: string, cursor: number, optio
   const clause = parseInsertClause(statementTokens, span);
   if (!clause) return [];
   return buildInsertValueHints([clause], options);
+}
+
+/**
+ * Whether a database type runs SQL-family statements, where INSERT column
+ * hints (and their SELECT extension) apply. NoSQL/document stores are excluded;
+ * keep this list in sync instead of re-inlining it at call sites.
+ */
+export function supportsInsertValueHints(databaseType: string | undefined | null): boolean {
+  return databaseType !== "redis" && databaseType !== "mongodb" && databaseType !== "elasticsearch" && databaseType !== "easysearch" && databaseType !== "meilisearch" && databaseType !== "solr" && databaseType !== "couchdb" && databaseType !== "victoriametrics" && databaseType !== "salesforce";
 }

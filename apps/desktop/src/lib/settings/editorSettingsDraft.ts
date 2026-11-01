@@ -172,6 +172,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "globalDateTimeExportFormat",
   "globalDateTimeImportFormat",
   "updateDownloadSource",
+  "updateChannel",
   "toolbarItems",
   "snippets",
   "sqlShortcuts",

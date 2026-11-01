@@ -3681,9 +3681,13 @@ export interface UpdateInfo {
   release_name: string;
   release_url: string;
   release_notes: string;
+  channel?: "stable" | "beta";
+  release_tag?: string;
+  is_promoted?: boolean;
 }
 
 export type UpdateDownloadSource = "official" | "cnb";
+export type UpdateChannel = "stable" | "beta";
 
 export interface DownloadedUpdate {
   cache_id: string;
@@ -3692,6 +3696,9 @@ export interface DownloadedUpdate {
   release_url: string;
   release_notes: string;
   downloaded_at: number;
+  channel?: UpdateChannel;
+  release_tag?: string;
+  is_promoted?: boolean;
 }
 
 export interface UpdateDownloadProgress {
@@ -3751,8 +3758,8 @@ export async function uninstallNpmMcpServer(): Promise<string> {
   return invoke("uninstall_npm_mcp_server");
 }
 
-export async function checkForUpdates(locale?: string, source?: UpdateDownloadSource): Promise<UpdateInfo> {
-  return invoke("check_for_updates", { locale, source });
+export async function checkForUpdates(locale?: string, source?: UpdateDownloadSource, channel: UpdateChannel = "stable"): Promise<UpdateInfo> {
+  return invoke("check_for_updates", { locale, source, channel });
 }
 
 export async function fetchChangelog(lang?: string): Promise<import("@/lib/app/changelog").ChangelogData> {
@@ -3771,8 +3778,8 @@ export async function getSystemProxyUrl(): Promise<string | null> {
   return invoke("get_system_proxy_url");
 }
 
-export async function downloadUpdate(source: UpdateDownloadSource, latestVersion: string, attemptId: string, releaseNotes?: string): Promise<DownloadedUpdate> {
-  return invoke("download_update", { source, latestVersion, attemptId, releaseNotes });
+export async function downloadUpdate(source: UpdateDownloadSource, latestVersion: string, attemptId: string, releaseNotes?: string, channel: UpdateChannel = "stable", releaseTag?: string): Promise<DownloadedUpdate> {
+  return invoke("download_update", { source, channel, latestVersion, attemptId, releaseNotes, releaseTag });
 }
 
 export async function cancelUpdateDownload(): Promise<void> {

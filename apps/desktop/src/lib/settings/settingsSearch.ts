@@ -736,6 +736,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
   { id: "updates-jdbc", category: "updates", titleKey: "settings.autoUpdateJdbc", descriptionKey: "settings.autoUpdateJdbcDescription", targetId: "updates" },
   { id: "updates-mcp", category: "updates", titleKey: "settings.autoUpdateMcp", descriptionKey: "settings.autoUpdateMcpDescription", targetId: "updates" },
   { id: "updates-plugins", category: "updates", titleKey: "settings.autoUpdatePlugins", descriptionKey: "settings.autoUpdatePluginsDescription", targetId: "updates" },
+  { id: "updates-channel", category: "updates", titleKey: "settings.updateChannel", descriptionKey: "settings.updateChannelDescription", targetId: "updates", keywordKeys: ["settings.updateChannelStable", "settings.updateChannelBeta"] },
   { id: "updates-source", category: "updates", titleKey: "settings.updateDownloadSource", descriptionKey: "settings.updateDownloadSourceDescription", targetId: "updates", keywordKeys: ["settings.updateDownloadSourceOfficial", "settings.updateDownloadSourceCnb"] },
   // Fixed controls added alongside the full template coverage audit.
   { id: "editor-keep-explicit-transaction-in-auto-commit", category: "editor", titleKey: "settings.keepExplicitTransactionInAutoCommit", descriptionKey: "settings.keepExplicitTransactionInAutoCommitDescription", targetId: "editor" },
@@ -946,16 +947,14 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
   },
   { id: "mcp-permission-preview-title", category: "mcp", titleKey: "settings.mcpAccessTreeTitle", targetId: "mcp-connections", route: { mcpManagementTab: "permissions" } },
   { id: "backups-background-worker", category: "backups", titleKey: "databaseBackup.backgroundWorker", targetId: "backups", visible: desktopOnly },
-  ...MCP_TOOL_OPTIONS.map(
-    (tool): SettingsSearchDefinition => ({
-      id: `mcp-tool-${tool.name}`,
-      category: "mcp",
-      titleKey: tool.labelKey,
-      keywordTexts: [tool.name],
-      targetId: "mcp-capabilities",
-      route: { mcpManagementTab: "capabilities", mcpCapabilityTarget: { kind: "tool", toolName: tool.name } },
-    }),
-  ),
+  ...MCP_TOOL_OPTIONS.map((tool): SettingsSearchDefinition => ({
+    id: `mcp-tool-${tool.name}`,
+    category: "mcp",
+    titleKey: tool.labelKey,
+    keywordTexts: [tool.name],
+    targetId: "mcp-capabilities",
+    route: { mcpManagementTab: "capabilities", mcpCapabilityTarget: { kind: "tool", toolName: tool.name } },
+  })),
 ];
 
 export function resolveSettingsSearchEntries(definitions: readonly SettingsSearchDefinition[], context: SettingsSearchContext, translate: Translate, categoryLabels: Readonly<Record<SettingsCategory, string>>): SettingsSearchEntry[] {
