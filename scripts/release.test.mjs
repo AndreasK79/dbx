@@ -95,6 +95,9 @@ test("app release workflows preserve beta tags and stable package URLs", () => {
   assert.match(release, /permissions:\n      contents: write\n      actions: write/);
   assert.match(publish, /approve-promotion:[\s\S]+if: \$\{\{ contains\(inputs\.tag, '-beta\.'\) \}\}[\s\S]+environment: release-promotion/);
   assert.match(publish, /needs\.approve-promotion\.result/);
+  // approve-promotion is skipped for plain tags, so every job after it must opt out of the implicit success().
+  assert.match(publish, /name: Upload to R2\n    needs: validate-candidate\n(?:    #[^\n]*\n)+    if: \$\{\{ !cancelled\(\) && needs\.validate-candidate\.result == 'success' \}\}/);
+  assert.match(publish, /name: Promote to Release\n    needs: \[upload-r2, validate-candidate\]\n    if: \$\{\{ !cancelled\(\) && needs\.upload-r2\.result == 'success' \}\}/);
   assert.match(publish, /edit_args\+=\(--title "DBX v\$\{\{ needs\.validate-candidate\.outputs\.version \}\}"\)/);
   assert.match(publish, /sync-source-version:[\s\S]+needs: \[validate-candidate, promote-release\][\s\S]+ref: main[\s\S]+MCP_RELEASE_TOKEN/);
   assert.match(publish, /set-release-version\.mjs "v\$\{VERSION\}"/);
@@ -106,7 +109,8 @@ test("app release workflows preserve beta tags and stable package URLs", () => {
   assert.match(release, /--config src-tauri\/tauri\.msi-version\.conf\.json/);
   assert.doesNotMatch(release, /--bundles nsis' \|\| ''/);
   assert.match(release, /if \(\$msiInstallers\.Count -eq 0\)/);
-  assert.match(publish, /x64-setup\.exe arm64-setup\.exe x64_en-US\.msi arm64_en-US\.msi/);
+  assert.match(publish, /stable-asset-aliases\.mjs pairs/);
+  assert.match(publish, /stable-asset-aliases\.mjs apply/);
   assert.match(daily, /schedule:/);
   assert.match(daily, /gh release create "\$tag"/);
   assert.match(daily, /-beta\.\$\{date_suffix\}\.\$\{sequence\}/);

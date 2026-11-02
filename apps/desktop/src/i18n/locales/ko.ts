@@ -861,6 +861,7 @@ export default withEnglishFallback({
     workbenchUnavailableFallback: "플러그인 워크벤치를 사용할 수 없습니다",
     pluginIncompatible: "플러그인이 호환되지 않습니다",
     loadingTitle: "{title} 로드 중",
+    compatibilityErrors: "호환성 검사 실패",
   },
   auth: {
     rateLimited: "{seconds}초 후에 다시 시도해 주세요",
@@ -1327,6 +1328,7 @@ export default withEnglishFallback({
     matchPreviewLimit: "일치하는 총 {total}개 줄 중 처음 {limit}개 줄만 미리 볼 수 있습니다.",
   },
   connection: {
+    mqttTopicAlias: "별칭 (선택 사항)",
     mysqlDataCharsetWriteBlocked: "데이터 문자 집합 호환 모드에서는 읽기 전용이 강제됩니다. 쓰기와 임시 잠금 해제는 사용할 수 없습니다.",
     mysqlDataCharsetUnsupported: "dataCharset은 네이티브 MySQL 프로필에서만 지원됩니다. MariaDB, TiDB 및 다른 프로필은 지원하지 않습니다.",
     mysqlDataCharsetCloseTabs: "데이터 문자 집합을 변경하기 전에 이 연결의 데이터/구조 탭을 닫고 쿼리 결과를 지우세요. 실행 중인 쿼리와 트랜잭션을 먼저 완료하세요. SQL 초안은 유지되며 저장 전에 기존 연결이 해제됩니다.",

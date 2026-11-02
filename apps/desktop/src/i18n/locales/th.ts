@@ -923,6 +923,7 @@ export default withEnglishFallback({
     workbenchUnavailableFallback: "Workbench ของ Plugin ไม่พร้อมใช้งาน",
     pluginIncompatible: "Plugin เข้ากันไม่ได้",
     loadingTitle: "กำลังโหลด {title}",
+    compatibilityErrors: "การตรวจสอบความเข้ากันได้ล้มเหลว",
   },
   auth: {
     rateLimited: "โปรดลองอีกครั้งใน {seconds} วินาที",
@@ -1957,6 +1958,7 @@ export default withEnglishFallback({
     mqttSearchPayloadPlaceholder: "ค้นหา Payload ข้อความ...",
     mqttNoMatchingMessages: "ไม่มีข้อความที่โหลดไว้ตรงกับตัวกรอง Payload นี้",
     mqttNoSavedSubscriptions: 'ไม่มี Subscription ที่บันทึกไว้ คลิก "Subscription ใหม่" เพื่อเพิ่มรายการ',
+    mqttTopicAlias: "ชื่อเล่น (ไม่บังคับ)",
     mqttTopicFilter: "ตัวกรอง Topic",
     mqttTopicFilterPlaceholder: "เช่น device/+/status",
     mqttTopicFilterHint: "รองรับ Wildcard + แบบระดับเดียวและ # แบบหลายระดับ",

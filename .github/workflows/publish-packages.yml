@@ -112,6 +112,7 @@ jobs:
   publish:
     name: Publish to Homebrew & Scoop
     needs: [publish-stable-alias, validate-candidate]
+    if: ${{ !cancelled() && needs.publish-stable-alias.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -327,6 +328,10 @@ jobs:
   upload-r2:
     name: Upload to R2
     needs: validate-candidate
+    # Plain version tags skip approve-promotion, and a skipped ancestor would
+    # skip every job after it. Each job below therefore checks its own
+    # dependencies instead of relying on the implicit success().
+    if: ${{ !cancelled() && needs.validate-candidate.result == 'success' }}
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     runs-on: ubuntu-latest
@@ -349,6 +354,11 @@ jobs:
             --dir assets \
             --clobber
           ls -lh assets/
+
+      - name: Add stable package aliases for R2
+        # promote-release adds these to the GitHub Release only after this job, so
+        # the immutable R2 directory has to get them here as well.
+        run: node .github/scripts/stable-asset-aliases.mjs apply "${{ steps.version.outputs.tag }}" assets
 
       - name: Validate latest.json completeness
         run: |
@@ -404,7 +414,9 @@ jobs:
           manifest_key="releases/stable/${{ steps.version.outputs.tag }}/latest.json"
           if aws s3api head-object --bucket "${{ secrets.R2_BUCKET_NAME }}" --key "$manifest_key" --endpoint-url "$endpoint" >/dev/null 2>&1; then
             aws s3 cp "s3://${{ secrets.R2_BUCKET_NAME }}/${manifest_key}" "$RUNNER_TEMP/existing-stable-manifest.json" --endpoint-url "$endpoint"
-            if ! cmp -s assets/latest.json "$RUNNER_TEMP/existing-stable-manifest.json"; then
+            # sync-changelog fills in `notes` after a successful publish, so a
+            # rerun must not treat that field as a content change.
+            if ! cmp -s <(jq -S 'del(.notes)' assets/latest.json) <(jq -S 'del(.notes)' "$RUNNER_TEMP/existing-stable-manifest.json"); then
               echo "::error::Immutable stable manifest already exists for ${{ steps.version.outputs.tag }} with different contents."
               exit 1
             fi
@@ -420,6 +432,7 @@ jobs:
   promote-release:
     name: Promote to Release
     needs: [upload-r2, validate-candidate]
+    if: ${{ !cancelled() && needs.upload-r2.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -476,13 +489,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag_version="${TAG#v}"
-          base_version="${tag_version%%-beta.*}"
           mkdir -p "$RUNNER_TEMP/stable-package-assets"
           assets_json="$(gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" --json assets)"
-          for suffix in arm64.dmg x64.dmg x64-setup.exe arm64-setup.exe x64_en-US.msi arm64_en-US.msi; do
-            source="DBX_${tag_version}_${suffix}"
-            target="DBX_${base_version}_${suffix}"
+          while read -r source target; do
             if ! jq -e --arg name "$target" '.assets[] | select(.name == $name)' <<<"$assets_json" >/dev/null; then
               if ! jq -e --arg name "$source" '.assets[] | select(.name == $name)' <<<"$assets_json" >/dev/null; then
                 echo "::error::Missing beta package asset $source."
@@ -492,7 +501,7 @@ jobs:
               cp "$RUNNER_TEMP/stable-package-assets/$source" "$RUNNER_TEMP/stable-package-assets/$target"
               gh release upload "$TAG" "$RUNNER_TEMP/stable-package-assets/$target" --repo "${GITHUB_REPOSITORY}" --clobber
             fi
-          done
+          done < <(node .github/scripts/stable-asset-aliases.mjs pairs "$TAG")
 
       - name: Sync promoted release to CNB
         env:
@@ -564,6 +573,7 @@ jobs:
     # promoted version is committed here. The daily beta job and local builds
     # read the source version, which would otherwise stay on an old release.
     needs: [validate-candidate, promote-release]
+    if: ${{ !cancelled() && needs.promote-release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
@@ -605,6 +615,7 @@ jobs:
   publish-stable-alias:
     name: Publish stable update aliases
     needs: [promote-release, upload-r2]
+    if: ${{ !cancelled() && needs.promote-release.result == 'success' && needs.upload-r2.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Copy immutable manifest to stable aliases
@@ -618,15 +629,21 @@ jobs:
           set -euo pipefail
           endpoint="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           source="s3://${R2_BUCKET_NAME}/releases/stable/${TAG}/"
+          # R2 rejects the tagging headers the CLI sends on bucket-to-bucket copies
+          # (GetObjectTagging, x-amz-tagging-directive), so download the immutable
+          # directory once and upload it to each alias, like a first publish does.
+          assets="$RUNNER_TEMP/stable-aliases"
+          mkdir -p "${assets}"
+          aws s3 sync "${source}" "${assets}/" --endpoint-url "${endpoint}"
           for alias in stable/latest latest; do
-            aws s3 sync "${source}" "s3://${R2_BUCKET_NAME}/releases/${alias}/" \
+            aws s3 sync "${assets}/" "s3://${R2_BUCKET_NAME}/releases/${alias}/" \
               --endpoint-url "${endpoint}" \
               --cache-control "no-cache" \
               --delete
           done
-          aws s3 cp "${source}latest.json" "s3://${R2_BUCKET_NAME}/releases/stable/latest.json" \
+          aws s3 cp "${assets}/latest.json" "s3://${R2_BUCKET_NAME}/releases/stable/latest.json" \
             --endpoint-url "${endpoint}" --cache-control "no-cache"
-          aws s3 cp "${source}latest.json" "s3://${R2_BUCKET_NAME}/releases/latest/latest.json" \
+          aws s3 cp "${assets}/latest.json" "s3://${R2_BUCKET_NAME}/releases/latest/latest.json" \
             --endpoint-url "${endpoint}" --cache-control "no-cache"
 
       - name: Keep latest five versioned releases in R2
@@ -665,7 +682,7 @@ jobs:
   notify-qq:
     name: QQ Notify
     needs: [publish]
-    if: ${{ inputs.notify }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.notify }}
     runs-on: ubuntu-latest
     steps:
       - name: Build message
@@ -733,7 +750,7 @@ jobs:
   notify-feishu:
     name: Notify Feishu group
     needs: [publish]
-    if: ${{ inputs.notify }}
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.notify }}
     # Card sends after promotion so the title reflects the formal release.
     runs-on: ubuntu-latest
     steps:

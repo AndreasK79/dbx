@@ -854,6 +854,7 @@ export default withEnglishFallback({
     workbenchUnavailableFallback: "プラグインワークベンチは利用できません",
     pluginIncompatible: "プラグインに互換性がありません",
     loadingTitle: "{title} を読み込み中",
+    compatibilityErrors: "互換性チェックに失敗しました",
   },
   auth: {
     rateLimited: "{seconds} 秒後に再試行してください",
@@ -2125,6 +2126,7 @@ export default withEnglishFallback({
     mqttSearchPayloadPlaceholder: "メッセージのペイロードを検索...",
     mqttNoMatchingMessages: "このペイロードフィルターに一致する読み込み済みメッセージはありません",
     mqttNoSavedSubscriptions: "保存された購読はありません。「購読を新規作成」をクリックしてください。",
+    mqttTopicAlias: "別名（任意）",
     mqttTopicFilter: "Topic Filter",
     mqttTopicFilterPlaceholder: "例: device/+/status",
     mqttTopicFilterHint: "単一レベルの + と複数レベルの # ワイルドカードに対応しています。",
