@@ -556,7 +556,7 @@ const COPY_RESULT_COLUMN_ACTIONS: ShortcutActionId[] = ["copyResultColumn1", "co
 
 /** The 1-based result column the event's copy-result-column shortcut targets, or null. */
 export function copyResultColumnIndexFromShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): number | null {
-  const normalized = normalizeShortcutSettings(shortcuts);
+  const normalized = readNormalizedShortcutSettings(shortcuts);
   const index = COPY_RESULT_COLUMN_ACTIONS.findIndex((actionId) => matchesShortcut(event, normalized[actionId]));
   return index >= 0 ? index + 1 : null;
 }
