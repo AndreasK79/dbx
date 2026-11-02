@@ -10682,6 +10682,53 @@ fn postgres_trigger_definitions_sql_without_tgparentid() -> &'static str {
      ORDER BY t.tgname, t.oid"
 }
 
+/// Schema-level trigger listing for object-list requests that explicitly ask
+/// for TRIGGER (the double-Shift object search). The PostgreSQL sidebar never
+/// lists triggers (they surface per table in the structure editor), so this
+/// scans pg_trigger directly instead of riding the relation/routine branches.
+/// tgisinternal hides constraint-implementation triggers; tgparentid
+/// (partition clones, PostgreSQL 13+) is deliberately not filtered — the
+/// column is missing on older servers and Gauss-family forks, and same-named
+/// clones collapse into one search item anyway.
+fn postgres_trigger_objects_sql() -> &'static str {
+    "SELECT t.tgname, c.relname \
+     FROM pg_catalog.pg_trigger t \
+     JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND NOT t.tgisinternal \
+     ORDER BY t.tgname"
+}
+
+pub async fn list_trigger_objects(pool: &Pool, schema: &str) -> Result<Vec<ObjectInfo>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let client = &EncodingClient::new(&client);
+    let rows = postgres_query_cached(client, postgres_trigger_objects_sql(), &[&schema])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .iter()
+        .map(|row| ObjectInfo {
+            name: pg_row_try_string(row, 0),
+            object_type: "TRIGGER".to_string(),
+            schema: Some(schema.to_string()),
+            valid: None,
+            signature: None,
+            custom_type_kind: None,
+            has_members: None,
+            comment: None,
+            created_at: None,
+            updated_at: None,
+            // The parent of a trigger is its table; kept alongside the name so
+            // callers can show "on <table>" without a second catalog round-trip.
+            parent_schema: Some(schema.to_string()),
+            parent_name: Some(pg_row_try_string(row, 1)).filter(|name| !name.is_empty()),
+            trigger: None,
+            xugu_type_members_expandable: None,
+        })
+        .collect())
+}
+
 fn postgres_functions_sql(has_proc_prokind: bool) -> &'static str {
     if has_proc_prokind {
         return "SELECT p.proname, \
@@ -13138,6 +13185,7 @@ mod tests {
                 prefer_text,
                 None,
                 unnamed,
+                None,
             )
             .await
             .expect("fetch rows");
@@ -13150,7 +13198,7 @@ mod tests {
             );
 
             for sql in ["FETCH ALL FROM c1", "FETCH ALL FROM c2"] {
-                let empty = execute_query_with_max_rows_inner(&client, sql, Some(100), prefer_text, None, unnamed)
+                let empty = execute_query_with_max_rows_inner(&client, sql, Some(100), prefer_text, None, unnamed, None)
                     .await
                     .expect("fetch empty cursor");
                 assert!(!empty.columns.is_empty(), "empty FETCH must retain column metadata: {sql}");
@@ -17277,6 +17325,19 @@ mod tests {
         let sql = postgres_trigger_has_tgparentid_sql();
         assert!(sql.contains("pg_catalog.pg_trigger"));
         assert!(sql.contains("attname = 'tgparentid'"));
+    }
+
+    #[test]
+    fn postgres_trigger_objects_sql_lists_schema_triggers_with_parent_table() {
+        let sql = postgres_trigger_objects_sql();
+        assert!(sql.contains("SELECT t.tgname, c.relname"));
+        assert!(sql.contains("pg_catalog.pg_trigger t"));
+        assert!(sql.contains("JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid"));
+        assert!(sql.contains("WHERE n.nspname = $1 AND NOT t.tgisinternal"));
+        // Old servers and Gauss-family forks lack tgparentid; the listing must
+        // not reference it (same contract as the without-tgparentid DDL query).
+        assert!(!sql.contains("tgparentid"));
+        assert!(sql.contains("ORDER BY t.tgname"));
     }
 
     #[test]

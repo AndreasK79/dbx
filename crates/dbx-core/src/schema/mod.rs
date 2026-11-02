@@ -3442,8 +3442,8 @@ mod tests {
     use super::{list_databases_core, list_tables_core};
     use super::{
         object_types_include_custom_types, object_types_include_relations, object_types_include_routines,
-        object_types_include_sequences, object_types_only_custom_types, supports_custom_type_details,
-        supports_pg_custom_type_objects, with_agent_pg_sequence_objects,
+        object_types_include_sequences, object_types_include_triggers, object_types_only_custom_types,
+        supports_custom_type_details, supports_pg_custom_type_objects, with_agent_pg_sequence_objects,
     };
 
     use crate::connection::{AppState, PoolKind};
@@ -3794,6 +3794,17 @@ mod tests {
         assert!(object_types_include_sequences(Some(&["TABLE".to_string(), "SEQUENCE".to_string()])));
         assert!(!object_types_include_sequences(Some(&["TABLE".to_string()])));
         assert!(!object_types_include_sequences(Some(&[])));
+    }
+
+    #[test]
+    fn object_types_include_triggers_only_for_explicit_trigger_requests() {
+        // `None` is the sidebar's full object list — the PostgreSQL-family
+        // sidebar must not start receiving trigger rows.
+        assert!(!object_types_include_triggers(None));
+        assert!(!object_types_include_triggers(Some(&[])));
+        assert!(!object_types_include_triggers(Some(&["TABLE".to_string(), "VIEW".to_string()])));
+        assert!(object_types_include_triggers(Some(&["TABLE".to_string(), "TRIGGER".to_string()])));
+        assert!(object_types_include_triggers(Some(&["trigger".to_string()])));
     }
 
     #[test]
@@ -8551,6 +8562,18 @@ async fn list_objects_once(
                         .await?,
                 );
             }
+            // Explicit TRIGGER requests add the pg_trigger scan; a failure only
+            // drops triggers from the list (same degrade as the OceanBase MySQL
+            // trigger/event supplement), never the relations and routines the
+            // sidebar depends on.
+            if object_types_include_triggers(object_types) {
+                match db::postgres::list_trigger_objects(p, schema).await {
+                    Ok(triggers) => objects.extend(triggers),
+                    Err(error) => log::warn!(
+                        "Skipping triggers for schema `{schema}` of database `{database}` in object list: {error}"
+                    ),
+                }
+            }
             Ok(unpaged_object_list(objects))
         }
         _ => Ok(unpaged_object_list(
@@ -11191,6 +11214,15 @@ fn object_types_include_packages(object_types: Option<&[String]>) -> (bool, bool
             types.iter().any(|value| value.eq_ignore_ascii_case("PACKAGE_BODY")),
         ),
     }
+}
+
+/// Triggers are explicit-request-only. Unlike the branches above, `None`
+/// (the sidebar's full object list) must NOT select the trigger scan: the
+/// PostgreSQL-family sidebar never lists triggers — they surface per table
+/// in the structure editor — so only a caller that names TRIGGER (the
+/// double-Shift object search) gets them.
+fn object_types_include_triggers(object_types: Option<&[String]>) -> bool {
+    object_types.is_some_and(|types| types.iter().any(|value| value.eq_ignore_ascii_case("TRIGGER")))
 }
 
 /// Whether the object-type filter exclusively asks for user-defined types.

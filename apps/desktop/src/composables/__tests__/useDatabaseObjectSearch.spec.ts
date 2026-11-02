@@ -146,11 +146,29 @@ describe("useDatabaseObjectSearch", () => {
     await search.loadActiveDatabase();
 
     expect(api.listSchemas).toHaveBeenCalledWith("c2", "pgdb");
-    const kinds = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION"];
+    // PostgreSQL sidebar kinds plus the search's TRIGGER opt-in (the sidebar
+    // itself never lists pg triggers).
+    const kinds = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER"];
     expect(api.listObjects).toHaveBeenCalledTimes(2);
     expect(api.listObjects).toHaveBeenCalledWith("c2", "pgdb", "public", kinds, undefined, undefined, undefined, undefined);
     expect(api.listObjects).toHaveBeenCalledWith("c2", "pgdb", "analytics", kinds, undefined, undefined, undefined, undefined);
     expect(search.filteredItems.value.map((item) => item.label)).toEqual(["users", "orders"]);
+  });
+
+  it("asks for triggers beyond the sidebar kinds on postgres and lists them", async () => {
+    getConfig.mockReturnValue({ id: "c2", db_type: "postgres", database: "pgdb" });
+    mockStores("c2", [{ id: "t2", connectionId: "c2", database: "pgdb", schema: "public" }], "t2");
+    vi.mocked(api.listObjects).mockResolvedValue([
+      { name: "users", object_type: "TABLE", schema: "public" },
+      { name: "users_guard", object_type: "TRIGGER", schema: "public" },
+    ]);
+
+    const search = useDatabaseObjectSearch();
+    await search.loadActiveDatabase();
+
+    expect(api.listObjects).toHaveBeenCalledWith("c2", "pgdb", "public", ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER"], undefined, undefined, undefined, undefined);
+    expect(search.availableKinds.value).toContain("trigger");
+    expect(search.filteredItems.value.map((item) => [item.type, item.label])).toContainEqual(["trigger", "users_guard"]);
   });
 
   it("keeps the objects of schemas that load when a sibling schema fails", async () => {

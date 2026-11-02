@@ -1,5 +1,5 @@
 import { computed, ref, watch } from "vue";
-import type { ObjectInfo } from "@/types/database";
+import type { DatabaseType, ObjectInfo } from "@/types/database";
 import { connectionObjectTreeQuerySchema, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { filterSchemaNamesForConnection } from "@/lib/database/visibleDatabases";
 import { normalizeSidebarObjectKind, sidebarObjectKindsForDatabase, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
@@ -10,6 +10,14 @@ import * as api from "@/lib/backend/api";
 
 /** Object kinds the double-Shift database search lists (subset of the sidebar's kinds). */
 const SEARCH_OBJECT_KINDS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER"];
+/**
+ * Databases whose sidebar object kinds omit TRIGGER (PostgreSQL surfaces
+ * triggers per table in the structure editor, not as schema siblings) while
+ * the backend can still list them schema-wide on an explicit TRIGGER request.
+ * MySQL, the Oracle family, Kingbase, and Firebird already carry TRIGGER in
+ * their sidebar kinds, so they don't need the opt-in.
+ */
+const SEARCH_EXTRA_TRIGGER_DATABASES = new Set<DatabaseType>(["postgres"]);
 /** Rendered result cap, matching quick-open's QUICK_OPEN_MAX_RESULTS. */
 export const OBJECT_SEARCH_MAX_RESULTS = 200;
 /** Bound on objects kept in memory for one database (rendering is capped above regardless). */
@@ -134,9 +142,14 @@ export function useDatabaseObjectSearch() {
     if (!nextScope) return;
 
     const config = connectionStore.getConfig(nextScope.connectionId);
+    const databaseType = effectiveDatabaseTypeForConnection(config);
     // Compatibility mode only toggles PACKAGE kinds, which the search never
     // lists, so the unscoped sidebar kinds already cover every search type.
-    const supportedKinds = sidebarObjectKindsForDatabase(effectiveDatabaseTypeForConnection(config)).filter((kind) => SEARCH_OBJECT_KINDS.includes(kind));
+    const sidebarKinds = sidebarObjectKindsForDatabase(databaseType).filter((kind) => SEARCH_OBJECT_KINDS.includes(kind));
+    // Trigger opt-in for databases that keep TRIGGER out of their sidebar
+    // kinds: the request names it explicitly and the backend runs the
+    // pg_trigger scan only for requests that do.
+    const supportedKinds: SidebarObjectKind[] = sidebarKinds.length > 0 && databaseType != null && SEARCH_EXTRA_TRIGGER_DATABASES.has(databaseType) && !sidebarKinds.includes("TRIGGER") ? [...sidebarKinds, "TRIGGER"] : sidebarKinds;
     const objectTypes = supportedKinds.length > 0 ? supportedKinds : (["TABLE", "VIEW"] as SidebarObjectKind[]);
     const kinds = (supportedKinds.length > 0 ? supportedKinds : (["TABLE", "VIEW"] as SidebarObjectKind[])).map((kind) => KIND_TO_ITEM_TYPE[kind]).filter((type): type is DatabaseObjectSearchItemType => !!type);
     availableKinds.value = kinds;
