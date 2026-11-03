@@ -19,10 +19,6 @@ shortcutRegistry.ts, EditorSettingsDialog.vue
 Settings → Snippets → Import reads VS Code snippets JSON (.json / .code-snippets): parses prefix/body pairs, auto-renames on prefix collisions, size-caps the file, and merges into the snippet draft without touching saved settings until Apply.
 vscodeSnippetsImport.ts, EditorSettingsDialog.vue
 
-3. Bulk snippet delete
-Checkbox column + select-all in the snippets list, with a confirm dialog for deleting multiple selected snippets at once.
-EditorSettingsDialog.vue
-
 4. DBeaver-style FK drill-through
 FK cells in any result grid get a hover arrow icon plus a context-menu entry that jumps to the referenced parent row (orders.useruid → the matching users row). Opens in the same pane (reuses the tab on table tabs, runs the lookup in-place on query tabs without clobbering the editor SQL); forward FKs only, works on JOIN results via strict per-source FK resolution. Two backend fixes came with it: unqualified postgres sources now default the FK lookup's schema to public (an empty schema matched nothing, so query-tab results resolved zero FKs), and the drill-through SELECT no longer injects large-value preview marker columns, which had shown up as ghost columns on query tabs.
 dataGridForeignKeyNavigation.ts, useDataGridSourceForeignKeys.ts, useNavigationTargets.ts, DataGrid.vue, ContentArea.vue, postgres.rs (list_foreign_keys)
@@ -52,10 +48,6 @@ Removed — upstream now ships its own (header-cell sort button; note theirs col
 
 11. Dark-mode native dropdown fix
 Removed — upstream now styles native select popups for dark mode (color-scheme on :root/.dark plus option styling with popover tokens).
-
-12. Snippet filter in Settings
-Filter box above the snippets list: narrows by label, prefix, or SQL body (case-insensitive) with a live "Showing X of Y" count, a clear button, and a no-match row. The header select-all follows the filter (selects exactly the visible rows); hidden rows keep their selection.
-EditorSettingsDialog.vue
 
 13. VS Code-style Ctrl+D word/occurrence selection in the SQL editor
 First press selects the word at the caret, each further press adds the next occurrence as another cursor+selection, and the multi-selections copy/paste normally. The occurrence commands already existed on IntelliJ-style keys (Alt+J / Ctrl+G); the default is now Ctrl+D. "Duplicate line" (the same command as Copy line down) is unbound by default and still assignable; saved shortcuts migrate to the new pairing automatically.
@@ -159,10 +151,6 @@ types.rs, postgres.rs, query/mod.rs, src-tauri/commands/query.rs, dbx-web/routes
 38. Query/edit errors can no longer finish silently
 (1) A run that ends with an error lands where the error is visible — result grid for single statements, execution summary for multi-statement — instead of staying on whatever view was active; skipped when the user redirected the view mid-run or the run was cancelled. (2) The first statement error of a running batch flips to Summary immediately. (3) The Summary button carries a red error-row count badge. (4) A run that errors in a background tab sets a red dot on the tab plus a one-shot toast with an open-tab action. (5) A save that affects 0 rows (trigger RETURN NULL, ON CONFLICT DO NOTHING) warns instead of silently clearing pending changes, and save errors persist until the next save or an explicit discard — never wiped by the next keystroke. Cancelled runs stay quiet everywhere.
 database.ts, queryStore.ts, useSqlExecution.ts, QueryResultViewSwitcher.vue, ContentArea.vue, TabExecutionStatus.vue, useDataGridEditor.ts, DataGrid.vue, ErrorBanner.vue, openTabsPersistence.ts, en.ts, zh-CN.ts; tests: __tests__/queryStore.errorVisibility.spec.ts, useSqlExecution.spec.ts, QueryResultViewSwitcher.spec.ts, TabExecutionStatus.spec.ts, useDataGridEditor.spec.ts, ErrorBanner.spec.ts
-
-39. Shift-click range selection for the snippets checkboxes
-Shift-clicking a second checkbox applies the clicked box's new state to every row in between (over the filtered rows; the anchor is the last plain-clicked row and survives filter changes). A shift-click with no usable anchor falls back to a plain toggle. Implementation rides the native toggle completely — nothing is preventDefault'ed, because canceling checkbox clicks is unreliable on WebView2; the range logic is a pure helper in lib/sql.
-snippetRangeSelection.ts, EditorSettingsDialog.vue; tests: __tests__/snippetRangeSelection.spec.ts, EditorSettingsDialog.snippetsBulkDelete.spec.ts
 
 40. MySQL reserved-word columns complete backticked — UPSTREAMED (merged upstream as 614463d71 in v0.6.56)
 The fork no longer carries a delta on these files. Upstream's review dropped `trigger` and `while` from the lists — both are legal unquoted column identifiers in MySQL 8.4 — so those two now complete unquoted; everything else behaves as shipped.
