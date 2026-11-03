@@ -116,6 +116,13 @@ profiles:
     port: 1433
     user: sa
     category: sql
+  - id: odbc
+    dbType: odbc
+    label: ODBC
+    icon: odbc
+    port: 0
+    user: ""
+    category: sql
   - id: oracle
     dbType: oracle
     label: Oracle

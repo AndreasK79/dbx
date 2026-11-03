@@ -71,6 +71,11 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   // table and view
   ["sqlite", TABLE_VIEW_OBJECTS],
   ["rqlite", TABLE_VIEW_OBJECTS],
+  // Generic ODBC: SQLTables covers tables/views; procedures, triggers, and
+  // events come from engine-specific catalog probes (SQL Anywhere SYS views
+  // first, ASE sysobjects fallbacks) that degrade to an empty group on other
+  // engines.
+  ["odbc", ["TABLE", "VIEW", "PROCEDURE", "TRIGGER", "EVENT"]],
   ["turso", TABLE_VIEW_OBJECTS],
   ["cloudflare-d1", TABLE_VIEW_OBJECTS],
   ["duckdb", TABLE_VIEW_OBJECTS],

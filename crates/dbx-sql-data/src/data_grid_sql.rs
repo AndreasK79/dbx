@@ -1198,6 +1198,7 @@ pub fn build_data_grid_column_distinct_values_sql(options: DataGridColumnDistinc
             format!("SELECT {select_list}{from_clause}")
         }
         TablePaginationStrategy::SqlServerTop => format!("SELECT TOP ({limit}) {select_list}{from_clause}"),
+        TablePaginationStrategy::OdbcTop => format!("SELECT TOP {limit} {select_list}{from_clause}"),
         TablePaginationStrategy::IrisTop => format!("SELECT TOP {limit} {select_list}{from_clause}"),
         TablePaginationStrategy::InformixFirst => format!("SELECT FIRST {limit} {select_list}{from_clause}"),
         TablePaginationStrategy::FirebirdRows => {

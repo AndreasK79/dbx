@@ -2166,6 +2166,11 @@ async fn test_connection_with_info_impl(
                         Err(err) => Err(err),
                     }
                 }
+                DatabaseType::Odbc => {
+                    let client = db::odbc_driver::connect_from_config(&config, connect_timeout)?;
+                    db::odbc_driver::test_connection(&client, connect_timeout).await?;
+                    Ok("Connection successful".to_string())
+                }
                 db_type => Err(format!("Unsupported database type: {db_type:?}")),
             },
         };
@@ -2680,6 +2685,11 @@ async fn connect_db_inner(
             DatabaseType::Jdbc => {
                 let jdbc_config = jdbc_command_config_for_endpoint(&db_config, &host, port)?;
                 state.external_driver_pool("jdbc", &jdbc_config).await?
+            }
+            DatabaseType::Odbc => {
+                let client = db::odbc_driver::connect_from_config(&db_config, connect_timeout)?;
+                db::odbc_driver::test_connection(&client, connect_timeout).await?;
+                PoolKind::Odbc(client)
             }
             #[cfg(feature = "mq-admin")]
             DatabaseType::Mqtt => {

@@ -1287,6 +1287,13 @@ fn build_data_compare_select_sql(
                 "WITH {page_alias} AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY {order_expression}) AS {row_number_alias} FROM {table}) SELECT {select_columns} FROM {page_alias} WHERE {row_number_alias} > {offset} AND {row_number_alias} <= {end} ORDER BY {row_number_alias}"
             )
         }
+        TablePaginationStrategy::OdbcTop => {
+            // SQL Anywhere: `TOP n START AT m` (bare TOP, no parentheses —
+            // pre-2005-style Sybase drivers reject `TOP (n)`); ASE lacks
+            // START AT and only ever fails on later pages.
+            let start_at = if offset > 0 { format!(" START AT {}", offset + 1) } else { String::new() };
+            format!("SELECT TOP {row_limit}{start_at} {select_columns} FROM {table}{order_by}")
+        }
         TablePaginationStrategy::IrisTop => {
             build_iris_table_select_sql(&select_columns, &table, "", &order_by, row_limit, offset as u64)
         }
@@ -1810,6 +1817,10 @@ fn build_limited_sampling_select_sql(
         TablePaginationStrategy::SqlServerTop => {
             let order = order_by.map(|order_by| format!(" ORDER BY {order_by}")).unwrap_or_default();
             format!("SELECT TOP ({row_limit}) {select_columns} FROM {table}{order}")
+        }
+        TablePaginationStrategy::OdbcTop => {
+            let order = order_by.map(|order_by| format!(" ORDER BY {order_by}")).unwrap_or_default();
+            format!("SELECT TOP {row_limit} {select_columns} FROM {table}{order}")
         }
         TablePaginationStrategy::InformixFirst => {
             let order = order_by.map(|order_by| format!(" ORDER BY {order_by}")).unwrap_or_default();

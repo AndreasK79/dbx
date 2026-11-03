@@ -114,6 +114,14 @@ describe("databaseObjectCapabilities", () => {
     expect(sidebarObjectKindsForDatabase("jdbc")).toEqual(["TABLE", "VIEW", "PROCEDURE", "FUNCTION"]);
   });
 
+  it("exposes procedure, trigger, and event groups for ODBC catalog probes", () => {
+    // Procedures/triggers/events come from engine-specific probes (SQL
+    // Anywhere SYS views first, ASE sysobjects fallbacks) that degrade to an
+    // empty group elsewhere; see crates/dbx-drivers/src/db/odbc_driver.rs.
+    expect(sidebarObjectKindsForDatabase("odbc")).toEqual(["TABLE", "VIEW", "PROCEDURE", "TRIGGER", "EVENT"]);
+    expect(databaseObjectCapabilities("odbc").sourceReadable).toEqual(["VIEW", "PROCEDURE", "TRIGGER", "EVENT"]);
+  });
+
   it("normalizes space separated materialized view types", () => {
     expect(normalizeSidebarObjectKind("MATERIALIZED VIEW")).toBe("MATERIALIZED_VIEW");
   });

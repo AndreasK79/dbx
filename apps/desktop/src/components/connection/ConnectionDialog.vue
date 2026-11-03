@@ -7677,7 +7677,7 @@ function openExternalUrl(url: string) {
 
             <TabsContent value="connection" class="m-0 flex min-h-0 flex-1 flex-col overflow-hidden">
               <div class="connection-form-body grid min-h-0 flex-1 scroll-pb-6 gap-4 overflow-y-auto pt-4 pr-2 pb-6" :class="{ 'connection-form-body--nacos': form.db_type === 'nacos' }">
-                <div v-if="!isPluginConnection && !isJdbcConnection && form.db_type !== 'nacos' && form.db_type !== 'consul' && form.db_type !== 'mq' && form.db_type !== 'salesforce'" class="grid grid-cols-4 items-center gap-4">
+                <div v-if="!isPluginConnection && !isJdbcConnection && form.db_type !== 'nacos' && form.db_type !== 'consul' && form.db_type !== 'mq' && form.db_type !== 'salesforce' && form.db_type !== 'odbc'" class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelClass">{{ t("connection.connectionUrlOptional") }}</Label>
                   <div class="col-span-3 flex items-center gap-1">
                     <Input v-model="connectionUrlInput" class="flex-1" :placeholder="connectionUrlPlaceholder" @keydown.enter.prevent="applyConnectionUrl" />
@@ -9547,10 +9547,24 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelClass">{{ t("connection.host") }}</Label>
                       <Input v-model="meilisearchHostInput" class="col-span-3" :placeholder="connectionUrlPlaceholder" @input="resetTestState" />
                     </div>
-                    <div v-else-if="form.db_type !== 'oracle' || form.oracle_connection_type !== 'tns'" class="grid grid-cols-4 items-center gap-4">
+                    <div v-else-if="(form.db_type !== 'oracle' || form.oracle_connection_type !== 'tns') && form.db_type !== 'odbc'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ form.db_type === "elasticsearch" && elasticsearchConnectionMode === "kibana" ? t("connection.elasticsearchKibanaHost") : t("connection.host") }}</Label>
                       <Input v-model="form.host" class="col-span-2" @blur="handleHostBlur" @paste="handleHostPaste" />
                       <Input v-model.number="form.port" type="number" class="col-span-1" @input="markSqlServerPortExplicit" />
+                    </div>
+
+                    <!-- ODBC: raw connection string instead of host/port -->
+                    <div v-if="form.db_type === 'odbc'" class="grid grid-cols-4 items-start gap-4">
+                      <Label :class="connectionLabelTopClass">{{ t("connection.odbcConnectionString") }}</Label>
+                      <div class="col-span-3 space-y-1">
+                        <textarea
+                          v-model="form.connection_string"
+                          rows="3"
+                          class="flex min-h-16 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          :placeholder="t('connection.odbcConnectionStringPlaceholder')"
+                        />
+                        <p class="text-xs leading-5 text-muted-foreground">{{ t("connection.odbcConnectionStringHint") }}</p>
+                      </div>
                     </div>
 
                     <div v-if="isDamengCustomDriver" class="grid grid-cols-4 items-center gap-4">
@@ -9616,7 +9630,7 @@ function openExternalUrl(url: string) {
 
                     <SavePasswordCheckbox v-if="form.db_type !== 'spanner'" v-model="form.save_password" />
 
-                    <div v-if="form.db_type !== 'hbase' && form.db_type !== 'meilisearch' && form.db_type !== 'solr' && form.db_type !== 'spanner'" class="grid grid-cols-4 items-center gap-4">
+                    <div v-if="form.db_type !== 'hbase' && form.db_type !== 'meilisearch' && form.db_type !== 'solr' && form.db_type !== 'spanner' && form.db_type !== 'odbc'" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ databaseLabel }}</Label>
                       <Input v-model="form.database" class="col-span-3" :placeholder="databasePlaceholder" />
                     </div>

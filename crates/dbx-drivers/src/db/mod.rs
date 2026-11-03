@@ -28,6 +28,7 @@ pub use dbx_driver_mysql::manticoresearch;
 pub mod meilisearch_driver;
 pub use dbx_driver_mongodb::mongo_driver;
 pub use dbx_driver_mysql::{mysql, mysql_compatible, ob_oracle, oceanbase_mysql};
+pub mod odbc_driver;
 pub mod opentenbase;
 pub use dbx_driver_postgres as postgres;
 pub mod proxy_tunnel;

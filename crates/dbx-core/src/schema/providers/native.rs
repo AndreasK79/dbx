@@ -19,6 +19,7 @@ pub(in crate::schema) async fn list_databases(
         PoolKind::Postgres(p) => db::postgres::list_databases(p).await,
         PoolKind::Sqlite(p) => db::sqlite::list_databases(p).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::list_databases(client).await,
+        PoolKind::Odbc(client) => db::odbc_driver::list_databases(client).await,
         PoolKind::HBase(client) => db::hbase_driver::list_namespaces(client).await,
         PoolKind::Turso(client) => db::turso_driver::list_databases(client).await,
         _ => Ok(vec![]),
@@ -29,6 +30,7 @@ pub(in crate::schema) async fn list_schemas(pool: &PoolKind) -> Result<Vec<Strin
     match pool {
         PoolKind::Mysql(p, mode) if *mode == MysqlMode::OceanBaseOracle => db::ob_oracle::list_schemas(p).await,
         PoolKind::Postgres(p) => db::postgres::list_schemas(p).await,
+        PoolKind::Odbc(client) => db::odbc_driver::list_schemas(client).await,
         _ => Ok(vec![]),
     }
 }
@@ -60,6 +62,7 @@ pub(in crate::schema) async fn list_tables(
         PoolKind::Postgres(p) => db::postgres::list_tables(p, schema).await,
         PoolKind::Sqlite(p) => db::sqlite::list_tables(p, schema).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::list_tables(client, schema).await,
+        PoolKind::Odbc(client) => db::odbc_driver::list_tables(client, schema).await,
         PoolKind::Turso(client) => db::turso_driver::list_tables(client, schema).await,
         PoolKind::MongoDb(client) => db::mongo_driver::list_collections(client, database)
             .await
@@ -167,6 +170,7 @@ pub(in crate::schema) async fn get_columns(
         PoolKind::Postgres(p) => db::postgres::get_columns(p, schema, table).await,
         PoolKind::Sqlite(p) => db::sqlite::get_columns(p, schema, table).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::get_columns(client, schema, table).await,
+        PoolKind::Odbc(client) => db::odbc_driver::get_columns(client, schema, table).await,
         PoolKind::Turso(client) => db::turso_driver::get_columns(client, schema, table).await,
         PoolKind::Elasticsearch(client) => db::elasticsearch_driver::get_columns(client, table).await,
         PoolKind::Easysearch(client) => db::easysearch_driver::get_columns(client, table).await,
@@ -228,6 +232,7 @@ pub(in crate::schema) async fn list_foreign_keys(
         PoolKind::Postgres(p) => db::postgres::list_foreign_keys(p, schema, table).await,
         PoolKind::Sqlite(p) => db::sqlite::list_foreign_keys(p, schema, table).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::list_foreign_keys(client, schema, table).await,
+        PoolKind::Odbc(client) => db::odbc_driver::list_foreign_keys(client, schema, table).await,
         PoolKind::Turso(client) => db::turso_driver::list_foreign_keys(client, schema, table).await,
         _ => Ok(vec![]),
     }
@@ -280,6 +285,7 @@ pub(in crate::schema) async fn table_ddl(
         PoolKind::Postgres(p) => super::super::pg_ddl(p, schema, table).await,
         PoolKind::Sqlite(p) => super::super::sqlite_ddl(p, schema, table).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::table_ddl(client, table).await,
+        PoolKind::Odbc(client) => db::odbc_driver::table_ddl(client, table).await,
         PoolKind::Turso(client) => db::turso_driver::table_ddl(client, table).await,
         _ => Err("DDL not supported for this database type".to_string()),
     }
@@ -316,6 +322,9 @@ pub(in crate::schema) async fn object_source(
         }
         PoolKind::Rqlite(client) => {
             db::rqlite_driver::object_source(client, name, object_type).await.map(|source| Some(source.source))
+        }
+        PoolKind::Odbc(client) => {
+            db::odbc_driver::object_source(client, name, object_type).await.map(|source| Some(source.source))
         }
         PoolKind::Turso(client) => {
             db::turso_driver::object_source(client, name, object_type).await.map(|source| Some(source.source))

@@ -77,6 +77,10 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security"] }
+# Native ODBC driver (Sybase ASE etc.); Windows ships odbc32.dll with the OS.
+# Default features off: `prompt` would pull in winit just for the GUI DSN
+# dialog, which the desktop app never uses.
+odbc-api = { version = "25", default-features = false, features = ["odbc_version_3_80"] }
 
 [dev-dependencies]
 axum = "0.8"

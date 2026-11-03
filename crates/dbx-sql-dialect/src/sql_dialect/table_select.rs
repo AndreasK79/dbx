@@ -534,6 +534,17 @@ pub fn build_table_data_select_sql_with_database(
             limit,
             options.offset.unwrap_or(0),
         ),
+        TablePaginationStrategy::OdbcTop => {
+            // SQL Anywhere pagination: `TOP n START AT m`. `TOP` bare (no
+            // parentheses) so pre-2005-style Sybase drivers parse page one
+            // too; drivers without START AT fail only on later pages.
+            let start_at = options
+                .offset
+                .filter(|offset| *offset > 0)
+                .map(|offset| format!(" START AT {}", offset + 1))
+                .unwrap_or_default();
+            format!("SELECT TOP {limit}{start_at} {select_columns} FROM {table_alias}{where_clause}{order}")
+        }
         TablePaginationStrategy::AgentMaxRows => {
             format!("SELECT {select_columns} FROM {table_alias}{where_clause}{order};")
         }
@@ -782,6 +793,9 @@ pub fn build_table_select_sql(options: TableSelectSqlOptions<'_>) -> String {
         }
         TablePaginationStrategy::SqlServerTop => {
             format!("SELECT TOP ({limit}) {select_columns} FROM {table}{order_by}")
+        }
+        TablePaginationStrategy::OdbcTop => {
+            format!("SELECT TOP {limit} {select_columns} FROM {table}{order_by}")
         }
         TablePaginationStrategy::AgentMaxRows => format!("SELECT {select_columns} FROM {table}{order_by};"),
         TablePaginationStrategy::Unbounded => format!("SELECT {select_columns} FROM {table}{order_by}"),

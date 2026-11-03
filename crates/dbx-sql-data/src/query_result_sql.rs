@@ -386,6 +386,11 @@ pub fn build_paginated_query_sql(options: PaginatedQuerySqlOptions) -> QuerySqlB
             .unwrap_or_else(|| err("unsupported")),
         TablePaginationStrategy::QuestDbLimit => ok(add_questdb_limit(&statement, safe_limit, safe_offset)),
         TablePaginationStrategy::InformixFirst => ok(add_informix_first_limit(&statement, safe_limit, safe_offset)),
+        // Generic ODBC: bare `TOP n` (no parentheses) is the row-limit form
+        // both Sybase families (ASE and SQL Anywhere) share with SQL Server;
+        // `LIMIT` is a syntax error on them. `START AT m` covers the offset on
+        // SQL Anywhere; drivers without it fail only on later pages.
+        TablePaginationStrategy::OdbcTop => ok(add_odbc_top_limit(&statement, safe_limit, safe_offset)),
         TablePaginationStrategy::FirebirdRows => ok(add_firebird_rows_limit(&statement, safe_limit, safe_offset)),
         TablePaginationStrategy::Db2FetchFirst | TablePaginationStrategy::FetchFirst => {
             ok(add_fetch_first_limit(&statement, safe_limit, safe_offset))
@@ -1939,6 +1944,31 @@ fn add_informix_first_limit(statement: &str, limit: usize, offset: usize) -> Str
         }
         if let Some((leading, after_modifier)) = strip_sql_server_select_modifier(rest, "UNIQUE") {
             return format!("SELECT{leading}UNIQUE {row_limit}{after_modifier};");
+        }
+        if let Some((leading, after_modifier)) = strip_sql_server_select_modifier(rest, "ALL") {
+            return format!("SELECT{leading}ALL {row_limit}{after_modifier};");
+        }
+        return format!("SELECT {row_limit}{rest};");
+    }
+    format!("SELECT {row_limit} * FROM ({statement}) dbx_page;")
+}
+
+fn add_odbc_top_limit(statement: &str, limit: usize, offset: usize) -> String {
+    if has_top_level_select_top(statement) {
+        return format!("{statement};");
+    }
+    // SQL Anywhere pagination form: `TOP n START AT m`. TOP stays bare (no
+    // parentheses) so pre-2005-style Sybase drivers parse page one too;
+    // drivers without START AT fail only on later pages.
+    let row_limit = if offset > 0 {
+        format!("TOP {limit} START AT {}", offset + 1)
+    } else {
+        format!("TOP {limit}")
+    };
+    if statement.len() >= 6 && statement[..6].eq_ignore_ascii_case("SELECT") {
+        let rest = &statement[6..];
+        if let Some((leading, after_modifier)) = strip_sql_server_select_modifier(rest, "DISTINCT") {
+            return format!("SELECT{leading}DISTINCT {row_limit}{after_modifier};");
         }
         if let Some((leading, after_modifier)) = strip_sql_server_select_modifier(rest, "ALL") {
             return format!("SELECT{leading}ALL {row_limit}{after_modifier};");
@@ -5389,6 +5419,46 @@ WHERE u.id = picked.id;
         });
 
         assert_eq!(result.sql.unwrap(), "SELECT id FROM users WHERE active = 1 ORDER BY id ROWS 101 TO 150;");
+    }
+
+    #[test]
+    fn uses_top_start_at_pagination_for_odbc() {
+        // Page one stays on bare TOP — SQL Anywhere and ASE both parse it.
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT id FROM users WHERE active = 1".to_string(),
+            database_type: Some(DatabaseType::Odbc),
+            limit: 100,
+            offset: 0,
+        });
+        assert_eq!(result.sql.unwrap(), "SELECT TOP 100 id FROM users WHERE active = 1;");
+
+        // Later pages add SQL Anywhere's START AT (1-based).
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT id FROM users WHERE active = 1".to_string(),
+            database_type: Some(DatabaseType::Odbc),
+            limit: 50,
+            offset: 100,
+        });
+        assert_eq!(result.sql.unwrap(), "SELECT TOP 50 START AT 101 id FROM users WHERE active = 1;");
+    }
+
+    #[test]
+    fn odbc_pagination_keeps_existing_top_and_modifier_order() {
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT TOP 20 id FROM users".to_string(),
+            database_type: Some(DatabaseType::Odbc),
+            limit: 50,
+            offset: 0,
+        });
+        assert_eq!(result.sql.unwrap(), "SELECT TOP 20 id FROM users;");
+
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT DISTINCT name FROM users".to_string(),
+            database_type: Some(DatabaseType::Odbc),
+            limit: 50,
+            offset: 0,
+        });
+        assert_eq!(result.sql.unwrap(), "SELECT DISTINCT TOP 50 name FROM users;");
     }
 
     #[test]

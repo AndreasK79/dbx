@@ -77,7 +77,7 @@ fn probe_branch_sql(
     limit: usize,
 ) -> String {
     let limited_inner = match pagination_strategy(database_type, PaginationContext::BoundedRead) {
-        TablePaginationStrategy::SqlServerTop | TablePaginationStrategy::IrisTop => {
+        TablePaginationStrategy::SqlServerTop | TablePaginationStrategy::IrisTop | TablePaginationStrategy::OdbcTop => {
             format!("SELECT TOP {limit} 1 FROM {qualified_table} WHERE ({where_clause})")
         }
         TablePaginationStrategy::InformixFirst => {

@@ -2145,6 +2145,24 @@ async fn do_execute_typed(
             )
             .await
         }
+        PoolKind::Odbc(client) => {
+            let client = client.clone();
+            let max_rows = options.max_rows;
+            // ODBC execution runs in spawn_blocking, so dropping the awaited
+            // future alone would leave the single session occupied until the
+            // driver returns. Ask the driver for a best-effort SQLCancel so a
+            // cancelled query releases the session promptly.
+            if let Some(execution_id) = options.execution_id.as_deref() {
+                let cancel = client.cancel_interrupt();
+                state.running_queries.register_interrupt(execution_id, cancel);
+            }
+            wait_for_query_opt(
+                cancel_token,
+                query_timeout,
+                db::odbc_driver::execute_query_with_max_rows(&client, sql, max_rows),
+            )
+            .await
+        }
         PoolKind::Turso(client) => {
             let client = client.clone();
             let max_rows = options.max_rows;
@@ -5619,6 +5637,7 @@ fn pool_kind_has_transactional_path(pool: &PoolKind) -> bool {
         | PoolKind::DynamoDb(_)
         | PoolKind::Elasticsearch(_)
         | PoolKind::Easysearch(_)
+        | PoolKind::Odbc(_)
         | PoolKind::Solr(_)
         | PoolKind::CouchDb(_)
         | PoolKind::Meilisearch(_)
@@ -6023,6 +6042,7 @@ fn batch_transaction_path(pool: &PoolKind) -> BatchTransactionPath {
         | PoolKind::DynamoDb(_)
         | PoolKind::ClickHouse(_)
         | PoolKind::Rqlite(_)
+        | PoolKind::Odbc(_)
         | PoolKind::Turso(_)
         | PoolKind::CloudflareD1(_)
         | PoolKind::Elasticsearch(_)

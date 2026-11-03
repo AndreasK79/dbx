@@ -139,7 +139,9 @@ pub fn build_database_search_sql(options: DatabaseSearchSqlOptions) -> Option<Da
     let searchable_columns = conditions.searchable_columns;
 
     let sql = match pagination_strategy(options.database_type, PaginationContext::BoundedRead) {
-        TablePaginationStrategy::SqlServerTop => format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause})"),
+        TablePaginationStrategy::SqlServerTop | TablePaginationStrategy::OdbcTop => {
+            format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause})")
+        }
         TablePaginationStrategy::IrisTop => format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause})"),
         TablePaginationStrategy::InformixFirst => format!("SELECT FIRST {limit} * FROM {table} WHERE ({where_clause})"),
         TablePaginationStrategy::FirebirdRows => {

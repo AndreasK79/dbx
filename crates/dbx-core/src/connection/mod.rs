@@ -110,6 +110,7 @@ pub enum PoolKind {
     Postgres(deadpool_postgres::Pool),
     Sqlite(db::sqlite::SqliteHandle),
     Rqlite(db::rqlite_driver::RqliteClient),
+    Odbc(db::odbc_driver::OdbcClient),
     Turso(db::turso_driver::TursoClient),
     CloudflareD1(db::cloudflare_d1_driver::CloudflareD1Client),
     Redis(Arc<db::redis_driver::RedisConnection>),
@@ -3610,6 +3611,14 @@ impl AppState {
                 db::rqlite_driver::test_connection(&client, connect_timeout).await?;
                 PoolKind::Rqlite(client)
             }
+            DatabaseType::Odbc => {
+                // The connection string is the endpoint: either `DSN=...` or a
+                // driver-based string. Username/password from the form are
+                // appended as UID=/PWD= when the string does not carry them.
+                let client = db::odbc_driver::connect_from_config(&db_config, connect_timeout)?;
+                db::odbc_driver::test_connection(&client, connect_timeout).await?;
+                PoolKind::Odbc(client)
+            }
             DatabaseType::Turso => {
                 let auth_token = if !db_config.password.is_empty() {
                     db_config.password.clone()
@@ -5728,6 +5737,17 @@ impl AppState {
                         }
                     }
                 }
+                PoolKind::Odbc(client) => {
+                    let client = client.clone();
+                    let timeout = crate::db::connection_timeout();
+                    match db::odbc_driver::test_connection(&client, timeout).await {
+                        Ok(()) => false,
+                        Err(err) => {
+                            log::warn!("ODBC connection pool '{pool_key}' is stale: {err}");
+                            true
+                        }
+                    }
+                }
                 PoolKind::Turso(client) => {
                     let client = client.clone();
                     let timeout = crate::db::connection_timeout();
@@ -7159,6 +7179,13 @@ impl AppState {
                         false
                     }
                 },
+                PoolKind::Odbc(client) => match db::odbc_driver::health_check(client).await {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("ODBC connection pool '{key}' is unhealthy: {e}");
+                        false
+                    }
+                },
                 PoolKind::Turso(client) => match db::turso_driver::test_connection(client, timeout).await {
                     Ok(()) => true,
                     Err(e) => {
@@ -7826,6 +7853,9 @@ fn keepalive_target_from_pool(pool: &PoolKind, config: &ConnectionConfig) -> Opt
         PoolKind::Mysql(pool, _) => Some(KeepaliveTarget::Mysql(pool.clone())),
         PoolKind::Postgres(pool) => Some(KeepaliveTarget::Postgres(pool.clone())),
         PoolKind::Rqlite(client) => Some(KeepaliveTarget::Rqlite(client.clone())),
+        // ODBC pools are single sessions probed by the health sweep
+        // (is_dead); no idle keepalive pings.
+        PoolKind::Odbc(_) => None,
         PoolKind::Turso(client) => Some(KeepaliveTarget::Turso(client.clone())),
         PoolKind::MongoDb(client) => Some(KeepaliveTarget::MongoDb {
             client: client.clone(),
@@ -8358,6 +8388,7 @@ fn clone_pool_kind(pool: &PoolKind) -> PoolKind {
         PoolKind::Postgres(p) => PoolKind::Postgres(p.clone()),
         PoolKind::Sqlite(p) => PoolKind::Sqlite(p.clone()),
         PoolKind::Rqlite(client) => PoolKind::Rqlite(client.clone()),
+        PoolKind::Odbc(client) => PoolKind::Odbc(client.clone()),
         PoolKind::Turso(client) => PoolKind::Turso(client.clone()),
         PoolKind::CloudflareD1(client) => PoolKind::CloudflareD1(client.clone()),
         #[cfg(feature = "duckdb-sidecar")]
@@ -8414,6 +8445,7 @@ async fn close_pool_kind_inner(pool: PoolKind, report_completion: bool) -> Resul
             pool.shutdown().await;
         }
         PoolKind::Rqlite(_) => {}
+        PoolKind::Odbc(_) => {}
         PoolKind::Turso(_) => {}
         PoolKind::CloudflareD1(_) => {}
         PoolKind::Redis(conn) => {

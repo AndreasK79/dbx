@@ -1,0 +1,31 @@
+schemaVersion: 1
+order: 810
+dbType: odbc
+rustVariant: Odbc
+label: ODBC
+runtimeMode: native
+mcpMode: bridge
+singleConnectionPool: true
+metadataConnectionScoped: false
+skipTcpProbe: true
+traits:
+  schemaAware: true
+  treeSchema: true
+supportLevel: operate
+capabilities:
+  queryExecution: true
+  metadataBrowse: true
+  objectBrowser: true
+  objectSource: false
+  schemaSearch: true
+  diagram: false
+  tableDataEdit: false
+  tableStructureEdit: false
+  tableImport: false
+  dataTransfer: false
+  sqlFileExecution: true
+  databaseCreate: false
+  fieldLineage: false
+  sqlExplain: false
+  userAdmin: false
+  driverManagement: false

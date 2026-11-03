@@ -13,6 +13,12 @@ pub enum TablePaginationStrategy {
     QuestDbLimit,
     Unbounded,
     AgentMaxRows,
+    /// Generic ODBC targets whatever engine the installed driver speaks.
+    /// `TOP n` is the row-limit form both Sybase families (ASE and SQL
+    /// Anywhere) share with SQL Server; `LIMIT 100` is a syntax error on
+    /// them. `TOP n START AT m` provides the offset (SQL Anywhere syntax;
+    /// drivers without it fail only on later pages, never page one).
+    OdbcTop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +148,7 @@ pub fn pagination_strategy(database_type: Option<DatabaseType>, context: Paginat
         Some(DatabaseType::Firebird) => TablePaginationStrategy::FirebirdRows,
         Some(DatabaseType::OceanbaseOracle) => TablePaginationStrategy::Rownum,
         Some(DatabaseType::Questdb) => TablePaginationStrategy::QuestDbLimit,
+        Some(DatabaseType::Odbc) => TablePaginationStrategy::OdbcTop,
         _ => TablePaginationStrategy::LimitOffset,
     }
 }

@@ -538,6 +538,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atoi"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28d99ec8bfea296261ca1af174f24225171fea9664ba9003cbebee704810528"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "atoi_simd"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2547,6 +2556,7 @@ dependencies = [
  "mysql_async",
  "mysql_common",
  "nix 0.31.3",
+ "odbc-api",
  "openssl",
  "pageant",
  "percent-encoding",
@@ -6502,6 +6512,25 @@ checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "odbc-api"
+version = "25.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9144219b357fb103b928a1ef1b4e466a84b8f52aa9f5d5e538c409e1ffb9d26"
+dependencies = [
+ "atoi",
+ "log",
+ "odbc-sys",
+ "thiserror 2.0.19",
+ "widestring",
+]
+
+[[package]]
+name = "odbc-sys"
+version = "0.31.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38467959ef8ec6b76e0d98a7da6a270b65b7ab4f22b2209ef81c8a9260633a50"
 
 [[package]]
 name = "once_cell"

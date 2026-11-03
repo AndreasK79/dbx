@@ -753,6 +753,7 @@ async fn list_databases_once(state: &AppState, connection_id: &str) -> Result<Ve
         PoolKind::Postgres(p) => db::postgres::list_databases(p).await,
         PoolKind::Sqlite(p) => db::sqlite::list_databases(p).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::list_databases(client).await,
+        PoolKind::Odbc(client) => db::odbc_driver::list_databases(client).await,
         PoolKind::Turso(client) => db::turso_driver::list_databases(client).await,
         PoolKind::HBase(client) => db::hbase_driver::list_namespaces(client).await,
         #[cfg(feature = "duckdb-sidecar")]
@@ -994,6 +995,7 @@ async fn list_schemas_once(
                 .await
                 .map(|schemas| filter_visible_schema_names(schemas, visible_schema_filter.as_deref()))
         }
+        PoolKind::Odbc(client) => db::odbc_driver::list_schemas(client).await,
         _ => Ok(vec![]),
     }
 }
@@ -2941,6 +2943,9 @@ async fn list_tables_once(
             .await
             .map(|tables| filter_table_infos(tables, filter, limit, offset, object_types, table_name_filter)),
         PoolKind::Rqlite(client) => db::rqlite_driver::list_tables(client, schema)
+            .await
+            .map(|tables| filter_table_infos(tables, filter, limit, offset, object_types, table_name_filter)),
+        PoolKind::Odbc(client) => db::odbc_driver::list_tables(client, schema)
             .await
             .map(|tables| filter_table_infos(tables, filter, limit, offset, object_types, table_name_filter)),
         PoolKind::Turso(client) => db::turso_driver::list_tables(client, schema)
@@ -8598,6 +8603,71 @@ async fn list_objects_once(
                 })
                 .collect(),
         )),
+        PoolKind::Odbc(client) => {
+            // Tables/views come from the SQLTables catalog (the same rows the
+            // generic path below produces). Triggers and events have no ODBC
+            // catalog function — they need engine-specific probes — so a probe
+            // failure only drops that group and tables stay usable.
+            let wants_table_objects = object_types.is_none_or(|types| {
+                types.is_empty() || types.iter().any(|t| matches!(t.to_ascii_uppercase().as_str(), "TABLE" | "VIEW"))
+            });
+            let mut objects: Vec<db::ObjectInfo> = if wants_table_objects {
+                list_tables_core(state, connection_id, database, schema, None, None, None, None, None)
+                    .await?
+                    .into_iter()
+                    .map(|table| db::ObjectInfo {
+                        name: table.name,
+                        object_type: table.table_type,
+                        schema: if schema.is_empty() { None } else { Some(schema.to_string()) },
+                        valid: None,
+                        signature: None,
+                        custom_type_kind: None,
+                        has_members: None,
+                        comment: table.comment,
+                        created_at: None,
+                        updated_at: None,
+                        parent_schema: table.parent_schema,
+                        parent_name: table.parent_name,
+                        trigger: None,
+                        xugu_type_members_expandable: None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if object_types.is_none_or(|types| {
+                types.is_empty()
+                    || types.iter().any(|t| matches!(t.to_ascii_uppercase().as_str(), "PROCEDURE" | "FUNCTION"))
+            }) {
+                match db::odbc_driver::list_procedure_objects(client, schema).await {
+                    Ok(procedures) => objects.extend(procedures),
+                    Err(error) => log::warn!(
+                        "Skipping procedures for schema `{schema}` of database `{database}` in object list: {error}"
+                    ),
+                }
+            }
+            if object_types
+                .is_none_or(|types| types.is_empty() || types.iter().any(|t| t.eq_ignore_ascii_case("TRIGGER")))
+            {
+                match db::odbc_driver::list_trigger_objects(client, schema).await {
+                    Ok(triggers) => objects.extend(triggers),
+                    Err(error) => log::warn!(
+                        "Skipping triggers for schema `{schema}` of database `{database}` in object list: {error}"
+                    ),
+                }
+            }
+            if object_types
+                .is_none_or(|types| types.is_empty() || types.iter().any(|t| t.eq_ignore_ascii_case("EVENT")))
+            {
+                match db::odbc_driver::list_event_objects(client, schema).await {
+                    Ok(events) => objects.extend(events),
+                    Err(error) => log::warn!(
+                        "Skipping events for schema `{schema}` of database `{database}` in object list: {error}"
+                    ),
+                }
+            }
+            Ok(unpaged_object_list(objects))
+        }
     }
 }
 
@@ -9465,6 +9535,9 @@ async fn get_columns_core_for_session_inner_with_pool(
             PoolKind::Rqlite(client) => {
                 db::rqlite_driver::get_columns(client, schema, table).await.map(deduplicate_column_infos)
             }
+            PoolKind::Odbc(client) => {
+                db::odbc_driver::get_columns(client, schema, table).await.map(deduplicate_column_infos)
+            }
             PoolKind::Turso(client) => {
                 db::turso_driver::get_columns(client, schema, table).await.map(deduplicate_column_infos)
             }
@@ -9754,6 +9827,8 @@ async fn list_indexes_core_for_session(
             PoolKind::Postgres(p) => db::postgres::list_indexes(p, schema, table).await,
             PoolKind::Sqlite(p) => db::sqlite::list_indexes(p, schema, table).await,
             PoolKind::Rqlite(client) => db::rqlite_driver::list_indexes(client, schema, table).await,
+            // No ODBC catalog function for indexes; the driver returns an empty list.
+            PoolKind::Odbc(client) => db::odbc_driver::list_indexes(client, schema, table).await,
             PoolKind::Turso(client) => db::turso_driver::list_indexes(client, schema, table).await,
             PoolKind::MongoDb(client) => db::mongo_driver::list_indexes(client, database, table).await,
             PoolKind::CloudflareD1(client) => db::cloudflare_d1_driver::list_indexes(client, schema, table).await,
@@ -9857,6 +9932,7 @@ async fn list_foreign_keys_core_for_session(
             PoolKind::Postgres(p) => db::postgres::list_foreign_keys(p, schema, table).await,
             PoolKind::Sqlite(p) => db::sqlite::list_foreign_keys(p, schema, table).await,
             PoolKind::Rqlite(client) => db::rqlite_driver::list_foreign_keys(client, schema, table).await,
+            PoolKind::Odbc(client) => db::odbc_driver::list_foreign_keys(client, schema, table).await,
             PoolKind::Turso(client) => db::turso_driver::list_foreign_keys(client, schema, table).await,
             PoolKind::CloudflareD1(client) => db::cloudflare_d1_driver::list_foreign_keys(client, schema, table).await,
             _ => Ok(vec![]),
@@ -9941,6 +10017,8 @@ pub async fn list_triggers_core_with_options(
             PoolKind::Postgres(p) => db::postgres::list_triggers(p, schema, table).await,
             PoolKind::Sqlite(p) => db::sqlite::list_triggers(p, schema, table).await,
             PoolKind::Rqlite(client) => db::rqlite_driver::list_triggers(client, schema, table).await,
+            // No ODBC catalog function for triggers; the driver returns an empty list.
+            PoolKind::Odbc(client) => db::odbc_driver::list_triggers(client, schema, table).await,
             PoolKind::Turso(client) => db::turso_driver::list_triggers(client, schema, table).await,
             PoolKind::CloudflareD1(client) => db::cloudflare_d1_driver::list_triggers(client, schema, table).await,
             _ => Ok(vec![]),
@@ -11075,6 +11153,7 @@ async fn get_table_ddl_once(
         PoolKind::Postgres(p) => pg_ddl_for_options(p, schema, table, options.include_partitions).await,
         PoolKind::Sqlite(p) => sqlite_ddl(p, schema, table).await,
         PoolKind::Rqlite(client) => db::rqlite_driver::table_ddl(client, table).await,
+        PoolKind::Odbc(client) => db::odbc_driver::table_ddl(client, table).await,
         PoolKind::Turso(client) => db::turso_driver::table_ddl(client, table).await,
         PoolKind::CloudflareD1(client) => db::cloudflare_d1_driver::table_ddl(client, table).await,
         PoolKind::InfluxDb(client) => db::influxdb_driver::table_ddl(client, database, table).await,
@@ -13172,6 +13251,9 @@ async fn get_object_source_once(
                 }
                 PoolKind::Rqlite(client) => {
                     return db::rqlite_driver::object_source(client, name, &object_type).await;
+                }
+                PoolKind::Odbc(client) => {
+                    return db::odbc_driver::object_source(client, name, &object_type).await;
                 }
                 PoolKind::Turso(client) => {
                     return db::turso_driver::object_source(client, name, &object_type).await;

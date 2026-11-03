@@ -18,6 +18,10 @@ const SELECT_LIMIT_STYLE_BY_DATABASE: Partial<Record<DatabaseType, SelectLimitSt
   access: "top",
   iris: "top",
   teradata: "top",
+  // Generic ODBC targets whatever engine the installed driver speaks; TOP is
+  // the row-limit form both Sybase families (ASE and SQL Anywhere) share with
+  // SQL Server, while LIMIT 100 is a syntax error on them.
+  odbc: "top",
   informix: "first",
   firebird: "rows",
   // Unknown JDBC dialects fall through to LIMIT (most common / safest default).
