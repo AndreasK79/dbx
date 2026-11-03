@@ -1,3 +1,4 @@
+import { normalizeSidebarHoverDelay } from "@/lib/sidebar/sidebarHoverSettings";
 import type { EditorSettings } from "@/stores/settingsStore";
 import { normalizeBackgroundImageSettings } from "@/lib/app/appBackgroundImage";
 import { normalizeResultPageSize } from "@/lib/dataGrid/paginationPageSize";
@@ -33,6 +34,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "showInsertValueHints",
   "showConnectionGroupPath",
   "autoAliasTables",
+  "batchColumnSelectionIncludeComments",
   "tableCompletionSchemaQualification",
   "insertSpaceAfterCompletion",
   "sqlServerSpaceConfirmsCompletion",
@@ -66,6 +68,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "tabGroupMode",
   "tabSortMode",
   "tabMaxWidth",
+  "tabDoubleClickAction",
   "tabGroupRows",
   "showColumnCommentsInHeader",
   "dataGridColumnCommentsInInfoArea",
@@ -148,6 +151,9 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "autoUpdatePlugins",
   "sidebarObjectInfoMode",
   "sidebarAllowHorizontalScroll",
+  "sidebarShowConnectionEndpoints",
+  "sidebarHoverEnabled",
+  "sidebarHoverDelay",
   "sidebarShowTooltips",
   "sidebarIndent",
   "sidebarFontSize",
@@ -162,6 +168,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "damengClientBinDir",
   "autoOpenExportFolder",
   "applyColumnFormattersOnExport",
+  "csvWithoutBom",
   "csvQuoteMode",
   "csvNullMode",
   "queryResultExportFileNameSource",
@@ -207,6 +214,7 @@ export function normalizeQueryResultMaxRowsDraft(value: unknown): number {
 }
 
 function normalizedDraftValue(key: EditorSettingsDraftKey, value: unknown): unknown {
+  if (key === "sidebarHoverDelay") return normalizeSidebarHoverDelay(value);
   if (key === "pageSize" || key === "tableOpenPageSize") return normalizeTableOpenPageSizeDraft(value);
   if (key === "queryResultMaxRows") return normalizeQueryResultMaxRowsDraft(value);
   if (key === "externalSqlEditorMaxMb") return normalizeExternalSqlEditorMaxMb(value);
@@ -218,6 +226,7 @@ function normalizedDraftValue(key: EditorSettingsDraftKey, value: unknown): unkn
   if (key === "csvNullMode") return normalizeCsvNullMode(value);
   if (key === "backgroundImage") return normalizeBackgroundImageSettings(value);
   if (key === "snippetTriggerKey") return value === "space" || value === "both" ? value : "tab";
+  if (key === "tabDoubleClickAction") return value === "close" ? "close" : "default";
   if (key === "webLogoPosition") return value === "right" || value === "hidden" ? value : "left";
   if (key === "aiSqlApplyTargetMode") return normalizeAiSqlApplyTargetMode(value);
   if (key === "colorizeConnectionTabsScope") return value === "active" ? "active" : "all";

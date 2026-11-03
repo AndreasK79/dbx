@@ -13,6 +13,7 @@ export interface StatementRange {
 }
 
 export interface QueryEditorSurfaceHandle {
+  focusSqlEditor(): boolean;
   focusSearch(target?: Element | null): boolean;
   /** Move focus into the tab's query editor (e.g. after a shortcut-driven
    *  database selection); false when the surface has no editor. */
@@ -53,6 +54,8 @@ export interface QueryEditorSurfaceHandle {
 }
 
 export interface QueryResultSurfaceHandle {
+  focusResultGrid(): boolean;
+  cancelResultGridFocus(): void;
   focusSearch(target?: Element | null): boolean;
   refreshData(target?: Element | null): boolean;
   toggleResultsPane(): boolean;

@@ -349,6 +349,7 @@ pub async fn execute_multi(
     execution_mode: Option<dbx_core::query::QueryExecutionMode>,
     preserve_explicit_transaction: Option<bool>,
     defer_lobs: Option<bool>,
+    report_compilation_errors: Option<bool>,
 ) -> Result<Vec<dbx_core::query::ExecuteMultiResult>, BackendError> {
     let execution_id = execution_id.filter(|id| !id.trim().is_empty());
     let registered_query = execution_id.as_ref().map(|id| {
@@ -426,6 +427,7 @@ pub async fn execute_multi(
                     notice_sink,
                     notice_tap: None,
                     defer_lobs: defer_lobs.unwrap_or(false),
+                    report_compilation_errors: report_compilation_errors.unwrap_or(false),
                 },
                 progress,
             )
@@ -816,6 +818,7 @@ pub async fn execute_in_manual_transaction(
     timeout_secs: Option<u64>,
     bound_statements: Option<Vec<db::BlobBoundStatement>>,
     defer_lobs: Option<bool>,
+    report_compilation_errors: Option<bool>,
 ) -> Result<Vec<dbx_core::query::ExecuteMultiResult>, ManualTransactionCommandError> {
     let execution_id = execution_id.filter(|id| !id.trim().is_empty());
     let notice_batcher = execution_id.as_ref().map(|execution_id| statement_notice_batcher(&app, execution_id));
@@ -844,6 +847,7 @@ pub async fn execute_in_manual_transaction(
                 execution_id,
                 timeout_secs,
                 notice_sink,
+                report_compilation_errors: report_compilation_errors.unwrap_or(false),
             },
         ),
     )

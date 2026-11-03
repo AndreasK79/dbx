@@ -44,6 +44,8 @@ pub struct ExecuteQueryRequest {
     /// ROLLBACK. Defaults to the historical cleanup when omitted.
     #[serde(default)]
     pub preserve_explicit_transaction: bool,
+    #[serde(default)]
+    pub report_compilation_errors: bool,
 }
 
 #[derive(Deserialize)]
@@ -707,6 +709,7 @@ pub async fn execute_multi(
             preserve_explicit_transaction: req.preserve_explicit_transaction,
             notice_sink: None,
             notice_tap: None,
+            report_compilation_errors: req.report_compilation_errors,
         },
     )
     .await;

@@ -106,6 +106,7 @@ async fn live_clickhouse_query_result_export_xlsx_streams_random_order_query_onc
         csv_delimiter: Default::default(),
         csv_quote_char: Default::default(),
         csv_include_header: Default::default(),
+        csv_without_bom: false,
         null_literal: String::new(),
         export_table_name: None,
         export_schema: None,

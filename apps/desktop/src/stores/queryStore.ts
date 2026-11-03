@@ -1,3 +1,4 @@
+import { shouldReportOracleCompilationErrors } from "@/lib/query/oracleCompilationErrors";
 import { hasShortDataGridSqlPage } from "@/lib/dataGrid/dataGridPagination";
 import { createQueryRequestTiming } from "@/lib/queryRequestTiming";
 import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
@@ -154,7 +155,7 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { useExportTracker } from "@/composables/useExportTracker";
-import { showExportExecutionModeDialog } from "@/lib/export/exportExecutionMode";
+import { getDefaultExportExecutionMode } from "@/lib/export/exportExecutionMode";
 import { recordQueryCancellationLatency, resourceLifecycleDiagnostics } from "@/lib/diagnostics/resourceLifecycleDiagnostics";
 import { appendDebugLog } from "@/lib/backend/debugLog";
 import { BackendErrorException, formatError, isManualTransactionSessionExpired, isUnsupportedManualTransactionMethod, normalizeBackendError, type BackendError } from "@/lib/backend/errorUtils";
@@ -6003,12 +6004,14 @@ export const useQueryStore = defineStore("query", () => {
     return refreshDataTabInternal(id);
   }
 
-  async function refreshDataTabsForTable(target: TableDataRefreshTarget): Promise<number> {
+  async function refreshDataTabsForTable(target: TableDataRefreshTarget, options?: { skipPendingChanges?: boolean }): Promise<number> {
     const matchingTabs = tabs.value.filter((tab) => tabMatchesTableDataRefreshTarget(tab, target));
     if (matchingTabs.length === 0) return 0;
 
     let refreshed = 0;
     for (const tab of matchingTabs) {
+      // Background imports must preserve unsaved grid edits and cell drafts.
+      if (options?.skipPendingChanges && ((tab.pendingDataChangeCount ?? 0) > 0 || tab.hasPendingDataEditorDraft)) continue;
       if (await refreshDataTabInternal(tab.id, { supersedeBusy: true, propagateBuildError: true })) refreshed += 1;
     }
 
@@ -8710,7 +8713,10 @@ export const useQueryStore = defineStore("query", () => {
       if (conn?.db_type === "mongodb" && mongoCommands.length === 0 && sql.trim()) {
         // Avoid falling through to the SQL executor, which only returns the generic
         // "Use MongoDB-specific commands" rejection and hides parse/syntax details.
-        throw new Error(describeMongoCommandParseFailure(sql));
+        // Shell JavaScript is the rare case; load its parser only when needed.
+        const { expandMongoScriptCommands, isMongoScriptSyntax } = await import("@/lib/mongo/mongoScriptRunner");
+        if (!isMongoScriptSyntax(sql)) throw new Error(describeMongoCommandParseFailure(sql));
+        mongoCommands = await expandMongoScriptCommands(sql);
       }
 
       if (mongoCommands.length > 0) {
@@ -9498,6 +9504,7 @@ export const useQueryStore = defineStore("query", () => {
           continueOnError: continueOnBatchError,
           // MySQL-family connections only use this; other drivers ignore it.
           ...(settingsStore.editorSettings.keepExplicitTransactionInAutoCommit ? { preserveExplicitTransaction: true } : {}),
+          ...(tab.mode === "query" && shouldReportOracleCompilationErrors(effectiveDbType, sqlToExecute) ? { reportCompilationErrors: true } : {}),
         };
         queryExecutionLog("info", "execute-multi:invoke", {
           traceId,
@@ -9599,11 +9606,16 @@ export const useQueryStore = defineStore("query", () => {
                 // statement notices); sqlserver additionally takes the frontend
                 // timeout for its 2000-compatible manual transactions, and a
                 // deferred-LOB read passes tableDataPreview's large-value flag.
+                // Oracle PL/SQL statements opt into compile-error reporting via
+                // the final trailing flag.
+                const reportCompilationErrors = tab.mode === "query" && shouldReportOracleCompilationErrors(effectiveDbType, sqlToExecute);
                 const results = await (effectiveDbType === "sqlserver"
                   ? api.executeInManualTransaction(...args, executionId, frontendTimeoutSecs)
                   : deferLobs
-                    ? api.executeInManualTransaction(...args, executionId, frontendTimeoutSecs, undefined, true)
-                    : api.executeInManualTransaction(...args, executionId));
+                    ? api.executeInManualTransaction(...args, executionId, frontendTimeoutSecs, undefined, true, ...(reportCompilationErrors ? [true] : []))
+                    : reportCompilationErrors
+                      ? api.executeInManualTransaction(...args, executionId, undefined, undefined, undefined, true)
+                      : api.executeInManualTransaction(...args, executionId));
                 bindLargeValueContext(results, sessionId);
                 for (const result of results) {
                   if (result.session_id) result.manual_transaction_session_id = sessionId;
@@ -11724,6 +11736,7 @@ export const useQueryStore = defineStore("query", () => {
         totalRows,
         timeoutSecs: queryTimeoutSecsForConnection(conn, settings.globalQueryTimeoutSecs),
         keysetOptimizationEnabled: settings.queryExportKeysetOptimizationEnabled,
+        csvWithoutBom: settings.csvWithoutBom,
         csvQuoteMode: settings.csvQuoteMode,
         clientSessionId,
         txnSessionId,
@@ -11773,6 +11786,7 @@ export const useQueryStore = defineStore("query", () => {
       totalRows: null,
       timeoutSecs: queryTimeoutSecsForConnection(conn, settingsStore.editorSettings.globalQueryTimeoutSecs),
       keysetOptimizationEnabled: settings.queryExportKeysetOptimizationEnabled,
+      csvWithoutBom: settings.csvWithoutBom,
       csvQuoteMode: settings.csvQuoteMode,
       clientSessionId: `${tabClientSessionId(tab, "export")}:${exportId}`,
       txnSessionId: exportTxnSessionId(tab),
@@ -11784,8 +11798,7 @@ export const useQueryStore = defineStore("query", () => {
     };
 
     const transactionEpoch = manualTransactionTargetEpoch(tab);
-    const mode = await showExportExecutionModeDialog();
-    if (mode === null) return;
+    const mode = getDefaultExportExecutionMode();
 
     function assertQueuedSourceAvailable() {
       if (mode !== "queued") return;

@@ -28,7 +28,8 @@ describe("EditorSettingsDialog snippet bulk selection and delete", () => {
     expect(dialogSource).toContain('@click="handleSnippetCheckboxClick($event, snippet)"');
     expect(dialogSource).toContain('@change="handleSnippetCheckboxChange(snippet, ($event.target as HTMLInputElement).checked)"');
     const block = dialogSource.slice(dialogSource.indexOf("function handleSnippetCheckboxClick"), dialogSource.indexOf("function toggleAllSnippetsSelected"));
-    // click 只判定可否成范围并管理锚点；change 拿被点击行翻转后的勾选态推广整段
+    // click only decides whether a range can form and tracks the anchor; change
+    // spreads the clicked row's post-toggle state across the span
     expect(block).toContain("applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id, checked)");
     expect(block).toContain("snippetRangeClickPending");
     expect(block).toContain("snippetSelectionAnchorId = snippet.id");
@@ -36,9 +37,11 @@ describe("EditorSettingsDialog snippet bulk selection and delete", () => {
   });
 
   it("rides the native checkbox toggle instead of canceling it", () => {
-    // WebView2 对被取消的复选框 click 的回弹晚于渲染落回：被点击行刚勾上又被弹
-    // 回未选中。方案改为不 preventDefault——被点击行翻转成什么，Shift 范围就推
-    // 广成什么，视觉与集合不可能分叉。
+    // WebView2 rebounds a canceled checkbox click after the render falls back:
+    // the clicked row is checked by the binding and then bounced back to
+    // unchecked. Both designs that canceled the native toggle lost that race,
+    // so the handlers follow the native toggle instead — whatever the clicked
+    // row toggles to, the shift range follows, and visuals cannot diverge.
     const block = dialogSource.slice(dialogSource.indexOf("function handleSnippetCheckboxClick"), dialogSource.indexOf("function toggleAllSnippetsSelected"));
     expect(block).not.toContain("preventDefault");
     expect(block).toContain("if (checked) update.add(snippet.id)");

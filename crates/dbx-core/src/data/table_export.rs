@@ -74,6 +74,8 @@ pub struct TableExportRequest {
     /// 是否写出表头行；缺省 true（旧语义）。
     #[serde(default = "default_csv_include_header")]
     pub csv_include_header: bool,
+    #[serde(default)]
+    pub csv_without_bom: bool,
     /// CSV 里 NULL 写成什么。默认 `\N`；空字符串表示关闭该字面量，
     /// 退回「NULL 写成空字段」的旧行为（此时 NULL 与空字符串在文件里无法区分）。
     #[serde(default = "default_csv_null_literal")]
@@ -1225,7 +1227,9 @@ async fn try_export_native_table_stream(
             let mut file = BufWriter::new(
                 std::fs::File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?,
             );
-            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+            if !request.csv_without_bom {
+                file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+            }
             let csv_format = csv_text_format(request);
             let header = format_csv_with_format(col_names, &[], csv_format.clone());
             let header = header.strip_suffix('\n').unwrap_or(&header);
@@ -1953,7 +1957,9 @@ async fn export_table_data_core_inner(
     match request.format.to_lowercase().as_str() {
         "csv" => {
             // Write UTF-8 BOM
-            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+            if !request.csv_without_bom {
+                file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+            }
 
             let mut is_first_batch = true;
 
@@ -2884,6 +2890,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3045,6 +3052,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             primary_key_mode: DataGridPrimaryKeyMode::Include,
             columns: None,
@@ -3233,6 +3241,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3304,6 +3313,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3351,6 +3361,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3393,6 +3404,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3443,6 +3455,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3505,6 +3518,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3561,6 +3575,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3645,6 +3660,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3711,6 +3727,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3779,6 +3796,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             numeric_column_right_align: false,
             column_comments: None,
@@ -3827,6 +3845,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             columns: None,
             selected_columns: None,
@@ -3876,6 +3895,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             columns: None,
             selected_columns: None,

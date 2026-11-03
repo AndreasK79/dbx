@@ -3216,7 +3216,7 @@ async function compileXuguObject() {
     toast(t("contextMenu.compileObjectSuccess", { name: node.label }), 3000);
     await connectionStore.refreshTreeNode(node);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -3266,7 +3266,7 @@ async function executeXuguSchedulerJobAction(action: XuguSchedulerJobAction) {
     // after a destructive action without retaining a stale job node.
     await connectionStore.refreshTreeNode(node);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -3320,7 +3320,7 @@ async function toggleTriggerState(node: TreeNode, enabled: boolean) {
     toast(t(enabled ? "contextMenu.enableTriggerSuccess" : "contextMenu.disableTriggerSuccess", { name: triggerName }), 3000);
     await connectionStore.refreshTreeNode(node);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -3447,7 +3447,7 @@ async function runExactTriggerNodeAction(node: TreeNode, action: OracleTriggerAc
     if (action === "delete" && result.steps.some((step) => step.state === "committed" && step.verification === "deleted")) removeVerifiedTriggerNode(node, plan);
     reportExactTriggerResult(node, plan, result);
   } catch (error) {
-    if (triggerActionHostActive.value) toast(t("contextMenu.tableOperationFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+    if (triggerActionHostActive.value) toast(t("contextMenu.tableOperationFailed", { message: error instanceof Error ? error.message : String(error) }), { persistent: true });
   } finally {
     triggerActionBusy.delete(node.id);
   }
@@ -3538,7 +3538,7 @@ async function manageTypeDropNode(node: TreeNode): Promise<boolean> {
     releaseActiveNodeReference(removed.map((item) => item.id));
     return true;
   } catch (error) {
-    toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: String(error) }), { persistent: true });
     return false;
   }
 }
@@ -3843,7 +3843,7 @@ function requestBatchDrop() {
       batchDropProgress.value = { completed: 0, total: 0 };
       await refreshBatchDropPreviewSql();
       showBatchDropConfirm.value = true;
-    })().catch((error) => toast(t("contextMenu.tableOperationFailed", { message: String(error) }), 5000));
+    })().catch((error) => toast(t("contextMenu.tableOperationFailed", { message: String(error) }), { persistent: true }));
     return;
   }
   batchDropTargets.value = targets.slice();
@@ -3874,7 +3874,7 @@ function requestBatchEmpty() {
     })
     .catch((e: any) => {
       batchEmptyTargets.value = [];
-      toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+      toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
     });
 }
 
@@ -3949,11 +3949,11 @@ async function confirmBatchMysqlAutoIncrement() {
     await refreshMutatedTableDataTabsForNodes(succeeded);
   }
   if (failedCount > 0 && firstError) {
-    toast(t("contextMenu.batchMysqlAutoIncrementPartialFail", { success: succeeded.length, failed: failedCount }), 5000);
+    toast(t("contextMenu.batchMysqlAutoIncrementPartialFail", { success: succeeded.length, failed: failedCount }), { persistent: true });
   } else if (succeeded.length > 0) {
     toast(t("contextMenu.batchMysqlAutoIncrementSuccess", { count: succeeded.length, value: mysqlAutoIncrementValue.value }), 3000);
   } else if (firstError) {
-    toast(t("contextMenu.tableOperationFailed", { message: (firstError as any)?.message || String(firstError) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: (firstError as any)?.message || String(firstError) }), { persistent: true });
   }
   batchMysqlAutoIncrementTargets.value = [];
   showBatchMysqlAutoIncrementConfirm.value = false;
@@ -4014,12 +4014,16 @@ const canRenameObject = computed(() => {
   return !!objectType && (supportsObjectRename(currentDatabaseType(), objectType) || (databaseTypeForNode(node) === "oceanbase-oracle" && (objectType === "PROCEDURE" || objectType === "FUNCTION")) || supportsSourceBackedRoutineRename(currentDatabaseType(), objectType as any));
 });
 
+// Target whose name the rename dialog last showed. Kept apart from currentSidebarViewRenameTargetKey,
+// which follows the selected node even while the dialog is closed.
+let renameObjectDialogTargetKey = "";
 function openRenameObjectDialog() {
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
   const node = sidebarFormTarget.value ?? activeNode.value;
   const targetKey = JSON.stringify([node.connectionId, node.database, node.schema || node.database, node.type, node.objectName || node.label, databaseTypeForNode(node)]);
-  if (targetKey !== currentSidebarViewRenameTargetKey) renameObjectName.value = node.objectName || node.label;
+  if (targetKey !== renameObjectDialogTargetKey) renameObjectName.value = node.objectName || node.label;
+  renameObjectDialogTargetKey = targetKey;
   renameObjectError.value = "";
   renameObjectPreviewSql.value = "";
   viewRenamePlan.value = undefined;
@@ -4052,6 +4056,7 @@ function openRenameDatabaseDialog() {
   claimTreeItemDialogOwnership();
   routeTreeItemDialogController();
   renameObjectName.value = activeNode.value.label;
+  renameObjectDialogTargetKey = "";
   renameObjectError.value = "";
   renameObjectPreviewSql.value = "";
   viewRenamePlan.value = undefined;
@@ -4677,11 +4682,11 @@ async function confirmDropObject() {
     } catch (error: any) {
       // DROP already succeeded; keep the sidebar consistent if metadata refresh fails.
       connectionStore.removeTreeNode(node.id);
-      toast(t("contextMenu.objectDropRefreshFailed", { message: error?.message || String(error) }), 5000);
+      toast(t("contextMenu.objectDropRefreshFailed", { message: error?.message || String(error) }), { persistent: true });
     }
     releaseActiveNodeReference([node.id]);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -4698,7 +4703,7 @@ async function confirmDropTableChildObject() {
     connectionStore.removeTreeNode(node.id);
     releaseActiveNodeReference([node.id]);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -4770,7 +4775,7 @@ async function confirmBatchDrop() {
       }
       if (droppedCount === 0 && firstGroupError && failedCount === mongoIndexTargets.length) throw firstGroupError;
       if (failedCount > 0) {
-        toast(t("contextMenu.dropIndexesPartialFailure", { success: droppedCount, failed: failedCount }), 5000);
+        toast(t("contextMenu.dropIndexesPartialFailure", { success: droppedCount, failed: failedCount }), { persistent: true });
       } else {
         toast(t("contextMenu.batchDropSuccess", { count: droppedCount }), 3000);
       }
@@ -4863,10 +4868,10 @@ async function confirmBatchDrop() {
     const refreshResults = await Promise.allSettled([...refreshScopes.values()].map((target) => refreshTableList(target)));
     const refreshFailure = refreshResults.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (refreshFailure) {
-      toast(t("contextMenu.objectDropRefreshFailed", { message: refreshFailure.reason?.message || String(refreshFailure.reason) }), 5000);
+      toast(t("contextMenu.objectDropRefreshFailed", { message: refreshFailure.reason?.message || String(refreshFailure.reason) }), { persistent: true });
     }
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -4988,7 +4993,7 @@ async function confirmBatchTruncate() {
     toast(t("contextMenu.batchTruncateSuccess", { count: targets.length }), 3000);
     showBatchTruncateConfirm.value = false;
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5027,9 +5032,9 @@ async function confirmBatchEmpty() {
   } else if (feedback === "submitted") {
     toast(t("contextMenu.batchEmptySubmitted", { count: result.succeeded.length }), 3000);
   } else if (feedback === "submitted-partial") {
-    toast(t("contextMenu.batchEmptySubmittedPartial", { success: result.succeeded.length, failed: result.failed.length }), 5000);
+    toast(t("contextMenu.batchEmptySubmittedPartial", { success: result.succeeded.length, failed: result.failed.length }), { persistent: true });
   } else {
-    toast(t("contextMenu.batchEmptyPartialFail", { success: result.succeeded.length, failed: result.failed.length }), 5000);
+    toast(t("contextMenu.batchEmptyPartialFail", { success: result.succeeded.length, failed: result.failed.length }), { persistent: true });
   }
   await refreshMutatedTableDataTabsForNodes(result.succeeded);
   batchEmptyTargets.value = [];
@@ -5293,7 +5298,7 @@ async function confirmEditDatabaseProperties() {
     showEditDatabasePropertiesDialog.value = false;
     await connectionStore.loadDatabases(node.connectionId, { force: true });
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e) }), { persistent: true });
   } finally {
     editDatabasePropertiesLoading.value = false;
   }
@@ -5365,7 +5370,7 @@ async function confirmEditSchemaComment() {
     showEditSchemaCommentDialog.value = false;
     await connectionStore.loadSchemas(node.connectionId, node.database, { force: true });
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: translateBackendError(t, e) }), { persistent: true });
   } finally {
     schemaCommentLoading.value = false;
   }
@@ -5603,7 +5608,7 @@ async function createDuckDbAttachedDatabaseFile() {
     connectionStore.treeSelectionAnchorId = nodeId;
     toast(t("contextMenu.createDuckDbFileSuccess", { name }), 3000);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5652,7 +5657,7 @@ async function attachSqliteDatabaseFile() {
     connectionStore.treeSelectionAnchorId = nodeId;
     toast(t("contextMenu.attachSqliteDatabaseSuccess", { name }), 3000);
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5701,7 +5706,7 @@ async function confirmCreateDatabase() {
     showCreateDatabaseDialog.value = false;
     showCreateDatabasePreviewDialog.value = true;
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5753,10 +5758,10 @@ async function applyCreateDatabaseAuthorizationPlan() {
         await connectionStore.loadDatabases(node.connectionId, { force: true });
       }
     }
-    toast(t(status === "success" ? "contextMenu.createDatabaseSuccess" : status === "partial" ? "contextMenu.createDatabasePartial" : "contextMenu.createDatabaseFailed", { name }), status === "success" ? 3000 : 5000);
+    toast(t(status === "success" ? "contextMenu.createDatabaseSuccess" : status === "partial" ? "contextMenu.createDatabasePartial" : "contextMenu.createDatabaseFailed", { name }), status === "success" ? 3000 : { persistent: true });
   } catch (error: any) {
     const message = appendCreateDatabaseErrorHint(connectionStore.getConfig(node.connectionId)?.db_type, error?.message || String(error), t);
-    toast(t("contextMenu.tableOperationFailed", { message }), 8000);
+    toast(t("contextMenu.tableOperationFailed", { message }), { persistent: true });
   } finally {
     createDatabaseAuthorizationApplying.value = false;
   }
@@ -5835,8 +5840,8 @@ async function confirmDropDatabase() {
   } catch (e: any) {
     const message = e?.message || String(e);
     const otherSessions = dropDatabaseOtherSessionCount(message);
-    if (otherSessions === undefined) toast(t("contextMenu.tableOperationFailed", { message }), 5000);
-    else toast(otherSessions === null ? t("contextMenu.dropDatabaseInUse", { name: node.label }) : t("contextMenu.dropDatabaseInUseSessions", { name: node.label, count: otherSessions }), 5000);
+    if (otherSessions === undefined) toast(t("contextMenu.tableOperationFailed", { message }), { persistent: true });
+    else toast(otherSessions === null ? t("contextMenu.dropDatabaseInUse", { name: node.label }) : t("contextMenu.dropDatabaseInUseSessions", { name: node.label, count: otherSessions }), { persistent: true });
   } finally {
     dropDatabaseLoading.value = false;
   }
@@ -5871,7 +5876,7 @@ async function confirmCreateSchema() {
       await connectionStore.loadSchemas(node.connectionId, targetDatabase || "", { force: true });
     }
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5912,7 +5917,7 @@ async function confirmDropSchema() {
       await connectionStore.loadSchemas(node.connectionId, node.database, { force: true });
     }
   } catch (e: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -5989,7 +5994,7 @@ async function confirmDuplicateStructureImpl() {
       cloneDialog.showFailure(e);
       return;
     }
-    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: e?.message || String(e) }), { persistent: true });
   }
 }
 
@@ -6172,7 +6177,7 @@ async function confirmPasteTableImpl() {
     }
     if (refreshFailCount > 0) {
       const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
-      toast(t("contextMenu.pasteTableRefreshFailed", { message: translateBackendError(t, refreshMessage) }), 5000);
+      toast(t("contextMenu.pasteTableRefreshFailed", { message: translateBackendError(t, refreshMessage) }), { persistent: true });
     }
     return;
   }
@@ -6183,11 +6188,11 @@ async function confirmPasteTableImpl() {
     }
     toast(t("contextMenu.batchPasteSuccess", { count: successCount }), 3000);
   } else {
-    toast(`${t("contextMenu.batchPastePartialFail", { success: pasteFeedback.successCount, failed: pasteFeedback.failedCount })}\n${t("contextMenu.tableOperationFailed", { message: translateBackendError(t, pasteFeedback.firstError) })}`, 5000);
+    toast(`${t("contextMenu.batchPastePartialFail", { success: pasteFeedback.successCount, failed: pasteFeedback.failedCount })}\n${t("contextMenu.tableOperationFailed", { message: translateBackendError(t, pasteFeedback.firstError) })}`, { persistent: true });
   }
   if (refreshFailCount > 0) {
     const refreshMessage = refreshError instanceof Error ? refreshError.message : String(refreshError);
-    toast(t("contextMenu.pasteTableRefreshFailed", { message: translateBackendError(t, refreshMessage) }), 5000);
+    toast(t("contextMenu.pasteTableRefreshFailed", { message: translateBackendError(t, refreshMessage) }), { persistent: true });
   }
 }
 
@@ -6273,7 +6278,7 @@ async function confirmDeleteHBaseTable() {
     await connectionStore.refreshObjectListTreeNode(node.connectionId, node.database);
     toast(t("hbase.tableDeleted", { table: node.database === "default" ? node.label : `${node.database}:${node.label}` }));
   } catch (error: any) {
-    toast(t("contextMenu.tableOperationFailed", { message: error?.message || String(error) }), 5000);
+    toast(t("contextMenu.tableOperationFailed", { message: error?.message || String(error) }), { persistent: true });
     throw error;
   }
 }

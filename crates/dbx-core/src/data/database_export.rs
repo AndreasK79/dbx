@@ -126,6 +126,12 @@ pub struct DatabaseExportRequest {
     pub file_path: String,
     #[serde(default)]
     pub selected_tables: Vec<String>,
+    /// Objects picked in the object browser ("export selected"). `Some` limits the
+    /// export to these objects, matched by type and name (and signature for
+    /// overloaded routines), and takes precedence over `selected_tables`; an empty
+    /// list is rejected instead of meaning the whole schema (#13940).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_objects: Option<Vec<DatabaseExportSelectedObject>>,
     #[serde(default)]
     pub excluded_tables: Vec<String>,
     pub include_structure: bool,
@@ -180,6 +186,144 @@ pub struct DatabaseExportRequest {
     /// is its own compressed container.
     #[serde(default)]
     pub split_max_mb: Option<u32>,
+}
+
+/// One object picked in the object browser for "export selected".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseExportSelectedObject {
+    /// Object browser type such as `TABLE`, `VIEW`, `PROCEDURE`, `FUNCTION`,
+    /// `SEQUENCE`, `PACKAGE` or `PACKAGE_BODY`.
+    pub object_type: String,
+    pub name: String,
+    /// Routine argument signature, for engines that list overloads separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DatabaseExportObjectKind {
+    /// Tables and views, which share one namespace in every engine that lists both.
+    Relation,
+    Sequence,
+    Procedure,
+    Function,
+    Package,
+    PackageBody,
+}
+
+impl DatabaseExportObjectKind {
+    fn from_object_type(object_type: &str) -> Option<Self> {
+        let object_type = object_type.trim().to_uppercase();
+        match object_type.as_str() {
+            "PACKAGE" => Some(Self::Package),
+            "PACKAGE BODY" | "PACKAGE_BODY" => Some(Self::PackageBody),
+            "SEQUENCE" => Some(Self::Sequence),
+            _ if object_type.contains("PROCEDURE") => Some(Self::Procedure),
+            _ if object_type.contains("FUNCTION") => Some(Self::Function),
+            _ if object_type.contains("TABLE") || object_type.contains("VIEW") => Some(Self::Relation),
+            _ => None,
+        }
+    }
+}
+
+/// Which objects of the schema a database export covers.
+enum DatabaseExportSelection {
+    WholeSchema,
+    /// `selected_tables`: names only. They match tables and views, plus standalone
+    /// sequences, which share the table namespace; routines and packages are not
+    /// matched because a routine may have the same name as a table.
+    TableNames(HashSet<String>),
+    /// `selected_objects`, matched by kind. A routine picked with a signature only
+    /// matches that overload.
+    Objects {
+        names: HashSet<(DatabaseExportObjectKind, String)>,
+        signatures: HashSet<(DatabaseExportObjectKind, String, String)>,
+    },
+}
+
+impl DatabaseExportSelection {
+    fn from_request(request: &DatabaseExportRequest) -> Self {
+        if let Some(objects) = &request.selected_objects {
+            let mut names = HashSet::new();
+            let mut signatures = HashSet::new();
+            for object in objects {
+                let Some(kind) = DatabaseExportObjectKind::from_object_type(&object.object_type) else {
+                    continue;
+                };
+                match object.signature.as_deref().map(str::trim) {
+                    Some(signature)
+                        if matches!(kind, DatabaseExportObjectKind::Procedure | DatabaseExportObjectKind::Function) =>
+                    {
+                        signatures.insert((kind, object.name.clone(), signature.to_string()));
+                    }
+                    _ => {
+                        names.insert((kind, object.name.clone()));
+                    }
+                }
+                // A package is exported with its body so the spec does not replay alone.
+                if kind == DatabaseExportObjectKind::Package {
+                    names.insert((DatabaseExportObjectKind::PackageBody, object.name.clone()));
+                }
+            }
+            return Self::Objects { names, signatures };
+        }
+        if request.selected_tables.is_empty() {
+            Self::WholeSchema
+        } else {
+            Self::TableNames(request.selected_tables.iter().cloned().collect())
+        }
+    }
+
+    fn includes_relation(&self, name: &str) -> bool {
+        match self {
+            Self::WholeSchema => true,
+            Self::TableNames(names) => names.contains(name),
+            Self::Objects { names, .. } => names.contains(&(DatabaseExportObjectKind::Relation, name.to_string())),
+        }
+    }
+
+    /// Picked sequence names for an object browser selection; `None` otherwise.
+    fn sequence_names(&self) -> Option<HashSet<String>> {
+        match self {
+            Self::Objects { names, .. } => Some(
+                names
+                    .iter()
+                    .filter(|(kind, _)| *kind == DatabaseExportObjectKind::Sequence)
+                    .map(|(_, name)| name.clone())
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Selected table and view names; empty for a whole-schema export.
+    fn relation_names(&self) -> Vec<String> {
+        match self {
+            Self::WholeSchema => Vec::new(),
+            Self::TableNames(names) => names.iter().cloned().collect(),
+            Self::Objects { names, .. } => names
+                .iter()
+                .filter(|(kind, _)| *kind == DatabaseExportObjectKind::Relation)
+                .map(|(_, name)| name.clone())
+                .collect(),
+        }
+    }
+
+    fn includes_object(&self, kind: DatabaseExportObjectKind, object: &crate::types::ObjectInfo) -> bool {
+        match self {
+            Self::WholeSchema => true,
+            Self::TableNames(names) => kind == DatabaseExportObjectKind::Sequence && names.contains(&object.name),
+            Self::Objects { names, signatures } => {
+                names.contains(&(kind, object.name.clone()))
+                    || signatures.contains(&(
+                        kind,
+                        object.name.clone(),
+                        object.signature.as_deref().unwrap_or_default().trim().to_string(),
+                    ))
+            }
+        }
+    }
 }
 
 enum DatabaseExportWriter {
@@ -247,10 +391,14 @@ struct DatabaseExportObjectCounts {
     tables: usize,
     views: usize,
     sequences: usize,
+    /// Oracle/Kingbase/Vastbase sequences, collected only when they are exported.
+    standalone_sequences: usize,
     extensions: usize,
     enums: usize,
     procedures: usize,
     functions: usize,
+    /// Package specs and bodies, collected only when they are exported.
+    packages: usize,
     triggers: usize,
     events: usize,
 }
@@ -259,16 +407,28 @@ fn exports_database_tables(request: &DatabaseExportRequest) -> bool {
     request.include_structure || request.include_data
 }
 
-fn exports_database_routines(request: &DatabaseExportRequest) -> bool {
-    // Routine export is schema-wide, so an explicit table selection must not
-    // add unrelated procedures or functions to either execution or progress.
-    exports_schema_wide_objects(request)
+fn exports_whole_schema(request: &DatabaseExportRequest) -> bool {
+    request.selected_objects.is_none() && request.selected_tables.is_empty()
 }
 
-/// Schema-wide objects (routines, triggers, events) are exported as a whole. An explicit
+/// Routines are exported for the whole schema or for an object browser selection,
+/// which carries their types. A table-name selection adds none, so a table never
+/// pulls in a routine of the same name (#13940).
+fn exports_database_routines(request: &DatabaseExportRequest) -> bool {
+    request.include_objects && (request.selected_objects.is_some() || request.selected_tables.is_empty())
+}
+
+/// Packages are exported for engines whose package source replays as PL/SQL
+/// units terminated by a `/` line (see `build_export_object_source_sql`).
+fn exports_package_objects(request: &DatabaseExportRequest, db_type: DatabaseType) -> bool {
+    exports_database_routines(request)
+        && matches!(db_type, DatabaseType::Oracle | DatabaseType::OceanbaseOracle | DatabaseType::Dameng)
+}
+
+/// Schema-wide objects (MySQL triggers and events) are exported as a whole. An explicit
 /// table selection must not add unrelated objects to either execution or progress.
 fn exports_schema_wide_objects(request: &DatabaseExportRequest) -> bool {
-    request.include_objects && request.selected_tables.is_empty()
+    request.include_objects && exports_whole_schema(request)
 }
 
 /// MySQL lists triggers and events as schema-wide objects (see
@@ -292,7 +452,7 @@ fn exports_standalone_sequence_objects(request: &DatabaseExportRequest, db_type:
 }
 
 fn exports_oracle_sequence_objects(request: &DatabaseExportRequest, db_type: DatabaseType) -> bool {
-    matches!(db_type, DatabaseType::Oracle) && request.include_structure && request.selected_tables.is_empty()
+    matches!(db_type, DatabaseType::Oracle) && request.include_structure && exports_whole_schema(request)
 }
 
 /// Oracle backs every identity column with a system-named `ISEQ$$_<object id>` sequence.
@@ -309,7 +469,11 @@ fn database_export_total_objects(request: &DatabaseExportRequest, counts: &Datab
     }
     if request.include_structure {
         total += counts.sequences + counts.extensions + counts.enums;
+    } else if request.include_objects && request.selected_objects.is_some() {
+        // PostgreSQL sequences picked in the object browser, listed without the structure.
+        total += counts.sequences;
     }
+    total += counts.standalone_sequences + counts.packages;
     if request.include_objects {
         total += counts.views;
     }
@@ -1316,6 +1480,58 @@ pub(crate) fn is_geometry_spatial_column_type(column_type: &str) -> bool {
     matches!(base, "geometry" | "geography")
 }
 
+// PostgreSQL database export streams carry only values, not the spatial
+// metadata used by grid exports. Preserve PostGIS's canonical HEXEWKB text
+// behind a marker so normal query decoding cannot turn it into display WKT.
+const POSTGRES_SPATIAL_EXPORT_PREFIX: &str = "DBX_PG_EWKB:";
+
+fn is_postgres_spatial_export_type(column_type: &str) -> bool {
+    // Catalog array types may include a scalar typmod before the array suffix.
+    // Their text representation is an array literal, not a single HEXEWKB value.
+    if column_type.trim_end().ends_with("[]") {
+        return false;
+    }
+    let mut quoted = false;
+    let mut start = 0;
+    let mut end = column_type.len();
+    for (index, ch) in column_type.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '.' if !quoted => start = index + 1,
+            '(' if !quoted => {
+                end = index;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let name = column_type[start..end].trim();
+    if let Some(name) = name.strip_prefix('"').and_then(|name| name.strip_suffix('"')) {
+        matches!(name, "geometry" | "geography")
+    } else {
+        name.eq_ignore_ascii_case("geometry") || name.eq_ignore_ascii_case("geography")
+    }
+}
+
+fn postgres_spatial_export_hex<'a>(
+    value: &'a Value,
+    database_type: Option<DatabaseType>,
+    column_type: Option<&str>,
+) -> Result<Option<&'a str>, String> {
+    if database_type != Some(DatabaseType::Postgres) || !column_type.is_some_and(is_postgres_spatial_export_type) {
+        return Ok(None);
+    }
+    let Some(hex) = value.as_str().and_then(|text| text.strip_prefix(POSTGRES_SPATIAL_EXPORT_PREFIX)) else {
+        return Ok(None);
+    };
+    if hex.is_empty() || hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Invalid PostgreSQL spatial export value: expected hexadecimal EWKB".to_string());
+    }
+    // Do not use the display WKB decoder to validate/re-encode: PostGIS also
+    // supports curves and surfaces that the preview decoder does not support.
+    Ok(Some(hex))
+}
+
 /// Xugu returns spatial values as readable WKT/EWKT text. Plain WKT is
 /// accepted by the server, but it cannot carry a non-zero SRID; database
 /// exports therefore select EWKT and replay it through the Xugu constructor.
@@ -1724,7 +1940,12 @@ pub(crate) fn build_export_insert_statements_excluding_with_dialect(
             } else {
                 value
             };
-            let literal = if insert_dialect == SqlInsertDialect::Standard {
+            let literal = if let Some(hex) = postgres_spatial_export_hex(value, options.database_type, column_type)? {
+                // PostGIS accepts canonical HEXEWKB for both geometry and
+                // geography. A literal also works in Standard SQL mode and
+                // does not depend on the extension's schema/search_path.
+                quote_standard_export_sql_string(hex)
+            } else if insert_dialect == SqlInsertDialect::Standard {
                 format_standard_sql_literal(value, options.database_type)
             } else if let Some(literal) =
                 crate::data_grid_sql::format_oracle_lob_export_literal(value, options.database_type, column_type)?
@@ -2622,11 +2843,39 @@ async fn postgres_export_sequence_parameters_legacy(
     }))
 }
 
+/// Table-owned sequences follow their table. Standalone sequences are exported with the
+/// whole schema's objects, or, for an object browser selection (`selected_sequences`),
+/// only when picked; a table-name selection never adds them.
+fn exports_postgres_sequence(
+    name: &str,
+    owner_table: Option<&str>,
+    selected_tables: &HashSet<&str>,
+    excluded_tables: &HashSet<&str>,
+    include_objects: bool,
+    selected_sequences: Option<&HashSet<String>>,
+) -> bool {
+    match owner_table {
+        Some(owner_table) => {
+            !excluded_tables.contains(owner_table)
+                && ((selected_tables.is_empty() && selected_sequences.is_none())
+                    || selected_tables.contains(owner_table))
+        }
+        None => {
+            include_objects
+                && match selected_sequences {
+                    Some(sequences) => sequences.contains(name),
+                    None => selected_tables.is_empty(),
+                }
+        }
+    }
+}
+
 async fn list_postgres_export_sequences(
     state: &crate::connection::AppState,
     pool_key: &str,
     schema: &str,
     selected_tables: &[String],
+    selected_sequences: Option<&HashSet<String>>,
     excluded_tables: &[String],
     include_objects: bool,
     fail_on_error: bool,
@@ -2677,11 +2926,15 @@ async fn list_postgres_export_sequences(
             created_by_table: row.get::<_, bool>(10),
         })
         .filter(|sequence| {
-            sequence.owner_table.as_deref().is_none_or(|owner_table| !excluded.contains(owner_table))
-                && (selected.is_empty()
-                    || sequence.owner_table.as_deref().is_some_and(|owner_table| selected.contains(owner_table)))
+            exports_postgres_sequence(
+                &sequence.name,
+                sequence.owner_table.as_deref(),
+                &selected,
+                &excluded,
+                include_objects,
+                selected_sequences,
+            )
         })
-        .filter(|sequence| sequence.owner_table.is_some() || (include_objects && selected.is_empty()))
         .collect::<Vec<_>>();
 
     if sequences.is_empty() {
@@ -3078,6 +3331,19 @@ fn database_export_select_list(columns: &[String], column_types: &[Option<String
                 && column_types.get(index).and_then(|value| value.as_deref()).is_some_and(is_mysql_spatial_export_type)
             {
                 mysql_spatial_export_marker_expression(column)
+            } else if *db_type == DatabaseType::Postgres
+                && column_types
+                    .get(index)
+                    .and_then(|value| value.as_deref())
+                    .is_some_and(is_postgres_spatial_export_type)
+            {
+                let quoted = quote_identifier(column, db_type);
+                // PostGIS's text output is HEXEWKB, including SRID and Z/M.
+                // The text cast needs no extension function or type lookup.
+                // Do not alias this expression to the source column: ORDER BY
+                // would then sort the hex text instead of the spatial key used
+                // by WHERE. Export writers use catalog names and positional rows.
+                format!("'{POSTGRES_SPATIAL_EXPORT_PREFIX}' || {quoted}::text")
             } else if *db_type == DatabaseType::Xugu
                 && column_types
                     .get(index)
@@ -3768,6 +4034,9 @@ pub async fn export_database_sql_core(
     request: &DatabaseExportRequest,
     on_progress: impl Fn(ExportProgress) + Sync,
 ) -> Result<(), String> {
+    if request.selected_objects.as_ref().is_some_and(Vec::is_empty) {
+        return Err("No objects are selected for export".to_string());
+    }
     crate::query::mysql_data_charset_policy::reject_operation(
         state,
         &request.connection_id,
@@ -4258,20 +4527,16 @@ async fn export_database_sql_core_inner(
         .into_iter()
         .filter(|table| !postgres_extension_members.relation_names.contains(&table.name))
         .collect::<Vec<_>>();
+    let selection = DatabaseExportSelection::from_request(request);
     let mut tables: Vec<_> = all_tables
         .iter()
         .filter(|t| !t.table_type.contains("VIEW"))
-        .filter(|t| request.selected_tables.is_empty() || request.selected_tables.contains(&t.name))
+        .filter(|t| selection.includes_relation(&t.name))
         .collect();
     let mut views: Vec<_> = all_tables
         .iter()
         .filter(|t| t.table_type.contains("VIEW"))
-        .filter(|t| {
-            if !request.include_objects {
-                return false;
-            }
-            request.selected_tables.is_empty() || request.selected_tables.contains(&t.name)
-        })
+        .filter(|t| request.include_objects && selection.includes_relation(&t.name))
         .collect();
     if request.include_objects && db_type == DatabaseType::Mysql && views.len() > 1 {
         match list_mysql_export_view_dependencies(state, &request.connection_id, &request.database, &client_session_id)
@@ -4286,36 +4551,47 @@ async fn export_database_sql_core_inner(
             }
         }
     }
-    let postgres_sequences = if request.include_structure && matches!(db_type, DatabaseType::Postgres) {
-        match await_export_operation(
-            &request.export_id,
-            Box::pin(list_postgres_export_sequences(
-                state,
-                &pool_key,
-                &request.schema,
-                &request.selected_tables,
-                &request.excluded_tables,
-                request.include_objects,
-                request.fail_on_error,
-            )),
-        )
-        .await
-        {
-            Ok(sequences) => sequences,
-            Err(e) if e == EXPORT_CANCELLED_ERROR => return Err(EXPORT_CANCELLED_ERROR.to_string()),
-            Err(e) => {
-                record_export_error(
-                    &mut file,
+    // Table-owned sequences come with the table structure. An empty table list means
+    // the whole schema, so a selection without tables or views lists none of them.
+    // Standalone sequences picked in the object browser are objects of their own.
+    let selected_sequence_names = selection.sequence_names();
+    let sequence_owner_tables = if request.include_structure { selection.relation_names() } else { Vec::new() };
+    let lists_table_sequences =
+        request.include_structure && (exports_whole_schema(request) || !sequence_owner_tables.is_empty());
+    let lists_picked_sequences =
+        request.include_objects && selected_sequence_names.as_ref().is_some_and(|names| !names.is_empty());
+    let postgres_sequences =
+        if matches!(db_type, DatabaseType::Postgres) && (lists_table_sequences || lists_picked_sequences) {
+            match await_export_operation(
+                &request.export_id,
+                Box::pin(list_postgres_export_sequences(
+                    state,
+                    &pool_key,
+                    &request.schema,
+                    &sequence_owner_tables,
+                    selected_sequence_names.as_ref(),
+                    &request.excluded_tables,
+                    request.include_objects,
                     request.fail_on_error,
-                    format!("exporting sequences: {e}"),
-                    &mut lenient_errors,
-                )?;
-                Vec::new()
+                )),
+            )
+            .await
+            {
+                Ok(sequences) => sequences,
+                Err(e) if e == EXPORT_CANCELLED_ERROR => return Err(EXPORT_CANCELLED_ERROR.to_string()),
+                Err(e) => {
+                    record_export_error(
+                        &mut file,
+                        request.fail_on_error,
+                        format!("exporting sequences: {e}"),
+                        &mut lenient_errors,
+                    )?;
+                    Vec::new()
+                }
             }
-        }
-    } else {
-        Vec::new()
-    };
+        } else {
+            Vec::new()
+        };
 
     // Sort tables by foreign key dependency so referenced (parent) tables are
     // exported before referencing (child) tables. MySQL exports always emit
@@ -4351,10 +4627,14 @@ async fn export_database_sql_core_inner(
     let mut triggers: Vec<crate::types::ObjectInfo> = Vec::new();
     let mut events: Vec<crate::types::ObjectInfo> = Vec::new();
     let mut standalone_sequences: Vec<crate::types::ObjectInfo> = Vec::new();
+    let mut packages: Vec<crate::types::ObjectInfo> = Vec::new();
+    let mut package_bodies: Vec<crate::types::ObjectInfo> = Vec::new();
+    let collects_routines = exports_database_routines(request);
     let collects_schema_wide_objects = exports_schema_wide_objects(request);
     let collects_standalone_sequences = exports_standalone_sequence_objects(request, db_type);
+    let collects_packages = exports_package_objects(request, db_type);
 
-    if collects_schema_wide_objects || collects_standalone_sequences {
+    if collects_routines || collects_schema_wide_objects || collects_standalone_sequences || collects_packages {
         match crate::schema::list_objects_core(
             state,
             &request.connection_id,
@@ -4380,16 +4660,29 @@ async fn export_database_sql_core_inner(
                         }
                         continue;
                     }
-                    if !collects_schema_wide_objects {
+                    if ot == "PACKAGE" || ot == "PACKAGE_BODY" || ot == "PACKAGE BODY" {
+                        if collects_packages {
+                            if ot == "PACKAGE" {
+                                packages.push(obj.clone())
+                            } else {
+                                package_bodies.push(obj.clone())
+                            }
+                        }
                         continue;
                     }
-                    if ot.contains("PROCEDURE") {
+                    if collects_routines && ot.contains("PROCEDURE") {
                         procedures.push(obj.clone());
-                    } else if ot.contains("FUNCTION") {
+                    } else if collects_routines && ot.contains("FUNCTION") {
                         functions.push(obj.clone());
-                    } else if exports_mysql_trigger_objects(db_type) && ot.contains("TRIGGER") {
+                    } else if collects_schema_wide_objects
+                        && exports_mysql_trigger_objects(db_type)
+                        && ot.contains("TRIGGER")
+                    {
                         triggers.push(obj.clone());
-                    } else if exports_mysql_trigger_objects(db_type) && ot.contains("EVENT") {
+                    } else if collects_schema_wide_objects
+                        && exports_mysql_trigger_objects(db_type)
+                        && ot.contains("EVENT")
+                    {
                         events.push(obj.clone());
                     }
                 }
@@ -4399,10 +4692,14 @@ async fn export_database_sql_core_inner(
         }
     }
 
-    if !request.selected_tables.is_empty() {
-        standalone_sequences.retain(|s| request.selected_tables.contains(&s.name));
-        procedures.retain(|p| request.selected_tables.contains(&p.name));
-        functions.retain(|f| request.selected_tables.contains(&f.name));
+    for (kind, objects) in [
+        (DatabaseExportObjectKind::Sequence, &mut standalone_sequences),
+        (DatabaseExportObjectKind::Procedure, &mut procedures),
+        (DatabaseExportObjectKind::Function, &mut functions),
+        (DatabaseExportObjectKind::Package, &mut packages),
+        (DatabaseExportObjectKind::PackageBody, &mut package_bodies),
+    ] {
+        objects.retain(|object| selection.includes_object(kind, object));
     }
 
     // A determinate total must describe the same object categories guarded by
@@ -4412,12 +4709,13 @@ async fn export_database_sql_core_inner(
         &DatabaseExportObjectCounts {
             tables: tables.len(),
             views: views.len(),
-            sequences: postgres_sequences.iter().filter(|sequence| !sequence.created_by_table).count()
-                + standalone_sequences.len(),
+            sequences: postgres_sequences.iter().filter(|sequence| !sequence.created_by_table).count(),
+            standalone_sequences: standalone_sequences.len(),
             extensions: postgres_extensions.len(),
             enums: postgres_enums.len(),
             procedures: procedures.len(),
             functions: functions.len(),
+            packages: packages.len() + package_bodies.len(),
             triggers: triggers.len(),
             events: events.len(),
         },
@@ -5014,8 +5312,17 @@ async fn export_database_sql_core_inner(
                         total_rows_exported += row_count as u64;
                         if use_keyset {
                             if let Some(last_row) = result.rows.last() {
-                                last_primary_key_values =
-                                    primary_key_indices.iter().map(|&index| last_row[index].clone()).collect();
+                                last_primary_key_values = primary_key_indices
+                                    .iter()
+                                    .map(|&index| {
+                                        let value = &last_row[index];
+                                        let column_type = col_types.get(index).and_then(|value| value.as_deref());
+                                        // Keep the internal marker out of the next WHERE boundary.
+                                        // A spatial key compares using the original canonical value.
+                                        Ok(postgres_spatial_export_hex(value, Some(db_type), column_type)?
+                                            .map_or_else(|| value.clone(), |hex| Value::String(hex.to_string())))
+                                    })
+                                    .collect::<Result<Vec<_>, String>>()?;
                             }
                         } else {
                             offset += row_count as u64;
@@ -5044,7 +5351,8 @@ async fn export_database_sql_core_inner(
         object_index += 1;
     }
 
-    if request.include_structure && !postgres_sequences.is_empty() {
+    // Only listed for the table structure or for picked standalone sequences.
+    if !postgres_sequences.is_empty() {
         for sequence in &postgres_sequences {
             if let Some(sql) = generate_postgres_sequence_post_table_ddl(sequence, &request.schema) {
                 writeln!(file, "{};\n", sql).map_err(|e| format!("Failed to write file: {e}"))?;
@@ -5118,17 +5426,27 @@ async fn export_database_sql_core_inner(
             object_index += 1;
         }
 
-        // Export procedures
-        for procedure in &procedures {
+        // Package specs go first because standalone routines may call into them;
+        // package bodies go last because they may call standalone routines.
+        let routine_objects = packages
+            .iter()
+            .map(|object| (object, ObjectSourceKind::Package, "package"))
+            .chain(procedures.iter().map(|object| (object, ObjectSourceKind::Procedure, "procedure")))
+            .chain(functions.iter().map(|object| (object, ObjectSourceKind::Function, "function")))
+            .chain(package_bodies.iter().map(|object| (object, ObjectSourceKind::PackageBody, "package body")));
+        // Oracle's package DDL also carries the body; it is held back for the body's slot
+        // instead of being written with the spec or fetched a second time.
+        let mut deferred_package_bodies: HashMap<String, String> = HashMap::new();
+        for (routine, object_type, kind_label) in routine_objects {
             if is_export_cancelled(&request.export_id).await {
                 return Err("Export cancelled".to_string());
             }
 
-            let proc_name = &procedure.name;
+            let routine_name = &routine.name;
 
             on_progress(ExportProgress {
                 export_id: request.export_id.clone(),
-                current_object: proc_name.clone(),
+                current_object: routine_name.clone(),
                 object_index,
                 total_objects,
                 rows_exported: total_rows_exported,
@@ -5140,24 +5458,42 @@ async fn export_database_sql_core_inner(
                 error_summary: None,
             });
 
-            match crate::schema::get_object_source_core(
-                state,
-                &request.connection_id,
-                &request.database,
-                &request.schema,
-                proc_name,
-                crate::db::ObjectSourceKind::Procedure,
-                procedure.signature.as_deref(),
-                None,
-            )
-            .await
-            {
-                Ok(obj_source) => {
+            let deferred_body = if object_type == ObjectSourceKind::PackageBody {
+                deferred_package_bodies.remove(routine_name)
+            } else {
+                None
+            };
+            let routine_source = match deferred_body {
+                Some(body) => Ok(body),
+                None => crate::schema::get_object_source_core(
+                    state,
+                    &request.connection_id,
+                    &request.database,
+                    &request.schema,
+                    routine_name,
+                    object_type.clone(),
+                    routine.signature.as_deref(),
+                    None,
+                )
+                .await
+                .map(|obj_source| obj_source.source),
+            };
+            match routine_source {
+                Ok(routine_source) => {
+                    let routine_source = if object_type == ObjectSourceKind::Package {
+                        let (spec, body) = crate::object_source_sql::split_package_spec_and_body(&routine_source);
+                        if let Some(body) = body {
+                            deferred_package_bodies.insert(routine_name.clone(), body.to_string());
+                        }
+                        spec.to_string()
+                    } else {
+                        routine_source
+                    };
                     let source = build_database_export_object_source_sql(
                         db_type,
-                        &ObjectSourceKind::Procedure,
-                        proc_name,
-                        &obj_source.source,
+                        &object_type,
+                        routine_name,
+                        &routine_source,
                         &request.schema,
                         request.drop_table_if_exists,
                     );
@@ -5169,7 +5505,7 @@ async fn export_database_sql_core_inner(
                     record_export_error(
                         &mut file,
                         request.fail_on_error,
-                        format!("exporting procedure {proc_name}: {e}"),
+                        format!("exporting {kind_label} {routine_name}: {e}"),
                         &mut lenient_errors,
                     )?;
                 }
@@ -5177,65 +5513,21 @@ async fn export_database_sql_core_inner(
 
             object_index += 1;
         }
-
-        // Export functions
-        for function in &functions {
-            if is_export_cancelled(&request.export_id).await {
-                return Err("Export cancelled".to_string());
-            }
-
-            let func_name = &function.name;
-
-            on_progress(ExportProgress {
-                export_id: request.export_id.clone(),
-                current_object: func_name.clone(),
-                object_index,
-                total_objects,
-                rows_exported: total_rows_exported,
-                total_rows: None,
-                status: ExportStatus::Running,
-                error: None,
-                preparing: false,
-                error_count: 0,
-                error_summary: None,
-            });
-
-            match crate::schema::get_object_source_core(
-                state,
-                &request.connection_id,
-                &request.database,
+        // A body that arrived with its spec but has no listed slot of its own is still written.
+        let mut unlisted_package_bodies: Vec<_> = deferred_package_bodies.into_iter().collect();
+        unlisted_package_bodies.sort();
+        for (name, body) in unlisted_package_bodies {
+            let source = build_database_export_object_source_sql(
+                db_type,
+                &ObjectSourceKind::PackageBody,
+                &name,
+                &body,
                 &request.schema,
-                func_name,
-                crate::db::ObjectSourceKind::Function,
-                function.signature.as_deref(),
-                None,
-            )
-            .await
-            {
-                Ok(obj_source) => {
-                    let source = build_database_export_object_source_sql(
-                        db_type,
-                        &ObjectSourceKind::Function,
-                        func_name,
-                        &obj_source.source,
-                        &request.schema,
-                        request.drop_table_if_exists,
-                    );
-                    if !source.is_empty() {
-                        writeln!(file, "{source}\n").map_err(|e| format!("Failed to write file: {e}"))?;
-                    }
-                }
-                Err(e) => {
-                    record_export_error(
-                        &mut file,
-                        request.fail_on_error,
-                        format!("exporting function {func_name}: {e}"),
-                        &mut lenient_errors,
-                    )?;
-                }
+                request.drop_table_if_exists,
+            );
+            if !source.is_empty() {
+                writeln!(file, "{source}\n").map_err(|e| format!("Failed to write file: {e}"))?;
             }
-
-            object_index += 1;
         }
 
         // Export triggers and events after routines: a trigger body may call a routine,
@@ -5666,6 +5958,7 @@ mod tests {
             schema: "public".to_string(),
             file_path: "export.sql".to_string(),
             selected_tables,
+            selected_objects: None,
             excluded_tables: Vec::new(),
             include_structure,
             include_data,
@@ -5790,6 +6083,7 @@ mod tests {
             functions: 1,
             triggers: 2,
             events: 1,
+            ..Default::default()
         };
 
         let cases = [
@@ -5818,9 +6112,9 @@ mod tests {
     }
 
     #[test]
-    fn export_progress_total_excludes_schema_routines_for_selected_tables() {
-        // Counts are already filtered to the selected table/view set before
-        // workload calculation; schema-wide routines remain intentionally out.
+    fn export_progress_total_counts_selected_routines_but_not_schema_wide_objects() {
+        // Counts are already filtered to the selection before workload
+        // calculation, so selected routines count while triggers/events stay out.
         let counts = DatabaseExportObjectCounts {
             tables: 1,
             views: 1,
@@ -5831,10 +6125,288 @@ mod tests {
             functions: 5,
             triggers: 2,
             events: 3,
+            ..Default::default()
         };
-        let request = export_request(true, true, true, vec!["users".to_string(), "active_users".to_string()]);
+        let mut request = object_selection_request(vec![
+            selected_object("TABLE", "users", None),
+            selected_object("FUNCTION", "refresh_cache", None),
+        ]);
+        request.include_structure = true;
+        request.include_data = true;
+        assert_eq!(database_export_total_objects(&request, &counts), 14);
 
-        assert_eq!(database_export_total_objects(&request, &counts), 5);
+        // A table-name selection collects no routines, so none are counted either.
+        let table_names = export_request(true, true, true, vec!["users".to_string()]);
+        assert_eq!(database_export_total_objects(&table_names, &counts), 5);
+    }
+
+    #[test]
+    fn export_progress_total_counts_collected_standalone_sequences_and_packages() {
+        // These lists are only filled when their objects are exported, so they always
+        // count, including the objects-only export that used to report 10/7 (#13940).
+        let counts = DatabaseExportObjectCounts {
+            views: 2,
+            standalone_sequences: 3,
+            procedures: 3,
+            functions: 2,
+            packages: 4,
+            ..Default::default()
+        };
+
+        assert_eq!(database_export_total_objects(&export_request(false, false, true, Vec::new()), &counts), 14);
+    }
+
+    fn selected_object(object_type: &str, name: &str, signature: Option<&str>) -> super::DatabaseExportSelectedObject {
+        super::DatabaseExportSelectedObject {
+            object_type: object_type.to_string(),
+            name: name.to_string(),
+            signature: signature.map(str::to_string),
+        }
+    }
+
+    fn object_selection_request(objects: Vec<super::DatabaseExportSelectedObject>) -> DatabaseExportRequest {
+        let mut request = export_request(false, false, true, Vec::new());
+        request.selected_objects = Some(objects);
+        request
+    }
+
+    fn routine_object(object_type: &str, name: &str, signature: Option<&str>) -> ObjectInfo {
+        ObjectInfo {
+            object_type: object_type.to_string(),
+            signature: signature.map(str::to_string),
+            ..routine(name, "")
+        }
+    }
+
+    #[test]
+    fn routines_and_packages_follow_include_objects_and_typed_selections() {
+        use super::{exports_database_routines, exports_package_objects};
+
+        let picked = || vec![selected_object("PROCEDURE", "PRC_CLEAR_ORDERS", None)];
+        let cases = [
+            (
+                "objects only, object browser selection",
+                DatabaseType::Oracle,
+                object_selection_request(picked()),
+                true,
+                true,
+            ),
+            (
+                "objects only, whole schema",
+                DatabaseType::Oracle,
+                export_request(false, false, true, Vec::new()),
+                true,
+                true,
+            ),
+            // Table names carry no type, so they must not pull in routines of the same name.
+            (
+                "table name selection",
+                DatabaseType::Oracle,
+                export_request(true, true, true, vec!["ORDERS".to_string()]),
+                false,
+                false,
+            ),
+            ("structure only", DatabaseType::Oracle, export_request(true, false, false, Vec::new()), false, false),
+            ("oceanbase oracle", DatabaseType::OceanbaseOracle, object_selection_request(picked()), true, true),
+            ("dameng", DatabaseType::Dameng, object_selection_request(picked()), true, true),
+            ("postgres has no packages", DatabaseType::Postgres, object_selection_request(picked()), true, false),
+        ];
+        for (name, db_type, request, routines, packages) in cases {
+            assert_eq!(exports_database_routines(&request), routines, "{name}");
+            assert_eq!(exports_package_objects(&request, db_type), packages, "{name}");
+        }
+    }
+
+    #[test]
+    fn selections_match_objects_by_type_name_and_signature() {
+        use super::{DatabaseExportObjectKind as Kind, DatabaseExportSelection};
+
+        let orders_table = selected_object("TABLE", "orders", None);
+        let orders_function = selected_object("FUNCTION", "orders", Some("integer"));
+        let cases = [
+            (
+                "a table does not select a function of the same name",
+                object_selection_request(vec![orders_table.clone()]),
+                Kind::Function,
+                routine_object("FUNCTION", "orders", Some("integer")),
+                false,
+            ),
+            (
+                "a function does not select a procedure of the same name",
+                object_selection_request(vec![selected_object("FUNCTION", "sync", None)]),
+                Kind::Procedure,
+                routine_object("PROCEDURE", "sync", None),
+                false,
+            ),
+            (
+                "a picked overload selects that overload",
+                object_selection_request(vec![orders_function.clone()]),
+                Kind::Function,
+                routine_object("FUNCTION", "orders", Some(" integer ")),
+                true,
+            ),
+            (
+                "a picked overload does not select another one",
+                object_selection_request(vec![orders_function.clone()]),
+                Kind::Function,
+                routine_object("FUNCTION", "orders", Some("integer, text")),
+                false,
+            ),
+            (
+                "a routine picked without a signature selects every overload",
+                object_selection_request(vec![selected_object("PROCEDURE", "PRC_CLEAR_ORDERS", None)]),
+                Kind::Procedure,
+                routine_object("PROCEDURE", "PRC_CLEAR_ORDERS", Some("p_days NUMBER")),
+                true,
+            ),
+            (
+                "a package selects its body",
+                object_selection_request(vec![selected_object("PACKAGE", "PKG_ORDER", None)]),
+                Kind::PackageBody,
+                routine_object("PACKAGE BODY", "PKG_ORDER", None),
+                true,
+            ),
+            (
+                "a package body does not select its spec",
+                object_selection_request(vec![selected_object("PACKAGE_BODY", "PKG_ORDER", None)]),
+                Kind::Package,
+                routine_object("PACKAGE", "PKG_ORDER", None),
+                false,
+            ),
+            (
+                "a sequence is matched as a sequence",
+                object_selection_request(vec![selected_object("SEQUENCE", "SEQ_ORDER", None)]),
+                Kind::Sequence,
+                routine_object("SEQUENCE", "SEQ_ORDER", None),
+                true,
+            ),
+            (
+                "table names do not select a routine of the same name",
+                export_request(true, true, true, vec!["orders".to_string()]),
+                Kind::Function,
+                routine_object("FUNCTION", "orders", None),
+                false,
+            ),
+            (
+                "table names still select a standalone sequence",
+                export_request(true, false, true, vec!["SEQ_ORDER".to_string()]),
+                Kind::Sequence,
+                routine_object("SEQUENCE", "SEQ_ORDER", None),
+                true,
+            ),
+            (
+                "the whole schema selects everything",
+                export_request(false, false, true, Vec::new()),
+                Kind::Function,
+                routine_object("FUNCTION", "orders", None),
+                true,
+            ),
+        ];
+        for (name, request, kind, object, expected) in cases {
+            assert_eq!(
+                DatabaseExportSelection::from_request(&request).includes_object(kind, &object),
+                expected,
+                "{name}"
+            );
+        }
+
+        let functions_only = DatabaseExportSelection::from_request(&object_selection_request(vec![orders_function]));
+        assert!(!functions_only.includes_relation("orders"), "a function does not select a table of the same name");
+        assert!(functions_only.relation_names().is_empty());
+        let tables_and_views = DatabaseExportSelection::from_request(&object_selection_request(vec![
+            orders_table,
+            selected_object("VIEW", "v_orders", None),
+            selected_object("MATERIALIZED_VIEW", "mv_orders", None),
+        ]));
+        for relation in ["orders", "v_orders", "mv_orders"] {
+            assert!(tables_and_views.includes_relation(relation), "{relation}");
+        }
+    }
+
+    #[test]
+    fn postgres_sequences_follow_their_table_or_an_object_browser_pick() {
+        use super::exports_postgres_sequence;
+        use std::collections::HashSet;
+
+        let none = HashSet::new();
+        let orders = HashSet::from(["orders"]);
+        let picked = HashSet::from(["invoice_seq".to_string()]);
+        let nothing_picked = HashSet::new();
+        let cases = [
+            ("whole schema, owned", "orders_id_seq", Some("orders"), &none, true, None, true),
+            ("whole schema, standalone", "invoice_seq", None, &none, true, None, true),
+            ("whole schema without objects, standalone", "invoice_seq", None, &none, false, None, false),
+            ("table names, owned by a picked table", "orders_id_seq", Some("orders"), &orders, true, None, true),
+            ("table names, standalone", "invoice_seq", None, &orders, true, None, false),
+            ("object pick, standalone", "invoice_seq", None, &none, true, Some(&picked), true),
+            ("object pick, other standalone", "other_seq", None, &none, true, Some(&picked), false),
+            ("object pick without objects", "invoice_seq", None, &none, false, Some(&picked), false),
+            (
+                "object pick, owned by an unpicked table",
+                "orders_id_seq",
+                Some("orders"),
+                &none,
+                true,
+                Some(&picked),
+                false,
+            ),
+            (
+                "object pick, owned by a picked table",
+                "orders_id_seq",
+                Some("orders"),
+                &orders,
+                true,
+                Some(&nothing_picked),
+                true,
+            ),
+        ];
+        for (name, sequence, owner, selected_tables, include_objects, selected_sequences, expected) in cases {
+            assert_eq!(
+                exports_postgres_sequence(sequence, owner, selected_tables, &none, include_objects, selected_sequences),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn object_selections_never_fall_back_to_the_whole_schema() {
+        use super::{exports_oracle_sequence_objects, exports_schema_wide_objects, exports_whole_schema};
+
+        let mut request = object_selection_request(vec![selected_object("FUNCTION", "orders", None)]);
+        request.include_structure = true;
+        assert!(!exports_whole_schema(&request));
+        assert!(!exports_schema_wide_objects(&request));
+        assert!(!exports_oracle_sequence_objects(&request, DatabaseType::Oracle));
+
+        let empty: DatabaseExportRequest = serde_json::from_value(json!({
+            "exportId": "export-1",
+            "connectionId": "connection-1",
+            "database": "app",
+            "schema": "public",
+            "filePath": "app.sql",
+            "selectedObjects": [],
+            "includeStructure": false,
+            "includeData": false,
+            "includeObjects": true,
+            "batchSize": 1000
+        }))
+        .expect("deserialize an empty object selection");
+        assert_eq!(empty.selected_objects, Some(Vec::new()));
+        assert!(!exports_whole_schema(&empty), "an empty selection is not the whole schema");
+    }
+
+    #[tokio::test]
+    async fn empty_object_selection_is_rejected_before_exporting() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = Arc::new(test_app_state(directory.path()).await);
+        let mut request = object_selection_request(Vec::new());
+        request.file_path = directory.path().join("empty.sql").to_string_lossy().into_owned();
+
+        let error = super::export_database_sql_core(&state, &request, |_| {}).await.unwrap_err();
+
+        assert_eq!(error, "No objects are selected for export");
+        assert!(!directory.path().join("empty.sql").exists());
     }
 
     #[test]
@@ -6535,6 +7107,113 @@ mod tests {
         ));
         assert!(sql.contains("WHERE `id` > 7"), "sql: {sql}");
         assert!(sql.contains("ORDER BY `id` ASC LIMIT 1000"), "sql: {sql}");
+    }
+
+    #[test]
+    fn postgres_spatial_export_type_preserves_quoted_identifier_boundaries() {
+        for data_type in
+            ["geometry", "GEOGRAPHY(Point,4326)", "spatial.geometry", "\"spatial.schema(1)\".\"geometry\"(PointZ,4326)"]
+        {
+            assert!(super::is_postgres_spatial_export_type(data_type), "{data_type}");
+        }
+        for data_type in [
+            "text",
+            "geometry[]",
+            "geometry(Point,4326)[]",
+            "geography(Point,4326)[]",
+            "\"spatial\".\"geometry\"(PointZ,4326)[]",
+            "\"fake.geometry\"",
+            "spatial.\"fake.geometry\"",
+            "\"GEOMETRY\"",
+        ] {
+            assert!(!super::is_postgres_spatial_export_type(data_type), "{data_type}");
+        }
+    }
+
+    #[test]
+    fn postgres_spatial_database_export_preserves_canonical_ewkb_in_both_dialects() {
+        let hex = "0101000020E6100000000000000000F03F0000000000000040";
+        for dialect in [SqlInsertDialect::Source, SqlInsertDialect::Standard] {
+            let mut output = Vec::new();
+            super::write_database_export_rows_with_mode(
+                &mut output,
+                &[vec![json!(format!("DBX_PG_EWKB:{hex}")), Value::Null, json!("DBX_PG_EWKB:not geometry")]],
+                &["shape".into(), "location".into(), "label".into()],
+                &[Some("geometry(Point,4326)".into()), Some("geography".into()), Some("text".into())],
+                &[],
+                "places",
+                "public",
+                &DatabaseType::Postgres,
+                dialect,
+                Default::default(),
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+            let output = String::from_utf8(output).unwrap();
+            assert!(output.contains(&format!("VALUES ('{hex}', NULL, 'DBX_PG_EWKB:not geometry');")), "{output}");
+        }
+    }
+
+    #[test]
+    fn postgres_spatial_database_export_rejects_corrupt_internal_values() {
+        for value in ["DBX_PG_EWKB:", "DBX_PG_EWKB:0", "DBX_PG_EWKB:xx", "DBX_PG_EWKB:00');--"] {
+            let mut output = Vec::new();
+            let error = write_database_export_rows(
+                &mut output,
+                &[vec![json!(value)]],
+                &["shape".into()],
+                &[Some("geometry".into())],
+                &[],
+                "places",
+                "public",
+                &DatabaseType::Postgres,
+                SqlInsertDialect::Source,
+            )
+            .unwrap_err();
+            assert!(error.contains("expected hexadecimal EWKB"));
+            assert!(output.is_empty());
+        }
+        let marker = json!("DBX_PG_EWKB:0101000000000000000000F03F0000000000000040");
+        for (db, column_type) in [
+            (Some(DatabaseType::Mysql), Some("geometry")),
+            (Some(DatabaseType::Xugu), Some("geometry")),
+            (Some(DatabaseType::Postgres), Some("text")),
+            (Some(DatabaseType::Postgres), Some("geometry(Point,4326)[]")),
+            (Some(DatabaseType::Postgres), Some("geography(Point,4326)[]")),
+            (Some(DatabaseType::Postgres), None),
+            (None, Some("geometry")),
+        ] {
+            assert!(super::postgres_spatial_export_hex(&marker, db, column_type).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn postgres_spatial_export_projection_handles_qualified_types_and_quoted_identifiers() {
+        let columns = vec!["id".into(), "shape\"quoted".into(), "location".into(), "label".into()];
+        let types = vec![
+            Some("int".into()),
+            Some("\"spatial\".\"geometry\"(PointZ,4326)".into()),
+            Some("spatial.geography".into()),
+            Some("text".into()),
+        ];
+        let sql = database_export_select_sql(&columns, &types, "places", "public", &DatabaseType::Postgres);
+        assert_eq!(sql, "SELECT \"id\", 'DBX_PG_EWKB:' || \"shape\"\"quoted\"::text, 'DBX_PG_EWKB:' || \"location\"::text, \"label\" FROM \"public\".\"places\"");
+        let paged = crate::transfer::keyset_pagination_sql_with_identifier_quote(
+            &columns,
+            "places",
+            "public",
+            &DatabaseType::Postgres,
+            &["id".into()],
+            &[json!(7)],
+            2,
+            None,
+        );
+        let rewritten = replace_database_export_select_list(paged, &columns, &types, &DatabaseType::Postgres);
+        assert!(rewritten.contains("WHERE \"id\" > 7"), "{rewritten}");
+        assert!(rewritten.contains("ORDER BY \"id\" ASC LIMIT 2"), "{rewritten}");
+        assert!(rewritten.contains("'DBX_PG_EWKB:' || \"location\"::text"));
     }
 
     #[test]

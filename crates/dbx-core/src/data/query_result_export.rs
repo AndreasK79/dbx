@@ -105,6 +105,8 @@ pub struct QueryResultExportRequest {
     /// 是否写出表头行；缺省 true（旧语义）。
     #[serde(default = "default_csv_include_header")]
     pub csv_include_header: bool,
+    #[serde(default)]
+    pub csv_without_bom: bool,
     /// CSV 里 NULL 写成什么。默认 `\N`；空字符串表示关闭该字面量，
     /// 退回「NULL 写成空字段」的旧行为（此时 NULL 与空字符串在文件里无法区分）。
     #[serde(default = "default_csv_null_literal")]
@@ -1296,7 +1298,9 @@ async fn export_query_result_core_inner(
         None
     };
     if let Some(file) = text_file.as_mut() {
-        file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        if format != "csv" || !request.csv_without_bom {
+            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        }
     }
 
     let mut xlsx = None;
@@ -1708,7 +1712,9 @@ async fn try_export_postgres_query_result_stream(
     let mut text_file = if format == "csv" || format == "txt" {
         let mut file =
             BufWriter::new(File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?);
-        file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        if format != "csv" || !request.csv_without_bom {
+            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        }
         Some(file)
     } else {
         None
@@ -1907,7 +1913,9 @@ async fn try_export_mysql_query_result_stream(
     let mut text_file = if format == "csv" || format == "txt" {
         let mut file =
             BufWriter::new(File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?);
-        file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        if format != "csv" || !request.csv_without_bom {
+            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        }
         Some(file)
     } else {
         None
@@ -2194,7 +2202,9 @@ async fn try_export_clickhouse_query_result_stream(
     let mut text_file = if format == "csv" || format == "txt" {
         let mut file =
             BufWriter::new(File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?);
-        file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        if format != "csv" || !request.csv_without_bom {
+            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        }
         Some(file)
     } else {
         None
@@ -2376,7 +2386,9 @@ async fn try_export_sqlserver_query_result_stream(
     let mut text_file = if format == "csv" || format == "txt" {
         let mut file =
             BufWriter::new(File::create(&request.file_path).map_err(|e| format!("Failed to create file: {e}"))?);
-        file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        if format != "csv" || !request.csv_without_bom {
+            file.write_all(b"\xEF\xBB\xBF").map_err(|e| format!("Failed to write BOM: {e}"))?;
+        }
         Some(file)
     } else {
         None
@@ -2728,6 +2740,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             primary_key_mode: DataGridPrimaryKeyMode::Include,
             primary_keys: Vec::new(),
@@ -2825,6 +2838,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             primary_key_mode: DataGridPrimaryKeyMode::ExcludeAll,
             primary_keys: vec!["id".to_string()],
@@ -2989,6 +3003,7 @@ mod tests {
             csv_delimiter: default_csv_delimiter(),
             csv_quote_char: default_csv_quote_char(),
             csv_include_header: default_csv_include_header(),
+            csv_without_bom: false,
             null_literal: String::new(),
             export_table_name: None,
             export_schema: None,

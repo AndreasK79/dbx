@@ -1,8 +1,11 @@
-// Settings → Snippets 列表复选框的 Shift 范围选择：以最近一次普通点击的行为
-// 锚点，Shift+点击另一行时把两者之间（含端点，按可见行顺序）统一设为指定状
-// 态——调用方传入被点击行翻转后的勾选态（点成什么，整段跟成什么），缺省沿用
-// 锚点当前状态。锚点不存在、不在当前可见行里（被筛选隐藏、已删除）或就是被
-// 点击的行本身时返回 null，调用方回落为普通单行切换。
+// Shift range selection for the Settings → Snippets list checkboxes: the last
+// plain-clicked row acts as the anchor, and shift-clicking another row sets
+// every row between the two (endpoints included, in visible-row order) to one
+// state — callers pass the clicked row's post-toggle state (whatever the click
+// turned it into, the whole range follows), defaulting to the anchor's current
+// state. Returns null when there is no anchor, the anchor is not among the
+// visible rows (filtered out or deleted), or the clicked row is the anchor
+// itself, so callers fall back to a plain single-row toggle.
 export function applySnippetRangeSelection(selected: ReadonlySet<string>, rows: ReadonlyArray<{ id: string }>, anchorId: string | undefined, clickedId: string, checked?: boolean): Set<string> | null {
   if (!anchorId || anchorId === clickedId) return null;
   const anchorIndex = rows.findIndex((row) => row.id === anchorId);

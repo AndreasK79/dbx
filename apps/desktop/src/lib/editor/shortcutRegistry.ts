@@ -36,6 +36,9 @@ export type ShortcutActionId =
   | "previousStatement"
   | "nextStatement"
   | "statementStart"
+  | "toggleBookmark"
+  | "nextBookmark"
+  | "previousBookmark"
   | "extendSelection"
   | "addNextSelectionOccurrence"
   | "selectAllSelectionOccurrences"
@@ -96,6 +99,8 @@ export type ShortcutActionId =
   | "replace"
   | "refreshData"
   | "toggleResultsPane"
+  | "focusResultGrid"
+  | "focusSqlEditor"
   | "toggleTranspose"
   | "cancelSearch"
   | "toggleSidebar"
@@ -396,6 +401,24 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutStatementStart",
     scope: "editor",
     defaultShortcut: "Alt+Home",
+  },
+  {
+    id: "toggleBookmark",
+    labelKey: "settings.shortcutToggleBookmark",
+    scope: "editor",
+    defaultShortcut: "Mod+F2",
+  },
+  {
+    id: "nextBookmark",
+    labelKey: "settings.shortcutNextBookmark",
+    scope: "editor",
+    defaultShortcut: "F2",
+  },
+  {
+    id: "previousBookmark",
+    labelKey: "settings.shortcutPreviousBookmark",
+    scope: "editor",
+    defaultShortcut: "Shift+F2",
   },
   {
     id: "extendSelection",
@@ -802,6 +825,18 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "toggleResultsPane",
     labelKey: "settings.shortcutToggleResultsPane",
+    scope: "global",
+    defaultShortcut: "",
+  },
+  {
+    id: "focusResultGrid",
+    labelKey: "settings.shortcutFocusResultGrid",
+    scope: "global",
+    defaultShortcut: "",
+  },
+  {
+    id: "focusSqlEditor",
+    labelKey: "settings.shortcutFocusSqlEditor",
     scope: "global",
     defaultShortcut: "",
   },

@@ -106,6 +106,7 @@ import { createQueryEditorSqlShortcutDomHandler, isCharacterProducingShortcut } 
 import { createQueryEditorReplaceShortcutBindings, createQueryEditorReplaceShortcutHandler, createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { createQueryEditorEscapeHandler } from "@/lib/editor/queryEditorEscape";
 import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignmentExtension } from "@/lib/editor/queryEditorLineNumbers";
+import { createQueryEditorBookmarks, type QueryEditorBookmarks } from "@/lib/editor/codemirrorBookmarks";
 import { keepGuttersAttachedDuringSync } from "@/lib/editor/codemirrorGutterSync";
 import { searchKeymapWithoutShortcutConflicts } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
@@ -1013,6 +1014,7 @@ function syncContextMenuStateAtEvent(currentView: EditorViewType, event: MouseEv
 function focusEditor() {
   view.value?.focus();
   rememberFocusedQueryEditorView(view.value);
+  return !!view.value;
 }
 
 function executeFromContextMenu() {
@@ -1414,13 +1416,15 @@ function runSqlShortcutAction(action: ReturnType<typeof enabledSqlShortcutAction
   } else {
     const line = currentView.state.doc.lineAt(head);
     const localHead = Math.min(Math.max(0, head - line.from), line.text.length);
-    selected = resolveSqlShortcutTableToken(line.text, { from: localHead, to: localHead, empty: true, head: localHead });
+    selected = resolveSqlShortcutTableToken(line.text, { from: localHead, to: localHead, empty: true, head: localHead }, resolveSqlDialectId(sqlCompletionDialectOptions()));
   }
   if (!selected) return false;
   const sql = buildSqlShortcutExecutionSql(action, selected, props.databaseType);
   emitExecutionRequest(sql);
   return true;
 }
+
+let bookmarkShortcuts: QueryEditorBookmarks | null = null;
 
 function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view"))["keymap"]) {
   const shortcuts = normalizeShortcutSettings(settingsStore.editorSettings.shortcuts);
@@ -1581,6 +1585,9 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.previousStatement, (currentView) => navigateStatementFromView(currentView, "previous")),
         ...binding(shortcuts.nextStatement, (currentView) => navigateStatementFromView(currentView, "next")),
         ...binding(shortcuts.statementStart, (currentView) => navigateStatementFromView(currentView, "start")),
+        ...binding(shortcuts.toggleBookmark, (currentView) => bookmarkShortcuts?.toggle(currentView) ?? false),
+        ...binding(shortcuts.nextBookmark, (currentView) => bookmarkShortcuts?.next(currentView) ?? false),
+        ...binding(shortcuts.previousBookmark, (currentView) => bookmarkShortcuts?.previous(currentView) ?? false),
         ...binding(shortcuts.extendSelection, extendQueryEditorSelectionForView),
         ...binding(shortcuts.addNextSelectionOccurrence, addNextQueryEditorSelectionOccurrence),
         ...binding(shortcuts.selectAllSelectionOccurrences, selectAllQueryEditorSelectionOccurrences),
@@ -2248,6 +2255,11 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
       boundedAnalysisEnabled: boundedEditorAnalysisEnabled,
       syntaxParsingEnabled: () => syntaxParsingEnabled.value,
     });
+    const bookmarks = createQueryEditorBookmarks({
+      modules,
+      toggleLabel: () => t("settings.shortcutToggleBookmark"),
+    });
+    bookmarkShortcuts = bookmarks;
     const initialSettings = settingsStore.editorSettings;
     const theme = await loadEditorTheme(initialSettings.theme, editorThemeAppearance(), getCurrentCustomThemeColors(), themePalette.value);
     if (initialSettings.vimModeEnabled) {
@@ -2291,6 +2303,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         statementBoundariesTrackingPlugin,
         createQueryEditorNativeSelectionGuard(ViewPlugin, { enabled: isTauriRuntime() && isMacOS(), inputHandler: EditorView.inputHandler, finalizeClipboardText: (text) => clipboardLineEndings(text) }),
         initializedRuntime.runGutterComp.of(runStatementGutterExtension()),
+        bookmarks.extension,
         initializedRuntime.lineNumbersComp.of(lineNumbersExtension(initialSettings.showLineNumbers)),
         createQueryEditorLineNumberAlignmentExtension(ViewPlugin),
         currentStatementFrameExtension,
@@ -2834,7 +2847,7 @@ watch([() => props.clientSessionId, () => props.completionContextVersion], () =>
 });
 
 watch(
-  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode],
+  [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode, () => JSON.stringify(sqlStatementParameterOptions())],
   () => {
     completion.invalidateRequests();
     refreshCompletionCache();
@@ -2849,6 +2862,7 @@ watch(
         codeMirrorRuntime.sqlLanguageComp.reconfigure(codeMirrorRuntime.buildSqlLanguageExtension()),
         codeMirrorRuntime.sqlSemanticHighlightComp.reconfigure(codeMirrorRuntime.buildSqlSemanticHighlightExtension()),
         codeMirrorRuntime.sqlSignatureComp.reconfigure(codeMirrorRuntime.buildSqlSignatureExtension()),
+        refreshSqlUnknownObjectHighlights.of(null),
       ],
     });
     applyEditorCompletionExtension();
@@ -3226,6 +3240,7 @@ function shouldBlockExecutionShortcut(event?: KeyboardEvent, currentView: Editor
 }
 
 defineExpose({
+  focusEditor,
   openSearch,
   openReplace,
   focusEditor,

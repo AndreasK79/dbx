@@ -142,6 +142,7 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
         csv_delimiter: Default::default(),
         csv_quote_char: Default::default(),
         csv_include_header: Default::default(),
+        csv_without_bom: false,
         null_literal: String::new(),
         export_table_name: None,
         export_schema: None,
