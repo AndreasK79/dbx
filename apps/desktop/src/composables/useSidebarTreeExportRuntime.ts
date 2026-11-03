@@ -582,7 +582,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
         if (operation) currentTask.canCancel = false;
         operation?.setActive(currentTask, undefined);
         if (format === "csv") {
-          await read(() => api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode, target.nullLiteral, target.csvWithoutBom));
+          await read(() => api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode, { nullLiteral: target.nullLiteral, csvWithoutBom: target.csvWithoutBom }));
         } else {
           const comments = result.columns.map((name) => exportColumnInfos?.find((column) => column.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.comment);
           const headerOverrides = buildXlsxHeaderOverrides(result.columns, comments, headerMode);

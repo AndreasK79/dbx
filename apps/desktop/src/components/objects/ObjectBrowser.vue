@@ -4079,7 +4079,7 @@ async function exportTableData(
         if (native && task) task.canCancel = false;
         if (format === "json") await read(() => api.exportQueryResultJson(filePath, result.columns, result.rows));
         else if (format === "csv") {
-          await read(() => api.exportQueryResultCsv(filePath, result.columns, result.rows, settings.csvQuoteMode, csvNullLiteralForMode(settings.csvNullMode), settings.csvWithoutBom));
+          await read(() => api.exportQueryResultCsv(filePath, result.columns, result.rows, settings.csvQuoteMode, { nullLiteral: csvNullLiteralForMode(settings.csvNullMode), csvWithoutBom: settings.csvWithoutBom }));
         } else {
           const comments = result.columns.map((name) => columnInfos?.find((column) => column.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.comment);
           const headerOverrides = buildXlsxHeaderOverrides(result.columns, comments, headerMode);

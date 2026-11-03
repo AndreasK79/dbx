@@ -3243,7 +3243,6 @@ defineExpose({
   focusEditor,
   openSearch,
   openReplace,
-  focusEditor,
   scrollCursorIntoView,
   beginExecutionViewportTracking,
   acceptGutterExecutionViewport,

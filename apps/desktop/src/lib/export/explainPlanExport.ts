@@ -56,7 +56,7 @@ export async function saveExplainPlanExport(plan: ParsedExplainPlan, format: Exp
   }
 
   if (format === "csv") {
-    await api.exportQueryResultCsv(path, columns, rows, csvQuoteMode, csvNullLiteralForMode(csvNullMode), csvWithoutBom);
+    await api.exportQueryResultCsv(path, columns, rows, csvQuoteMode, { nullLiteral: csvNullLiteralForMode(csvNullMode), csvWithoutBom });
   } else if (format === "xlsx") {
     // Keep engine-native costs/rows (e.g. "148 (0)" and "0.29..1830.12") as text.
     await api.exportQueryResultXlsx(

@@ -333,7 +333,6 @@ import type { ConnectionConfig, InstalledPlugin, DatabaseType, SqlShortcutAction
 import { getCcSwitchPluginStatus, isCcSwitchPluginAvailable, isMagpieImportAvailable, MAGPIE_IMPORT_MINIMUM_PLUGIN_VERSION } from "@/lib/ai/ccSwitch";
 import { uuid } from "@/lib/common/utils";
 import { MAX_VSCODE_SNIPPETS_IMPORT_FILE_BYTES, mergeImportedVscodeSnippets, parseVscodeSnippetsFile, serializeVscodeSnippetsFile, type VscodeSnippetsImportError } from "@/lib/sql/vscodeSnippetsImport";
-import { applySnippetRangeSelection } from "@/lib/sql/snippetRangeSelection";
 import { DEFAULT_SQL_SHORTCUT_SELECT_LIMIT } from "@/lib/sql/sqlDialectSelectLimit";
 import {
   BUILTIN_SQL_SHORTCUT_COUNT_ID,
@@ -1167,71 +1166,6 @@ function editableSnippet(snippet: SqlSnippet): SqlSnippet {
 const editSnippets = ref<SqlSnippet[]>(settingsStore.editorSettings.snippets.map(editableSnippet));
 const editSnippetTriggerKey = ref<SnippetTriggerKey>(settingsStore.editorSettings.snippetTriggerKey);
 const editSnippetSuggestions = ref(settingsStore.editorSettings.snippetSuggestions);
-
-// --- Snippet filter ---
-const snippetFilter = ref("");
-
-const visibleSnippets = computed(() => {
-  const query = snippetFilter.value.trim().toLocaleLowerCase();
-  if (!query) return editSnippets.value;
-  return editSnippets.value.filter((snippet) => snippet.label.toLocaleLowerCase().includes(query) || snippet.prefix.toLocaleLowerCase().includes(query) || snippet.body.toLocaleLowerCase().includes(query));
-});
-
-// --- Snippet bulk selection ---
-const selectedSnippetIds = ref<Set<string>>(new Set());
-
-const selectedSnippetCount = computed(() => editSnippets.value.reduce((count, snippet) => count + (selectedSnippetIds.value.has(snippet.id) ? 1 : 0), 0));
-// 全选针对当前筛选结果；被筛掉的行保持原选中状态
-const allSnippetsSelected = computed(() => visibleSnippets.value.length > 0 && visibleSnippets.value.every((snippet) => selectedSnippetIds.value.has(snippet.id)));
-
-// Shift 范围选择的锚点：最近一次普通点击的复选框行；不驱动渲染，无需响应式
-let snippetSelectionAnchorId: string | undefined;
-// 本次 click 是否为可成范围的 Shift 点击：change 里据此把被点击行翻转后的勾选
-// 态推广到锚点起的整段。全程不 preventDefault——WebView2 上被取消的复选框
-// click 的回弹晚于渲染落回（被点击行刚由绑定勾上又被弹回未选中），取消原生
-// 翻转的两个方案各翻一次车；改为完全顺着原生翻转走：点击行翻转成什么状态，
-// 整段就跟着成什么状态，勾选视觉与集合不可能再分叉。
-let snippetRangeClickPending = false;
-
-function handleSnippetCheckboxClick(event: MouseEvent, snippet: SqlSnippet) {
-  snippetRangeClickPending = event.shiftKey && !!applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id);
-  if (!snippetRangeClickPending) snippetSelectionAnchorId = snippet.id;
-}
-
-function handleSnippetCheckboxChange(snippet: SqlSnippet, checked: boolean) {
-  const pending = snippetRangeClickPending;
-  snippetRangeClickPending = false;
-  const next = pending ? applySnippetRangeSelection(selectedSnippetIds.value, visibleSnippets.value, snippetSelectionAnchorId, snippet.id, checked) : null;
-  if (next) {
-    // 范围成立：锚点不动，可继续 Shift 扩选其他段；范围端点含锚点行，其勾选
-    // 态随本段统一，由 :checked 在下次渲染对齐
-    selectedSnippetIds.value = next;
-    return;
-  }
-  // 普通切换，或无锚点可用的 Shift 点击（尚未普通点击过、锚点被筛选隐藏/删
-  // 除、点的就是锚点本身）
-  const update = new Set(selectedSnippetIds.value);
-  if (checked) update.add(snippet.id);
-  else update.delete(snippet.id);
-  selectedSnippetIds.value = update;
-}
-
-function toggleAllSnippetsSelected(checked: boolean) {
-  const next = new Set(selectedSnippetIds.value);
-  for (const snippet of visibleSnippets.value) {
-    if (checked) next.add(snippet.id);
-    else next.delete(snippet.id);
-  }
-  selectedSnippetIds.value = next;
-}
-
-function deleteSelectedSnippets() {
-  const deletable = editSnippets.value.filter((snippet) => selectedSnippetIds.value.has(snippet.id));
-  if (deletable.length === 0) return;
-  if (!window.confirm(`Delete ${deletable.length} selected snippet${deletable.length === 1 ? "" : "s"}?`)) return;
-  editSnippets.value = editSnippets.value.filter((snippet) => !selectedSnippetIds.value.has(snippet.id));
-  selectedSnippetIds.value = new Set();
-}
 
 // --- Snippet filter ---
 const snippetFilter = ref("");
