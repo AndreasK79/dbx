@@ -659,6 +659,77 @@ mod imp {
             .collect()
     }
 
+    /// View definition text. Views have no single-catalog shape across the
+    /// engines the listings probe: SQL Anywhere keeps the full text in
+    /// SYS.SYSVIEW.viewtext, while ASE chops definitions into
+    /// ≤255-character syscomments rows that must be concatenated in `colid`
+    /// order (the split can land mid-line, so chunks join with no
+    /// separator). Whichever probe answers first wins; failing both — or
+    /// matching nothing — yields None so the caller can report a missing
+    /// source instead of an engine error.
+    fn view_source_text_blocking(client: &OdbcClient, name: &str) -> Option<String> {
+        let anywhere_sql = format!(
+            "SELECT \"view_name\", \"viewtext\" FROM SYS.SYSVIEW WHERE \"view_name\" = {}",
+            sql_literal(name)
+        );
+        if let Ok(rows) = probe_rows_blocking(client, &anywhere_sql) {
+            if let Some(source) = rows
+                .first()
+                .and_then(|row| row.get(1))
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                return Some(source);
+            }
+        }
+        let ase_sql = format!(
+            "SELECT c.text FROM syscomments c, sysobjects o \
+             WHERE o.id = c.id AND o.name = {} AND o.type = 'V' ORDER BY c.colid",
+            sql_literal(name)
+        );
+        match probe_rows_blocking(client, &ase_sql) {
+            Ok(rows) => {
+                let source = join_syscomments_text(&rows);
+                (!source.is_empty()).then_some(source)
+            }
+            Err(error) => {
+                log::warn!("ODBC view source probe failed on both SYS.SYSVIEW and ASE syscomments: {error}");
+                None
+            }
+        }
+    }
+
+    /// Concatenates ASE syscomments rows: each row's first cell is one
+    /// ≤255-character chunk of the definition, already ordered by `colid`.
+    fn join_syscomments_text(rows: &[Vec<String>]) -> String {
+        rows.iter()
+            .map(|row| row.first().map(String::as_str).unwrap_or_default())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    /// View arm of `object_source`: builds the read-only source payload from
+    /// whichever engine catalog holds the definition text.
+    fn view_object_source_blocking(
+        client: &OdbcClient,
+        name: &str,
+        object_type: ObjectSourceKind,
+    ) -> Result<ObjectSource, String> {
+        let source = view_source_text_blocking(client, name)
+            .ok_or_else(|| format!("No source found for ODBC View `{name}`"))?;
+        Ok(ObjectSource {
+            name: name.to_string(),
+            object_type,
+            schema: None,
+            source,
+            // Read-only for the same reason as the catalog kinds above.
+            editable: Some(false),
+            routine_parameters: None,
+            trigger: None,
+        })
+    }
+
     pub async fn list_triggers(client: &OdbcClient, _schema: &str, table: &str) -> Result<Vec<TriggerInfo>, String> {
         let client = client.clone();
         let table = table.to_string();
@@ -794,15 +865,20 @@ mod imp {
         let name = name.to_string();
         let object_type = object_type.clone();
         tokio::task::spawn_blocking(move || {
-            // Trigger/event/procedure definitions come from the same engine
-            // catalogs the listings probe (SQL Anywhere SYS views); other
-            // object kinds have no driver-independent source path. `source`
-            // is missing from older SYS views, so `trigger_defn`/`proc_defn`
-            // are tried as fallbacks before giving up.
+            // Trigger/event/procedure/view definitions come from the same
+            // engine catalogs the listings probe (SQL Anywhere SYS views);
+            // other object kinds have no driver-independent source path.
+            // `source` is missing from older SYS views, so `trigger_defn`/
+            // `proc_defn` are tried as fallbacks before giving up.
             let (catalog, name_column, source_columns) = match &object_type {
                 ObjectSourceKind::Trigger => ("SYS.SYSTRIGGER", "trigger_name", ["source", "trigger_defn"]),
                 ObjectSourceKind::Event => ("SYS.SYSEVENT", "event_name", ["source", "source"]),
                 ObjectSourceKind::Procedure => ("SYS.SYSPROCEDURE", "proc_name", ["source", "proc_defn"]),
+                // Views have no single-catalog shape: handled by a dedicated
+                // probe pair below (SYS.SYSVIEW / ASE syscomments).
+                ObjectSourceKind::View => {
+                    return view_object_source_blocking(&client, &name, object_type.clone());
+                }
                 _ => {
                     return Err("Object source is not available through the generic ODBC driver".to_string());
                 }
@@ -826,7 +902,11 @@ mod imp {
                         object_type,
                         schema: None,
                         source,
-                        editable: None,
+                        // Editing is capability-flagged off for ODBC v1, so
+                        // definitions surface read-only (the null default
+                        // would let the source panel offer a Save that no
+                        // ODBC arm can serve).
+                        editable: Some(false),
                         routine_parameters: None,
                         trigger: None,
                     });
@@ -1115,6 +1195,20 @@ mod imp {
                 vec!["hourly_stats".to_string()],
             ]);
             assert_eq!(names, vec!["nightly_backup".to_string(), "hourly_stats".to_string()]);
+        }
+
+        #[test]
+        fn joins_syscomments_chunks_without_separators() {
+            // ASE splits definitions at 255 characters regardless of line
+            // boundaries, so chunks concatenate with no separator and only
+            // the finished text is trimmed.
+            let joined = join_syscomments_text(&[
+                vec!["CREATE VIEW v AS\n  SELECT a,\n     ".to_string()],
+                vec!["       b FROM t\n  WITH CHECK OPTION\n".to_string()],
+            ]);
+            assert_eq!(joined, "CREATE VIEW v AS\n  SELECT a,\n            b FROM t\n  WITH CHECK OPTION");
+            assert_eq!(join_syscomments_text(&[]), "");
+            assert_eq!(join_syscomments_text(&[vec![String::new()]]), "");
         }
     }
 }

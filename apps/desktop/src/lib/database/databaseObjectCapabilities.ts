@@ -222,6 +222,17 @@ export function supportsOracleFamilyTypeManagement(dbType?: DatabaseType): boole
   return dbType === "oracle" || dbType === "oceanbase-oracle" || dbType === "dameng";
 }
 
+/**
+ * Whether EVENT objects open in the dedicated MySQL event editor (get_event_info).
+ * MySQL is the only sidebar set listing EVENT whose backend serves event details;
+ * ODBC lists events from SQL Anywhere's scheduler catalog, whose definitions go
+ * through the generic read-only object source path instead. Callers route event
+ * rows through one path or the other based on this.
+ */
+export function supportsMysqlEventEditor(dbType?: DatabaseType): boolean {
+  return dbType === "mysql";
+}
+
 export function isOracleFamilyTypeSource(dbType: DatabaseType | undefined, objectType: string | undefined): boolean {
   return supportsOracleFamilyTypeManagement(dbType) && (objectType === "TYPE" || objectType === "TYPE_BODY");
 }

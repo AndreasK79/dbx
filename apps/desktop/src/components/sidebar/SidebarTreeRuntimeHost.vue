@@ -187,7 +187,7 @@ import {
   treeNodeRowAction,
   treeNodeRowDoubleClickAction,
 } from "@/lib/sidebar/treeNodeClick";
-import { customTypeCapabilities, supportsOracleFamilyTypeManagement, supportsOracleTypeAttributeExpansion, supportsTypeObjectSource, supportsSchemaIndexManagement } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, supportsMysqlEventEditor, supportsOracleFamilyTypeManagement, supportsOracleTypeAttributeExpansion, supportsTypeObjectSource, supportsSchemaIndexManagement } from "@/lib/database/databaseObjectCapabilities";
 import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { qualifiedNameForSidebarNode } from "@/lib/sidebar/sidebarTableNameCopy";
 import { schemaIndexIsSameOwner, schemaIndexNodeIdentity } from "@/lib/table/schemaIndexNavigation";
@@ -1299,7 +1299,10 @@ function runRowClickAction(clickDetail: number) {
     openMongoTreeData(node);
     return;
   }
-  if (node.type === "event") {
+  // Only MySQL-family connections have the event editor hosted by
+  // ObjectBrowser; other engines that list events (ODBC/SQL Anywhere) fall
+  // through to the generic open-source row action below.
+  if (node.type === "event" && supportsMysqlEventEditor(currentDatabaseType())) {
     beginNavigationRequest();
     void openObjectBrowser(false, true);
     return;
@@ -1779,7 +1782,7 @@ function onDoubleClick(event: MouseEvent) {
     void newQuery({ reuseQueryTabByScope: true });
   }
   if (dataTabOpenModeFromTreeClick(activeNode.value.type, event, settingsStore.editorSettings.shortcuts.openDataInNewTab) === "new-tab") return;
-  if (activeNode.value.type === "event") {
+  if (activeNode.value.type === "event" && supportsMysqlEventEditor(currentDatabaseType())) {
     beginNavigationRequest();
     void openObjectBrowser(false, true);
     return;
@@ -8412,10 +8415,16 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   }
 
   if (node.type === "event") {
-    // Event definitions use the dedicated editor hosted by ObjectBrowser.
-    // Open that surface from the tree instead of routing through the generic source dialog.
-    items.push({ label: t("contextMenu.editObject"), action: () => openObjectBrowser(false, true), icon: Pencil });
-    items.push({ label: t("contextMenu.viewObject"), action: () => openObjectBrowser(true, true), icon: Eye });
+    if (supportsMysqlEventEditor(currentDatabaseType())) {
+      // Event definitions use the dedicated editor hosted by ObjectBrowser.
+      // Open that surface from the tree instead of routing through the generic source dialog.
+      items.push({ label: t("contextMenu.editObject"), action: () => openObjectBrowser(false, true), icon: Pencil });
+      items.push({ label: t("contextMenu.viewObject"), action: () => openObjectBrowser(true, true), icon: Eye });
+    } else {
+      // Engines without the MySQL event editor (ODBC/SQL Anywhere) expose the
+      // scheduler definition through the generic source dialog instead.
+      items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
+    }
     items.push(copyNameMenuItem());
     items.push({ label: t("contextMenu.dropObject"), action: deleteMenuAction(requestDropObject), icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
     items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw, shortcut: shortcutRefresh.value });
@@ -8549,7 +8558,10 @@ function buildObjectGroupSidebarMenu(context: SidebarMenuFactoryContext): boolea
     if (canCreateSchemaIndex) {
       items.push({ label: t("structureEditor.addIndex"), action: openSchemaIndexCreate, icon: Plus });
     }
-    if (node.type === "group-events" && node.connectionId && node.database) {
+    // The event CREATE editor speaks MySQL DDL only; engines whose events
+    // are listed without the MySQL editor contract (ODBC/SQL Anywhere) do
+    // not offer it.
+    if (node.type === "group-events" && node.connectionId && node.database && supportsMysqlEventEditor(currentDatabaseType())) {
       items.push({ label: t("contextMenu.createEvent"), action: openMysqlEventCreateEditor, icon: Plus });
     }
     if (objectTemplate) {

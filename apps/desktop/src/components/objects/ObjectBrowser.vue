@@ -236,7 +236,7 @@ import {
 } from "@/lib/table/objectBrowserRows";
 import { isSourceOnlyObjectBrowserRow, resolveRowClickAction, shouldDeferSingleClick, singleClickRowAction, type ObjectBrowserRowAction } from "@/lib/table/objectBrowserRowAction";
 import { objectBrowserTableSelectionAnchor, objectBrowserTableSelectionRange } from "@/lib/table/objectBrowserSelection";
-import { customTypeCapabilities, isOracleFamilyTypeSource, sidebarObjectKindsForDatabase, supportsOracleFamilyTypeManagement, supportsSchemaIndexManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
+import { customTypeCapabilities, isOracleFamilyTypeSource, sidebarObjectKindsForDatabase, supportsMysqlEventEditor, supportsOracleFamilyTypeManagement, supportsSchemaIndexManagement, supportsTypeObjectSource, type SidebarObjectKind } from "@/lib/database/databaseObjectCapabilities";
 import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import { schemaIndexIdentity, schemaIndexIsSameOwner } from "@/lib/table/schemaIndexNavigation";
 import { connectionConfigFingerprint } from "@/lib/connection/connectionDatabaseInfo";
@@ -1378,7 +1378,10 @@ function executeRowAction(row: ObjectBrowserRow, action: ObjectBrowserRowAction)
       emit("openTable", { tableName: row.name, schema: row.schema, tableType: objectBrowserOpenTableType(row), catalog: props.catalog, comment: row.comment });
       break;
     case "open-source":
-      void (row.type === "EVENT" ? openEventEditor(row) : openSource(row));
+      // Only MySQL-family connections have the event editor; other engines
+      // that list events (ODBC/SQL Anywhere) fall back to the read-only
+      // object source panel.
+      void (row.type === "EVENT" && supportsMysqlEventEditor(effectiveDatabaseType.value) ? openEventEditor(row) : openSource(row));
       break;
     case "open-source-tab":
       openSourceTab(row);
@@ -5174,7 +5177,9 @@ function openInitialEventIfNeeded() {
     return;
   }
   const row = rows.value.find((candidate) => candidate.type === "EVENT" && candidate.name === name);
-  if (row) openEventEditor(row);
+  // Non-MySQL engines never open the MySQL event editor; their event
+  // definitions come from the generic object source path.
+  if (row) void (supportsMysqlEventEditor(effectiveDatabaseType.value) ? openEventEditor(row) : openSource(row));
 }
 
 function finishObjectBrowserRowsLoad() {
@@ -5877,8 +5882,11 @@ function getTriggerMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
 }
 
 function getEventMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  // The Edit entry targets the MySQL event editor; engines without it
+  // (ODBC/SQL Anywhere) keep the read-only source entries only.
+  const eventEditor = supportsMysqlEventEditor(effectiveDatabaseType.value);
   return [
-    { label: t("contextMenu.editObject"), action: () => openEventEditor(item), icon: PencilLine },
+    ...(eventEditor ? [{ label: t("contextMenu.editObject"), action: () => openEventEditor(item), icon: PencilLine }] : []),
     { label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 },
     { label: "", separator: true },
     { label: t("contextMenu.dropObject"), action: () => requestDrop(item), icon: Trash2, variant: "destructive" as const },
