@@ -9084,6 +9084,7 @@ export default withEnglishFallback({
     encodingAuto: "自动检测",
     encodingUtf8: "UTF-8",
     encodingGbk: "GBK / GB18030",
+    encodingWindows1252: "Windows-1252",
     encodingUtf16Le: "UTF-16 LE",
     encodingUtf16Be: "UTF-16 BE",
     encodingDetected: "检测结果：{encoding}",

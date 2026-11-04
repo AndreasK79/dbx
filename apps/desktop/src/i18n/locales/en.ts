@@ -9118,6 +9118,7 @@ export default {
     encodingAuto: "Auto-detect",
     encodingUtf8: "UTF-8",
     encodingGbk: "GBK / GB18030",
+    encodingWindows1252: "Windows-1252",
     encodingUtf16Le: "UTF-16 LE",
     encodingUtf16Be: "UTF-16 BE",
     encodingDetected: "Detected: {encoding}",

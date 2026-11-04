@@ -55,6 +55,7 @@ export const TABLE_IMPORT_ENCODING_OPTIONS: ReadonlyArray<{ value: TableImportTe
   { value: "auto", labelKey: "tableImport.encodingAuto" },
   { value: "utf8", labelKey: "tableImport.encodingUtf8" },
   { value: "gbk", labelKey: "tableImport.encodingGbk" },
+  { value: "windows1252", labelKey: "tableImport.encodingWindows1252" },
   { value: "utf16Le", labelKey: "tableImport.encodingUtf16Le" },
   { value: "utf16Be", labelKey: "tableImport.encodingUtf16Be" },
 ];

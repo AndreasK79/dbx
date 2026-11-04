@@ -103,6 +103,7 @@ pub enum SqlFileEncoding {
     Auto,
     Utf8,
     Gbk,
+    Windows1252,
     Utf16Le,
     Utf16Be,
 }
@@ -113,6 +114,7 @@ impl SqlFileEncoding {
             Self::Auto => None,
             Self::Utf8 => Some(encoding_rs::UTF_8),
             Self::Gbk => Some(encoding_rs::GBK),
+            Self::Windows1252 => Some(encoding_rs::WINDOWS_1252),
             Self::Utf16Le => Some(encoding_rs::UTF_16LE),
             Self::Utf16Be => Some(encoding_rs::UTF_16BE),
         }

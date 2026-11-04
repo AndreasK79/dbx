@@ -261,6 +261,7 @@ pub enum TableImportTextEncoding {
     Auto,
     Utf8,
     Gbk,
+    Windows1252,
     Utf16Le,
     Utf16Be,
 }
@@ -271,6 +272,7 @@ impl TableImportTextEncoding {
             TableImportTextEncoding::Auto => None,
             TableImportTextEncoding::Utf8 => Some(encoding_rs::UTF_8),
             TableImportTextEncoding::Gbk => Some(encoding_rs::GBK),
+            TableImportTextEncoding::Windows1252 => Some(encoding_rs::WINDOWS_1252),
             TableImportTextEncoding::Utf16Le => Some(encoding_rs::UTF_16LE),
             TableImportTextEncoding::Utf16Be => Some(encoding_rs::UTF_16BE),
         }
@@ -281,6 +283,7 @@ impl TableImportTextEncoding {
             TableImportTextEncoding::Auto => "auto",
             TableImportTextEncoding::Utf8 => "UTF-8",
             TableImportTextEncoding::Gbk => "GBK / GB18030",
+            TableImportTextEncoding::Windows1252 => "Windows-1252",
             TableImportTextEncoding::Utf16Le => "UTF-16 LE",
             TableImportTextEncoding::Utf16Be => "UTF-16 BE",
         }
@@ -1119,12 +1122,13 @@ fn auto_detect_text_encoding_from_bytes(bytes: &[u8]) -> Result<(TableImportText
     if let Some(detected) = bom_text_encoding(bytes) {
         return Ok(detected);
     }
-    for encoding in [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk] {
+    for encoding in [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk, TableImportTextEncoding::Windows1252]
+    {
         if reader_is_valid_for_encoding(std::io::Cursor::new(bytes), encoding)? {
             return Ok((encoding, 0));
         }
     }
-    Err("Could not detect text encoding; select UTF-8, GBK / GB18030, or UTF-16 manually".to_string())
+    Err("Could not detect text encoding; select UTF-8, GBK / GB18030, Windows-1252, or UTF-16 manually".to_string())
 }
 
 pub(crate) fn resolve_text_encoding_from_bytes(
@@ -1343,7 +1347,9 @@ pub fn parse_delimited_file_with_options(
             return parse_csv_reader(reader, &config, preview_limit, encoding);
         }
 
-        for encoding in [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk] {
+        for encoding in
+            [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk, TableImportTextEncoding::Windows1252]
+        {
             let mut explicit_options = options.clone();
             explicit_options.encoding = Some(encoding);
             let (reader, config, encoding) =
@@ -1354,7 +1360,9 @@ pub fn parse_delimited_file_with_options(
                 Err(error) => return Err(error),
             }
         }
-        return Err("Could not detect text encoding; select UTF-8, GBK / GB18030, or UTF-16 manually".to_string());
+        return Err(
+            "Could not detect text encoding; select UTF-8, GBK / GB18030, Windows-1252, or UTF-16 manually".to_string()
+        );
     }
 
     let (reader, config, encoding) = open_delimited_csv_reader_with_progress(path, source_format, options, |_| {})?;
@@ -1447,7 +1455,9 @@ fn parse_delimited_preview_file_with_options(
             return parse_csv_reader_bounded(reader, &config, preview_limit, encoding);
         }
 
-        for encoding in [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk] {
+        for encoding in
+            [TableImportTextEncoding::Utf8, TableImportTextEncoding::Gbk, TableImportTextEncoding::Windows1252]
+        {
             let mut explicit_options = options.clone();
             explicit_options.encoding = Some(encoding);
             let (reader, config, encoding) =
@@ -1458,7 +1468,9 @@ fn parse_delimited_preview_file_with_options(
                 Err(error) => return Err(error),
             }
         }
-        return Err("Could not detect text encoding; select UTF-8, GBK / GB18030, or UTF-16 manually".to_string());
+        return Err(
+            "Could not detect text encoding; select UTF-8, GBK / GB18030, Windows-1252, or UTF-16 manually".to_string()
+        );
     }
 
     let (reader, config, encoding) = open_delimited_csv_reader_with_progress(path, source_format, options, |_| {})?;
@@ -10790,6 +10802,28 @@ mod tests {
         assert_eq!(parsed.columns, vec!["id", "name"]);
         assert_eq!(parsed.rows[0], vec![serde_json::json!("1"), serde_json::json!("中文")]);
         assert_eq!(parsed.rows[1], vec![serde_json::json!("2"), serde_json::json!("上海")]);
+    }
+
+    #[test]
+    fn auto_detects_and_parses_windows_1252_csv() {
+        // "Å" before the newline is invalid GBK (lead byte followed by 0x0A),
+        // so detection falls through to Windows-1252; words like "Ålesund"
+        // alone would decode as legal GBK pairs and stay ambiguous.
+        let (bytes, _, had_errors) = encoding_rs::WINDOWS_1252.encode("id,city\n1,Å\n2,Ålesund\n");
+        assert!(!had_errors);
+
+        let parsed = parse_delimited_bytes_with_options(
+            bytes.as_ref(),
+            TableImportSourceFormat::Csv,
+            &TableImportParseOptions::default(),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.effective_encoding, Some(TableImportTextEncoding::Windows1252));
+        assert_eq!(parsed.columns, vec!["id", "city"]);
+        assert_eq!(parsed.rows[0], vec![serde_json::json!("1"), serde_json::json!("Å")]);
+        assert_eq!(parsed.rows[1], vec![serde_json::json!("2"), serde_json::json!("Ålesund")]);
     }
 
     #[test]

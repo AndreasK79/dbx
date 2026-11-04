@@ -6070,7 +6070,7 @@ export async function deleteHistoryEntry(id: string): Promise<void> {
 // --- SQL File Execution ---
 export type SqlFileStatus = "started" | "running" | "statementDone" | "statementFailed" | "done" | "error" | "cancelled";
 
-export type SqlFileEncoding = "auto" | "utf8" | "gbk" | "utf16Le" | "utf16Be";
+export type SqlFileEncoding = "auto" | "utf8" | "gbk" | "windows1252" | "utf16Le" | "utf16Be";
 
 export interface SqlFileRequest {
   resolveIncludes?: boolean;
@@ -6376,7 +6376,7 @@ export type TableImportStatus = "running" | "done" | "error" | "cancelled";
 export type TableImportPhase = "preparing" | "detectingEncoding" | "reading" | "writing" | "finalizing" | "done";
 export type TableImportSourceFormat = "csv" | "tsv" | "delimited" | "json" | "excel" | "sql" | "parquet";
 export type TableImportJsonShape = "auto" | "objects" | "arrays";
-export type TableImportTextEncoding = "auto" | "utf8" | "gbk" | "utf16Le" | "utf16Be";
+export type TableImportTextEncoding = "auto" | "utf8" | "gbk" | "windows1252" | "utf16Le" | "utf16Be";
 
 export interface TableImportColumnMapping {
   sourceColumn: string;
