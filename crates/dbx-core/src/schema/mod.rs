@@ -8705,28 +8705,9 @@ async fn list_objects_once(
             }
             Ok(unpaged_object_list(objects))
         }
-        _ => Ok(unpaged_object_list(
-            list_tables_core(state, connection_id, database, schema, None, None, None, None, None)
-                .await?
-                .into_iter()
-                .map(|table| db::ObjectInfo {
-                    name: table.name,
-                    object_type: table.table_type,
-                    schema: if schema.is_empty() { None } else { Some(schema.to_string()) },
-                    valid: None,
-                    signature: None,
-                    custom_type_kind: None,
-                    has_members: None,
-                    comment: table.comment,
-                    created_at: None,
-                    updated_at: None,
-                    parent_schema: table.parent_schema,
-                    parent_name: table.parent_name,
-                    trigger: None,
-                    xugu_type_members_expandable: None,
-                })
-                .collect(),
-        )),
+        // Must sit above the `_` wildcard: a PoolKind arm placed after `_`
+        // compiles with only an unreachable-pattern warning, and ODBC
+        // connections then silently take the tables-only generic path.
         PoolKind::Odbc(client) => {
             // Tables/views come from the SQLTables catalog (the same rows the
             // generic path below produces). Triggers and events have no ODBC
@@ -8792,6 +8773,28 @@ async fn list_objects_once(
             }
             Ok(unpaged_object_list(objects))
         }
+        _ => Ok(unpaged_object_list(
+            list_tables_core(state, connection_id, database, schema, None, None, None, None, None)
+                .await?
+                .into_iter()
+                .map(|table| db::ObjectInfo {
+                    name: table.name,
+                    object_type: table.table_type,
+                    schema: if schema.is_empty() { None } else { Some(schema.to_string()) },
+                    valid: None,
+                    signature: None,
+                    custom_type_kind: None,
+                    has_members: None,
+                    comment: table.comment,
+                    created_at: None,
+                    updated_at: None,
+                    parent_schema: table.parent_schema,
+                    parent_name: table.parent_name,
+                    trigger: None,
+                    xugu_type_members_expandable: None,
+                })
+                .collect(),
+        )),
     }
 }
 
