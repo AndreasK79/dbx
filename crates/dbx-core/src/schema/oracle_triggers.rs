@@ -495,6 +495,7 @@ impl LegacyReader {
             source: String::new(),
             editable: None,
             routine_parameters: None,
+            event_schedule: None,
             trigger: None,
         };
         let Some(first) = before.first() else {

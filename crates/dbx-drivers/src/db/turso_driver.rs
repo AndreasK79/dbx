@@ -359,6 +359,7 @@ pub async fn object_source(
         source,
         editable: None,
         routine_parameters: None,
+        event_schedule: None,
         trigger: None,
     })
 }

@@ -10754,6 +10754,7 @@ async fn get_postgres_schema_object_sources_for_transfer(
             source,
             editable: None,
             routine_parameters: None,
+            event_schedule: None,
             trigger: None,
         });
     }
@@ -10775,6 +10776,7 @@ async fn get_postgres_schema_object_sources_for_transfer(
             source,
             editable: None,
             routine_parameters: None,
+            event_schedule: None,
             trigger: None,
         });
     }
@@ -17633,6 +17635,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                     source: "SELECT 1".into(),
                     editable: None,
                     routine_parameters: None,
+                    event_schedule: None,
                     trigger: None,
                 },
                 db::ObjectSource {
@@ -17642,6 +17645,7 @@ CREATE TABLE "Other"."prefix""Source"."NAME" ("ID" INT);"#;
                     source: "SELECT 2".into(),
                     editable: None,
                     routine_parameters: None,
+                    event_schedule: None,
                     trigger: None,
                 },
             ];

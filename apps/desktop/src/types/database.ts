@@ -1154,6 +1154,20 @@ export interface RoutineParameterMetadata {
   ordinal?: number | null;
 }
 
+/** One SQL Anywhere event schedule (SYS.SYSSCHEDULE row); SA keeps schedules
+ * normalized in the catalog — SYSEVENT.source holds only the handler body. */
+export interface EventScheduleInfo {
+  name?: string | null;
+  recurring?: boolean | null;
+  start_date?: string | null;
+  start_time?: string | null;
+  stop_time?: string | null;
+  days_of_week?: number | null;
+  days_of_month?: number | null;
+  interval_units?: string | null;
+  interval_amount?: number | null;
+}
+
 export interface ObjectSource {
   name: string;
   object_type: ObjectSourceKind;
@@ -1163,6 +1177,8 @@ export interface ObjectSource {
   /** Optional structured metadata exposed by generic JDBC sidecars. */
   routine_parameters?: RoutineParameterMetadata[];
   trigger?: TriggerInfo | null;
+  /** Optional event schedules (SQL Anywhere ODBC). */
+  event_schedule?: EventScheduleInfo[] | null;
 }
 
 export interface MysqlEventInfo {

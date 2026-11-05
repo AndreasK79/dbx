@@ -29,8 +29,8 @@ mod imp {
     use crate::execution::MAX_ROWS;
     use crate::models::connection::ConnectionConfig;
     use crate::types::{
-        ColumnInfo, DatabaseInfo, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectSource,
-        ObjectSourceKind, QueryResult, TableInfo, TriggerInfo,
+        ColumnInfo, DatabaseInfo, EventScheduleInfo, ForeignKeyInfo, IndexInfo, ObjectInfo,
+        ObjectSource, ObjectSourceKind, QueryResult, TableInfo, TriggerInfo,
     };
 
     /// Statement handle shared with the cancellation thread. `HStmt` is a raw
@@ -539,7 +539,9 @@ mod imp {
     /// comparison is case-folded because catalog owner casing may differ
     /// from the schema label SQLTables reports. The listing does not read
     /// `source`/`trigger_defn` — they are missing from older SYS views, and
-    /// a probe that names them fails wholesale on those servers.
+    /// a probe that names them fails wholesale on those servers. Rows with
+    /// a NULL/empty `trigger_name` are dropped: the parser keys objects by
+    /// name, and a nameless catalog row cannot be opened or dropped.
     fn probe_triggers_blocking(client: &OdbcClient, schema: Option<&str>, table: Option<&str>) -> Vec<TriggerProbeRow> {
         let mut clauses = Vec::new();
         let owner_join = schema
@@ -560,11 +562,20 @@ mod imp {
              ORDER BY st.\"table_name\", trig.\"trigger_name\""
         );
         match probe_rows_blocking(client, &anywhere_sql) {
-            Ok(rows) => return parse_trigger_rows(rows),
+            Ok(rows) => {
+                let triggers = parse_trigger_rows(rows);
+                if !triggers.is_empty() {
+                    return triggers;
+                }
+                // The owner label the sidebar narrows by is the heuristic
+                // SQLTables schema; when it matches no SYSUSER row the group
+                // must not read as "no triggers", so fall through unfiltered.
+            }
             Err(error) => log::warn!("ODBC SQL Anywhere trigger probe (owner-filtered) failed: {error}"),
         }
         // The owner join is the most version-sensitive part of the probe; a
-        // failure there must not lose the listing, so retry without it.
+        // failure (or an empty match) there must not lose the listing, so
+        // retry without it.
         let table_filter = table
             .map(|table| format!(" WHERE st.\"table_name\" = {}", sql_literal(table)))
             .unwrap_or_default();
@@ -610,7 +621,12 @@ mod imp {
                 sql_literal(schema)
             );
             if let Ok(rows) = probe_rows_blocking(client, &owner_sql) {
-                return parse_name_rows(rows);
+                let events = parse_name_rows(rows);
+                if !events.is_empty() {
+                    return events;
+                }
+                // Same heuristic-owner rationale as the trigger probe: an
+                // empty match must not read as "no events".
             }
         }
         match probe_rows_blocking(client, "SELECT \"event_name\" FROM SYS.SYSEVENT ORDER BY \"event_name\"") {
@@ -627,14 +643,21 @@ mod imp {
     /// shape; failing both yields an empty list.
     fn probe_procedures_blocking(client: &OdbcClient, schema: Option<&str>) -> Vec<String> {
         if let Some(schema) = schema {
+            // `proc` doubles as a keyword on older SQL Anywhere servers (a
+            // probe aliasing SYS.SYSPROCEDURE as `proc` dies with "Syntax
+            // error near 'proc'" on 11.0.1), so the alias stays `pr`.
             let owner_sql = format!(
-                "SELECT DISTINCT proc.\"proc_name\" FROM SYS.SYSPROCEDURE proc \
-                 JOIN SYS.SYSUSER su ON proc.\"creator\" = su.\"user_id\" \
-                 WHERE LOWER(su.\"user_name\") = LOWER({}) ORDER BY proc.\"proc_name\"",
+                "SELECT DISTINCT pr.\"proc_name\" FROM SYS.SYSPROCEDURE pr \
+                 JOIN SYS.SYSUSER su ON pr.\"creator\" = su.\"user_id\" \
+                 WHERE LOWER(su.\"user_name\") = LOWER({}) ORDER BY pr.\"proc_name\"",
                 sql_literal(schema)
             );
             if let Ok(rows) = probe_rows_blocking(client, &owner_sql) {
-                return parse_name_rows(rows);
+                let procedures = parse_name_rows(rows);
+                if !procedures.is_empty() {
+                    return procedures;
+                }
+                // Same heuristic-owner rationale as the trigger probe.
             }
         }
         match probe_rows_blocking(client, "SELECT DISTINCT \"proc_name\" FROM SYS.SYSPROCEDURE ORDER BY \"proc_name\"") {
@@ -648,6 +671,77 @@ mod imp {
                 Vec::new()
             }
         }
+    }
+
+    /// One trimmed non-empty text cell, `None` for NULL/blank cells.
+    fn non_empty_cell(row: &[String], index: usize) -> Option<String> {
+        row.get(index).map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
+    }
+
+    /// One numeric catalog cell parsed as i64; SYSSCHEDULE masks fit because
+    /// the driver renders them as decimal text.
+    fn int_cell(row: &[String], index: usize) -> Option<i64> {
+        row.get(index).and_then(|value| value.trim().parse::<i64>().ok())
+    }
+
+    /// One SYS.SYSSCHEDULE probe row (sched_name, recurring, start_date,
+    /// start_time, stop_time, days_of_week, days_of_month, interval_units,
+    /// interval_amt) as catalog metadata; blank/short rows degrade to the
+    /// fields that are present.
+    fn parse_event_schedule_row(row: Vec<String>) -> EventScheduleInfo {
+        EventScheduleInfo {
+            name: non_empty_cell(&row, 0),
+            recurring: match non_empty_cell(&row, 1).as_deref() {
+                Some("1") | Some("TRUE") | Some("true") | Some("T") => Some(true),
+                Some("0") | Some("FALSE") | Some("false") | Some("F") => Some(false),
+                _ => None,
+            },
+            start_date: non_empty_cell(&row, 2),
+            start_time: non_empty_cell(&row, 3),
+            stop_time: non_empty_cell(&row, 4),
+            days_of_week: int_cell(&row, 5),
+            days_of_month: int_cell(&row, 6),
+            interval_units: non_empty_cell(&row, 7),
+            interval_amount: int_cell(&row, 8),
+        }
+    }
+
+    /// Schedules of one SQL Anywhere event, read structurally from
+    /// SYS.SYSSCHEDULE (`SYSEVENT.source` holds only the handler body, so the
+    /// schedule cannot be recovered from the source text). An event with no
+    /// schedules yields an empty list — real information: the event only
+    /// fires for its event type, never on a timer. `None` means the catalog
+    /// could not answer (missing view on this engine, query failure): the
+    /// source still opens, just without the schedule panel.
+    fn probe_event_schedules_blocking(client: &OdbcClient, event_name: &str) -> Option<Vec<EventScheduleInfo>> {
+        let sql = format!(
+            "SELECT s.\"sched_name\", s.\"recurring\", s.\"start_date\", s.\"start_time\", s.\"stop_time\", s.\"days_of_week\", \
+             s.\"days_of_month\", s.\"interval_units\", s.\"interval_amt\" \
+             FROM SYS.SYSSCHEDULE s JOIN SYS.SYSEVENT e ON s.\"event_id\" = e.\"event_id\" \
+             WHERE e.\"event_name\" = {} ORDER BY s.\"sched_name\"",
+            sql_literal(event_name)
+        );
+        let rows = match probe_rows_blocking(client, &sql) {
+            Ok(rows) => rows,
+            Err(error) => {
+                log::warn!("ODBC SQL Anywhere event schedule probe failed: {error}");
+                return None;
+            }
+        };
+        Some(rows.into_iter().map(parse_event_schedule_row).collect())
+    }
+
+    /// Owner of one SQL Anywhere event, so schedule ALTERs can qualify the
+    /// event name the way the catalog recorded it (the sidebar's schema label
+    /// is only a heuristic). `None` when the catalog cannot answer.
+    fn probe_event_owner_blocking(client: &OdbcClient, event_name: &str) -> Option<String> {
+        let sql = format!(
+            "SELECT su.\"user_name\" FROM SYS.SYSEVENT e JOIN SYS.SYSUSER su ON e.\"creator\" = su.\"user_id\" \
+             WHERE e.\"event_name\" = {}",
+            sql_literal(event_name)
+        );
+        let rows = probe_rows_blocking(client, &sql).ok()?;
+        rows.first()?.first().map(|value| value.trim().to_string()).filter(|value| !value.is_empty())
     }
 
     fn parse_name_rows(rows: Vec<Vec<String>>) -> Vec<String> {
@@ -726,6 +820,7 @@ mod imp {
             // Read-only for the same reason as the catalog kinds above.
             editable: Some(false),
             routine_parameters: None,
+            event_schedule: None,
             trigger: None,
         })
     }
@@ -870,6 +965,17 @@ mod imp {
             // other object kinds have no driver-independent source path.
             // `source` is missing from older SYS views, so `trigger_defn`/
             // `proc_defn` are tried as fallbacks before giving up.
+            //
+            // Events open editable: the only event listings that reach here
+            // are SQL Anywhere's (SYS.SYSEVENT). SA keeps the schedule out
+            // of the source entirely — `source` is just the handler body —
+            // so the event's schedules are also read from the catalog
+            // (SYS.SYSSCHEDULE) and returned as structured metadata; saving
+            // the buffer re-anchors the body with ALTER EVENT ... ALTER
+            // HANDLER (dbx-sql-core). Triggers and procedures stay
+            // read-only until their save paths understand the engine
+            // dialects.
+            let editable = matches!(object_type, ObjectSourceKind::Event);
             let (catalog, name_column, source_columns) = match &object_type {
                 ObjectSourceKind::Trigger => ("SYS.SYSTRIGGER", "trigger_name", ["source", "trigger_defn"]),
                 ObjectSourceKind::Event => ("SYS.SYSEVENT", "event_name", ["source", "source"]),
@@ -897,18 +1003,21 @@ mod imp {
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                 {
+                    let is_event = object_type == ObjectSourceKind::Event;
+                    // The catalog owner qualifies the ALTER statements the
+                    // schedule panel emits; the sidebar's schema label is a
+                    // SQLTables heuristic that may not name a real user.
+                    let schema = if is_event { probe_event_owner_blocking(&client, &name) } else { None };
+                    let event_schedule = if is_event { probe_event_schedules_blocking(&client, &name) } else { None };
                     return Ok(ObjectSource {
                         name,
                         object_type,
-                        schema: None,
+                        schema,
                         source,
-                        // Editing is capability-flagged off for ODBC v1, so
-                        // definitions surface read-only (the null default
-                        // would let the source panel offer a Save that no
-                        // ODBC arm can serve).
-                        editable: Some(false),
+                        editable: Some(editable),
                         routine_parameters: None,
                         trigger: None,
+                        event_schedule,
                     });
                 }
             }
@@ -1195,6 +1304,59 @@ mod imp {
                 vec!["hourly_stats".to_string()],
             ]);
             assert_eq!(names, vec!["nightly_backup".to_string(), "hourly_stats".to_string()]);
+        }
+
+        #[test]
+        fn parses_event_schedule_rows_from_sysschedule_shape() {
+            // Daily 23:00 backup: named schedule, recurring, full week mask,
+            // no EVERY interval columns, no BETWEEN stop time.
+            let daily = parse_event_schedule_row(vec![
+                "BackupDB".to_string(),
+                "1".to_string(),
+                "2001-01-01".to_string(),
+                "23:00:00".to_string(),
+                String::new(),
+                "127".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ]);
+            assert_eq!(daily.name.as_deref(), Some("BackupDB"));
+            assert_eq!(daily.recurring, Some(true));
+            assert_eq!(daily.start_date.as_deref(), Some("2001-01-01"));
+            assert_eq!(daily.start_time.as_deref(), Some("23:00:00"));
+            assert_eq!(daily.stop_time, None);
+            assert_eq!(daily.days_of_week, Some(127));
+            assert_eq!(daily.days_of_month, None);
+            assert_eq!(daily.interval_units, None);
+            assert_eq!(daily.interval_amount, None);
+
+            // Recurring 30-minute window with an every-interval; blank
+            // recurring cell and short rows degrade to what is present.
+            let every = parse_event_schedule_row(vec![
+                String::new(),
+                String::new(),
+                String::new(),
+                "9:00".to_string(),
+                "17:00".to_string(),
+                "62".to_string(),
+                "2147483648".to_string(),
+                "NN".to_string(),
+                "30".to_string(),
+            ]);
+            assert_eq!(every.name, None);
+            assert_eq!(every.recurring, None);
+            assert_eq!(every.start_time.as_deref(), Some("9:00"));
+            assert_eq!(every.stop_time.as_deref(), Some("17:00"));
+            assert_eq!(every.days_of_week, Some(62));
+            // 0x80000000 = "last day of month" bit; decimal text fits i64.
+            assert_eq!(every.days_of_month, Some(2147483648));
+            assert_eq!(every.interval_units.as_deref(), Some("NN"));
+            assert_eq!(every.interval_amount, Some(30));
+
+            let empty = parse_event_schedule_row(vec![]);
+            assert_eq!(empty.name, None);
+            assert_eq!(empty.days_of_week, None);
         }
 
         #[test]

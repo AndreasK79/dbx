@@ -89,6 +89,7 @@ import TablePartitionsPanel from "@/components/structure/TablePartitionsPanel.vu
 import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue";
 import * as api from "@/lib/backend/api";
 import ObjectDependenciesPanel from "@/components/objects/ObjectDependenciesPanel.vue";
+import EventSchedulePanel from "@/components/objects/EventSchedulePanel.vue";
 import { objectDependencyTarget, type ObjectDependencyTarget, type ObjectDetailsSection } from "@/lib/database/objectDependencyDetails";
 import type { SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import type { QueryTab } from "@/types/database";
@@ -96,6 +97,7 @@ import type {
   ColumnInfo,
   ConnectionConfig,
   ConstraintInfo,
+  EventScheduleInfo,
   ForeignKeyInfo,
   IndexInfo,
   ObjectBrowserViewMode,
@@ -370,6 +372,10 @@ const sourceError = ref("");
 const sourceRow = ref<ObjectBrowserRow | null>(null);
 const sourceEditing = ref(false);
 const sourceCanEdit = ref(true);
+// Event schedules from the catalog (SQL Anywhere ODBC), plus the catalog
+// owner that qualifies the ALTER statements the schedule panel emits.
+const sourceSchedules = ref<EventScheduleInfo[] | null>(null);
+const sourceScheduleSchema = ref<string | null>(null);
 const showCompileErrorDialog = ref(false);
 const compileErrorTitle = ref("");
 const compileErrorMessage = ref("");
@@ -2335,6 +2341,10 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
   sourceRow.value = row;
   sourceContent.value = "";
   sourceError.value = "";
+  // Event schedules from the catalog (SQL Anywhere ODBC); null while loading
+  // or when the engine cannot report them.
+  sourceSchedules.value = null;
+  sourceScheduleSchema.value = null;
   if (keptDraft === undefined) sourceEditing.value = false;
   sourceCanEdit.value = true;
   if (keptDraft === undefined) {
@@ -2400,6 +2410,10 @@ async function loadSourcePanel(row: ObjectBrowserRow, options?: { preserveEditin
     sourceEditableText.value = editable;
     sourceContent.value = row.type === "SEQUENCE" ? result.source : editable;
     sourceDraft.value = editable;
+    sourceSchedules.value = row.type === "EVENT" ? (result.event_schedule ?? null) : null;
+    // The catalog owner (not the sidebar's heuristic schema label) qualifies
+    // the ALTER statements the schedule panel emits.
+    sourceScheduleSchema.value = row.type === "EVENT" ? (result.schema ?? null) : null;
     // Fresh open always enters edit when allowed; refresh preserves prior edit mode.
     const enterEditing = sourceCanEdit.value && row.type !== "SEQUENCE" && (options?.preserveEditing ? preserveEditing : !isOracleFamilyTypeSource(effectiveDatabaseType.value, row.type));
     sourceEditing.value = enterEditing;
@@ -6882,6 +6896,16 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               @parent="openSourceTriggerParent"
               @refresh="refreshActiveSource"
               @diagnostics="openBrowserTriggerDiagnostics"
+            />
+            <EventSchedulePanel
+              v-if="sourceSchedules && sourceRow && sourceRow.type === 'EVENT' && sourceSection === 'source'"
+              :connection-id="props.connection.id"
+              :database="props.database"
+              :schema="sourceScheduleSchema"
+              :event-name="sourceRow.name"
+              :schedules="sourceSchedules"
+              :disabled="sourceLoading || sourceSaving"
+              @saved="refreshActiveSource"
             />
             <div v-if="sourceLoading && !sourceEditing" class="flex flex-1 items-center justify-center">
               <Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />

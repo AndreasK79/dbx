@@ -21,6 +21,7 @@ import { isOracleFamilyTypeSource } from "@/lib/database/databaseObjectCapabilit
 import { requestOracleTypeManagement } from "@/lib/table/oracleTypeManagementRequest";
 import * as api from "@/lib/backend/api";
 import QueryEditor from "@/components/editor/QueryEditor.vue";
+import EventSchedulePanel from "@/components/objects/EventSchedulePanel.vue";
 import RoutineMetadataPanel from "@/components/objects/RoutineMetadataPanel.vue";
 import ObjectSourceSqlPreview from "@/components/objects/ObjectSourceSqlPreview.vue";
 import ObjectDependenciesPanel from "@/components/objects/ObjectDependenciesPanel.vue";
@@ -30,7 +31,7 @@ import type { SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import type { DatabaseType, ObjectSourceKind, OracleTriggerMetadata } from "@/types/database";
+import type { DatabaseType, EventScheduleInfo, ObjectSourceKind, OracleTriggerMetadata } from "@/types/database";
 const OracleInvalidObjectsDialog = defineAsyncComponent(() => import("@/components/objects/OracleInvalidObjectsDialog.vue"));
 
 const props = withDefaults(
@@ -101,6 +102,11 @@ const sourceEditable = ref(true);
 const error = ref("");
 const saveError = ref("");
 const routineMetadata = ref<RoutineMetadata | null>(null);
+// Event schedules from the catalog (SQL Anywhere ODBC); null while loading
+// or when the engine cannot report them. The catalog owner (not the sidebar's
+// heuristic schema label) qualifies the ALTER statements the panel emits.
+const eventSchedules = ref<EventScheduleInfo[] | null>(null);
+const eventSchema = ref<string | null>(null);
 const triggerSnapshot = ref<OracleTriggerSnapshot>();
 const triggerResult = ref<OracleTriggerExecutionResult>();
 const triggerSourceIssue = ref("");
@@ -201,6 +207,8 @@ async function loadSource(nextEditing = props.initialEditing && canEdit.value, r
   error.value = "";
   saveError.value = "";
   routineMetadata.value = null;
+  eventSchedules.value = null;
+  eventSchema.value = null;
   triggerSnapshot.value = undefined;
   triggerSourceIssue.value = "";
   if (!keepDraft) triggerResult.value = undefined;
@@ -252,6 +260,8 @@ async function loadSource(nextEditing = props.initialEditing && canEdit.value, r
     resolvedObjectType.value = resolvedType;
     const isRoutine = resolvedType === "PROCEDURE" || resolvedType === "FUNCTION";
     routineMetadata.value = !isRoutine ? null : result.routine_parameters !== undefined ? jdbcRoutineMetadata(result.routine_parameters) : target.databaseType === "xugu" ? xuguRoutineMetadataFromDefinition(result.source) : null;
+    eventSchedules.value = resolvedType === "EVENT" ? (result.event_schedule ?? null) : null;
+    eventSchema.value = resolvedType === "EVENT" ? (result.schema ?? null) : null;
     sourceEditable.value = editableAllowed;
     const displaySource = resolvedType === "SEQUENCE" ? result.source : editable;
     const formatted = await formatSqlForDisplay(displaySource, target.formatDialect ?? target.dialect, settingsStore.editorSettings.sqlFormatter);
@@ -521,6 +531,16 @@ defineExpose({ hasUnsavedDraft: () => editing.value && draft.value !== editableT
           <p v-if="createProfile?.engine === 'oceanbase-oracle'" class="text-muted-foreground">{{ t("oracleTrigger.obSchemaUnsupported") }} {{ t("oracleTrigger.obDatabaseUnknown") }}</p>
         </div>
         <OracleTriggerStatus v-if="isOracleTrigger" :snapshot="triggerSnapshot" :result="triggerResult" :source-issue="triggerSourceIssue" :busy="loading || saving" @action="runTriggerAction" @parent="openTriggerParent" @refresh="refreshSource" @diagnostics="openTriggerDiagnostics" />
+        <EventSchedulePanel
+          v-if="eventSchedules && section === 'source' && resolvedObjectType === 'EVENT'"
+          :connection-id="props.connectionId"
+          :database="props.database"
+          :schema="eventSchema"
+          :event-name="props.name"
+          :schedules="eventSchedules"
+          :disabled="loading || saving"
+          @saved="refreshSource"
+        />
         <div v-if="loading && !editing" class="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
           <Loader2 class="h-4 w-4 animate-spin" />
           <span>{{ t("common.loading") }}</span>

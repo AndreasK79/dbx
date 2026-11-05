@@ -5061,12 +5061,37 @@ done
                 source: "CREATE EVENT event_daily_sync ON SCHEDULE EVERY 1 DAY DO SELECT 1".to_string(),
                 editable: None,
                 routine_parameters: None,
+                event_schedule: None,
                 trigger: None,
             },
             None,
         );
 
         assert_eq!(source.editable, Some(false));
+    }
+
+    #[test]
+    fn odbc_event_object_source_keeps_driver_declared_editable() {
+        // SQL Anywhere events carry their schedule only in the source text,
+        // so the ODBC driver marks the source editable and finalize must not
+        // force it read-only the way it does for MySQL-family events.
+        let config = test_connection_config(DatabaseType::Odbc);
+        let source = finalize_object_source(
+            db::ObjectSource {
+                name: "nightly_backup".to_string(),
+                object_type: db::ObjectSourceKind::Event,
+                schema: None,
+                source: "CREATE EVENT nightly_backup SCHEDULE START TIME '01:00' EVERY 24 HOURS HANDLER BEGIN END"
+                    .to_string(),
+                editable: Some(true),
+                routine_parameters: None,
+                event_schedule: None,
+                trigger: None,
+            },
+            Some(&config),
+        );
+
+        assert_eq!(source.editable, Some(true));
     }
 
     #[test]
@@ -5082,6 +5107,7 @@ done
                         source: "CREATE TYPE ...".to_string(),
                         editable: Some(true),
                         routine_parameters: None,
+                        event_schedule: None,
                         trigger: None,
                     },
                     Some(&config),
@@ -5111,6 +5137,7 @@ done
                     source: "CREATE TYPE ...".into(),
                     editable: Some(true),
                     routine_parameters: None,
+                    event_schedule: None,
                     trigger: None,
                 },
                 Some(&config),
@@ -13442,7 +13469,15 @@ fn finalize_object_source(mut source: db::ObjectSource, config: Option<&Connecti
         source.source = normalize_routine_object_source(source.source);
     }
     if matches!(source.object_type, db::ObjectSourceKind::Event) {
-        source.editable = Some(false);
+        // MySQL-family events are edited through the dedicated event editor,
+        // so their source stays read-only. ODBC events (SQL Anywhere) have no
+        // dedicated editor — the driver marks their source editable (saving
+        // re-anchors the handler body with ALTER EVENT ... ALTER HANDLER) and
+        // reports the schedules from SYS.SYSSCHEDULE as structured metadata
+        // for the schedule panel.
+        if !config.is_some_and(|config| config.db_type == DatabaseType::Odbc) {
+            source.editable = Some(false);
+        }
     } else if matches!(source.object_type, db::ObjectSourceKind::Type | db::ObjectSourceKind::TypeBody)
         && config.and_then(oracle_type_details::dialect).is_some()
     {
@@ -13542,6 +13577,7 @@ async fn get_object_source_once(
                     source,
                     editable: None,
                     routine_parameters: None,
+                    event_schedule: None,
                     trigger: None,
                 });
             }
@@ -13613,6 +13649,7 @@ async fn get_object_source_once(
                             source,
                             editable: None,
                             routine_parameters: None,
+                            event_schedule: None,
                             trigger: None,
                         });
                     }
@@ -13766,6 +13803,7 @@ async fn get_object_source_once(
         source,
         editable,
         routine_parameters: None,
+        event_schedule: None,
         trigger: None,
     })
 }

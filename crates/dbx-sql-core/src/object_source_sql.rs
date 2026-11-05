@@ -624,6 +624,10 @@ fn build_executable_object_source_statements_with_mysql_validation_name(
         ));
     }
 
+    if input.database_type == DatabaseType::Odbc && input.object_type == ObjectSourceKind::Event {
+        return Ok(vec![executable_odbc_event_handler_ddl(input.schema.as_deref(), &input.name, source)]);
+    }
+
     let create_statement = ensure_semicolon(source);
     let cleanup = build_routine_rename_cleanup(&input, source);
     Ok(if let Some(cleanup) = cleanup { vec![create_statement, cleanup] } else { vec![create_statement] })
@@ -1424,6 +1428,35 @@ fn source_starts_with_create(source: &str) -> bool {
 fn source_starts_with_alter(source: &str) -> bool {
     let executable = &source[leading_sql_statement_start(source)..];
     Regex::new(r"(?i)^ALTER\s+").unwrap().is_match(executable)
+}
+
+/// Double-quoted SQL Anywhere identifier, owner-qualified when known.
+fn sql_anywhere_qual_name(schema: Option<&str>, name: &str) -> String {
+    let quote = |ident: &str| format!("\"{}\"", ident.replace('"', "\"\""));
+    match schema.map(str::trim).filter(|schema| !schema.is_empty()) {
+        Some(schema) => format!("{}.{}", quote(schema), quote(name)),
+        None => quote(name),
+    }
+}
+
+/// SQL Anywhere event buffers hold only the handler body (`SYSEVENT.source`),
+/// so saving re-anchors the body to its event with ALTER EVENT ... ALTER
+/// HANDLER instead of running it bare: a bare compound statement is not a
+/// standalone statement on SA, and a body saved verbatim would fire the
+/// handler's work (BACKUP DATABASE and friends) immediately. A buffer that
+/// already starts with ALTER passes through unchanged, so a hand-written
+/// ALTER EVENT ... ALTER SCHEDULE script stays verbatim.
+fn executable_odbc_event_handler_ddl(schema: Option<&str>, name: &str, source: &str) -> String {
+    if source_starts_with_alter(source) {
+        return ensure_semicolon(source);
+    }
+    let body = source.trim();
+    let handler = if body.get(0..5).is_some_and(|head| head.eq_ignore_ascii_case("begin")) {
+        ensure_semicolon(body)
+    } else {
+        format!("BEGIN\n{body}\nEND;")
+    };
+    format!("ALTER EVENT {} ALTER HANDLER\n{}", sql_anywhere_qual_name(schema, name), handler)
 }
 
 fn executable_postgres_view_ddl(source: &str) -> Option<String> {
@@ -2773,6 +2806,58 @@ mod tests {
         })
         .unwrap();
         assert_eq!(sql, "ALTER PROCEDURE dbo.usp_demo AS SELECT 1;");
+    }
+
+    #[test]
+    fn odbc_event_body_saves_reanchored_as_alter_handler() {
+        // SYSEVENT.source holds only the handler body; saving must not run
+        // it bare (that would fire BACKUP DATABASE immediately) — it is
+        // re-anchored to the event with ALTER EVENT ... ALTER HANDLER.
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Odbc,
+            object_type: ObjectSourceKind::Event,
+            schema: Some("DBA".to_string()),
+            name: "BackupDB".to_string(),
+            source: "BEGIN\n  BACKUP DATABASE DIRECTORY 'c:\\sqlbackup' WAIT BEFORE START TRANSACTION LOG TRUNCATE;\nEND;".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            sql,
+            "ALTER EVENT \"DBA\".\"BackupDB\" ALTER HANDLER\nBEGIN\n  BACKUP DATABASE DIRECTORY 'c:\\sqlbackup' WAIT BEFORE START TRANSACTION LOG TRUNCATE;\nEND;"
+        );
+    }
+
+    #[test]
+    fn odbc_event_non_compound_body_is_wrapped_and_names_are_escaped() {
+        // A body that is not a compound statement is wrapped in BEGIN/END —
+        // the ALTER HANDLER clause takes a compound statement.
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Odbc,
+            object_type: ObjectSourceKind::Event,
+            schema: None,
+            name: "Ni\"ghtly".to_string(),
+            source: "CALL sp_cleanup();".to_string(),
+        })
+        .unwrap();
+        assert_eq!(sql, "ALTER EVENT \"Ni\"\"ghtly\" ALTER HANDLER\nBEGIN\nCALL sp_cleanup();\nEND;");
+
+        // No schema → unqualified quoted name.
+        assert!(!sql.contains(".\"Ni"));
+    }
+
+    #[test]
+    fn odbc_event_alter_script_saves_verbatim() {
+        // A hand-written ALTER EVENT ... ALTER SCHEDULE script stays verbatim.
+        let source = "ALTER EVENT \"DBA\".\"BackupDB\" ALTER SCHEDULE \"BackupDB\" START TIME '23:30:00'";
+        let sql = build_executable_object_source_sql(EditableObjectSourceSqlInput {
+            database_type: DatabaseType::Odbc,
+            object_type: ObjectSourceKind::Event,
+            schema: Some("DBA".to_string()),
+            name: "BackupDB".to_string(),
+            source: source.to_string(),
+        })
+        .unwrap();
+        assert_eq!(sql, "ALTER EVENT \"DBA\".\"BackupDB\" ALTER SCHEDULE \"BackupDB\" START TIME '23:30:00';");
     }
 
     #[test]

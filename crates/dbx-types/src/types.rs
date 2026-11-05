@@ -341,6 +341,8 @@ pub struct ObjectSource {
     pub routine_parameters: Option<Vec<RoutineParameterMetadata>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_schedule: Option<Vec<EventScheduleInfo>>,
 }
 
 /// Provenance for structured metadata fields that are optional in [`ColumnInfo`].
@@ -1075,6 +1077,32 @@ pub struct TriggerInfo {
     pub statement: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_metadata: Option<OracleTriggerMetadata>,
+}
+
+/// One SQL Anywhere event schedule (`SYS.SYSSCHEDULE` row). SA normalizes
+/// schedules into the catalog — `SYSEVENT.source` carries only the handler
+/// body — so schedules are read structurally instead of parsed out of DDL and
+/// rewritten with `ALTER EVENT ... ALTER SCHEDULE`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventScheduleInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurring: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_of_week: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub days_of_month: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_units: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_amount: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
