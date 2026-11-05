@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { usesLightweightMysqlBrowser } from "@/lib/database/mysqlBrowserLoading";
 import { useTableCopyTaskStore } from "@/stores/tableCopyTaskStore";
 import { uuid } from "@/lib/common/utils";
 import { OBJECT_BROWSER_COMPACT_WIDTHS, normalizeObjectBrowserCompactWidth, type ObjectBrowserCompactWidth } from "@/lib/table/objectBrowserCompactWidth";
 import { applyDdlTextPreferences } from "@/lib/sql/ddlPreferences";
+import { applyDdlSearchMarks } from "@/lib/sql/ddlSearchMarks";
 import DatabaseActionsMenu from "@/components/objects/DatabaseActionsMenu.vue";
 import FirebirdObjectManager from "@/components/objects/FirebirdObjectManager.vue";
 import { useDatabaseBrowserMutation } from "@/lib/database/databaseBrowserActions";
@@ -26,6 +28,7 @@ import {
   Copy,
   CopyPlus,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Download,
   Eraser,
@@ -249,6 +252,7 @@ import { gaussdbMTypeDisplayName } from "@/lib/table/postgresDataTypeHelp";
 import { cacheObjectBrowserRows, createObjectBrowserRowsCacheWriteToken, getCachedObjectBrowserRowsForScaffold, type ObjectBrowserRowsCacheScope, type ObjectBrowserRowsCacheWriteToken } from "@/lib/table/objectBrowserRowsCache";
 import { createObjectBrowserRowsLoadGuard, type ObjectBrowserRowsLoadHandle } from "@/lib/table/objectBrowserRowsLoadGuard";
 import { metadataLoadBudgetMs } from "@/lib/metadata/metadataLoadBudget";
+import { shareObjectBrowserRead } from "@/lib/table/objectBrowserPendingReads";
 import { loadObjectDdl, type ObjectDdlRequest } from "@/lib/metadata/objectDdlCache";
 import { loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
 import { invalidateObjectMetadataCache } from "@/lib/metadata/objectMetadataCache";
@@ -428,6 +432,8 @@ watch(tableInfoSearchQuery, () => {
   selectedTableInfoColumns.value = [];
 });
 const tableInfoDdlPreRef = ref<HTMLPreElement | null>(null);
+const tableInfoDdlMatchCount = ref(0);
+const tableInfoDdlMatchIndex = ref(0);
 const activeTableInfoLoading = computed(() => {
   if (tableInfoTab.value === "info") return tableOverviewLoading.value;
   if (tableInfoTab.value === "ddl") return tableDdlLoading.value;
@@ -1628,16 +1634,54 @@ const filteredTableConstraints = computed(() => {
   return base.filter((c) => c.name.toLowerCase().includes(q) || c.constraint_type.toLowerCase().includes(q) || c.columns.some((col) => col.toLowerCase().includes(q)) || c.definition.toLowerCase().includes(q));
 });
 
-const filteredTableDdlContent = computed(() => {
-  if (!tableDdlContent.value) return "";
-  const html = highlight(tableDdlContent.value);
-  if (!tableInfoSearchQuery.value) return html;
-  const escaped = tableInfoSearchQuery.value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const regex = new RegExp(`(${escaped})`, "gi");
-  return html.replace(/>([^<]*)</g, (_, text) => {
-    return `>${text.replace(regex, "<mark>$1</mark>")}<`;
-  });
-});
+const highlightedTableDdlContent = computed(() => (tableDdlContent.value ? highlight(tableDdlContent.value) : ""));
+
+function syncTableInfoDdlMatches(scrollToActive = false) {
+  const pre = tableInfoDdlPreRef.value;
+  const matches = pre && tableInfoTab.value === "ddl" && tableInfoSearchQuery.value ? Array.from(pre.querySelectorAll<HTMLElement>("mark.ddl-search-match")) : [];
+  tableInfoDdlMatchCount.value = matches.length;
+  tableInfoDdlMatchIndex.value = matches.length ? Math.min(tableInfoDdlMatchIndex.value, matches.length - 1) : 0;
+  matches.forEach((match, index) => match.classList.toggle("ddl-search-match-active", index === tableInfoDdlMatchIndex.value));
+  const activeMatch = matches[tableInfoDdlMatchIndex.value];
+  if (!scrollToActive || !pre || !activeMatch) return;
+
+  // 只滚动 DDL 容器，避免带动对象列表和外层页面。
+  const preRect = pre.getBoundingClientRect();
+  const matchRect = activeMatch.getBoundingClientRect();
+  pre.scrollTop += matchRect.top - preRect.top - (pre.clientHeight - matchRect.height) / 2;
+  pre.scrollLeft += matchRect.left - preRect.left - (pre.clientWidth - matchRect.width) / 2;
+}
+
+function navigateTableInfoDdlSearch(delta: -1 | 1) {
+  const count = tableInfoDdlMatchCount.value;
+  if (!count) return;
+  tableInfoDdlMatchIndex.value = (tableInfoDdlMatchIndex.value + delta + count) % count;
+  syncTableInfoDdlMatches(true);
+}
+
+function onTableInfoSearchKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    tableInfoSearchQuery.value = "";
+    return;
+  }
+  if (event.key !== "Enter" || tableInfoTab.value !== "ddl") return;
+  event.preventDefault();
+  event.stopPropagation();
+  navigateTableInfoDdlSearch(event.shiftKey ? -1 : 1);
+}
+
+watch(
+  [highlightedTableDdlContent, tableInfoSearchQuery, tableInfoDdlPreRef],
+  () => {
+    tableInfoDdlMatchIndex.value = 0;
+    applyDdlSearchMarks(tableInfoDdlPreRef.value, tableInfoSearchQuery.value);
+    syncTableInfoDdlMatches(true);
+  },
+  { flush: "post" },
+);
 
 async function openTableInfo(row: ObjectBrowserRow, initialTab?: TableInfoTab, focusObject?: NonNullable<QueryTab["objectPropertiesRequest"]>["focusObject"]) {
   if (!confirmTriggerDraftDiscard()) return;
@@ -5207,7 +5251,7 @@ watch([() => props.initialEventName, () => props.initialEventOpenRequestId, () =
 // 匹配 0 行；schema 解析失败（loadSchemas 抛错或返回空列表）时标签会整体空白
 // (#8301)。经 objectListSchemaForConnection 回退到连接用户名（大写），仅限
 // 达梦；oracle/oceanbase-oracle 维持空 schema 由后端解析当前 schema。
-async function loadObjects(options?: { allowCached?: boolean; preserveExistingRows?: boolean }) {
+async function loadObjects(options?: { allowCached?: boolean; preserveExistingRows?: boolean; details?: boolean }) {
   clearTimeout(objectSearchTimer);
   if (usesServerObjectPaging.value) return loadObjectPage(false, options);
   error.value = "";
@@ -5248,7 +5292,7 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
     finishOnce();
     // 行数/大小是随对象列表一起缓存的，直接返回缓存会让这两列一直停在上一次统计
     // （#10461）。对象列表本身仍按上面的约定不动，只把统计信息在后台补一次。
-    if (cached.stale) void revalidateCachedObjectStatistics(request, cacheWriteToken);
+    if (cached.stale && !usesLightweightMysqlBrowser(props.connection)) void revalidateCachedObjectStatistics(request, cacheWriteToken);
     return;
   } else {
     // No scaffold: first load in this scope, cache invalidated by a DDL mutation,
@@ -5265,12 +5309,12 @@ async function loadObjects(options?: { allowCached?: boolean; preserveExistingRo
   }
 
   try {
-    const load = props.connection.db_type === "mongodb" ? loadMongoObjectBrowserRows(request.scope.connectionId, request.scope.database) : loadSqlObjectBrowserRows(request);
+    const load = props.connection.db_type === "mongodb" ? loadMongoObjectBrowserRows(request.scope.connectionId, request.scope.database) : loadSqlObjectBrowserRows(request, options?.details);
     const nextRows = await objectBrowserRowsLoadGuard.wait(request.epoch, load, metadataLoadBudgetMs(props.connection.query_timeout_secs));
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
     applyObjectBrowserRows(nextRows);
     const cachedAt = cacheObjectBrowserRows(cacheWriteToken, nextRows);
-    void loadObjectStatistics(request, cacheWriteToken, cachedAt);
+    if (!usesLightweightMysqlBrowser(props.connection) || options?.details) void loadObjectStatistics(request, cacheWriteToken, cachedAt);
   } catch (e: any) {
     if (!objectBrowserRowsLoadGuard.isCurrent(request)) return;
     // Keep visible rows on a background revalidate failure — surface a lightweight
@@ -5294,7 +5338,7 @@ function objectPageAnchor(object: ObjectInfo): string {
   return exactOracleTriggerMetadata(object.trigger) ? tablePageRowAnchorKey(object.name, object.schema, undefined, object.trigger) : JSON.stringify([object.schema, object.name, object.object_type, object.signature]);
 }
 
-async function loadObjectPage(append: boolean, options?: { preserveExistingRows?: boolean }) {
+async function loadObjectPage(append: boolean, options?: { preserveExistingRows?: boolean; details?: boolean }) {
   if (append && (loadingObjects.value || refreshingObjects.value || loadingMoreObjects.value || !hasMoreObjects.value)) return;
   const schema = exactIndexList.value ? indexParentSchema() : needsSchema.value ? objectListSchemaForConnection(props.connection, selectedSchema.value) : props.database;
   const request = objectBrowserRowsLoadGuard.start(objectBrowserRowsCacheScope(schema));
@@ -5382,14 +5426,17 @@ async function loadObjectPage(append: boolean, options?: { preserveExistingRows?
   }
 }
 
-async function loadSqlObjectBrowserRows(request: ObjectBrowserRowsLoadHandle) {
+async function loadSqlObjectBrowserRows(request: ObjectBrowserRowsLoadHandle, details = false) {
   // Schema indexes use their dedicated exact, server-paged filter. Mixing an
   // unbounded exact subset into the legacy all view defeats both contracts.
   const types = supportsSchemaIndexes.value ? sidebarObjectKindsForDatabase(effectiveDatabaseType.value).filter((type) => type !== "INDEX") : undefined;
-  const readOptions = oracleTriggerObjectReadOptions(props.connection, types, request.scope.catalog);
-  const objects: ObjectInfo[] = await (readOptions
-    ? api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog, undefined, undefined, readOptions)
-    : api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog));
+  const readOptions = usesLightweightMysqlBrowser(props.connection) ? { lightweight: !details } : oracleTriggerObjectReadOptions(props.connection, types, request.scope.catalog);
+  const readKey = JSON.stringify([createObjectBrowserRowsCacheWriteToken(request.scope), types, readOptions]);
+  const objects: ObjectInfo[] = await shareObjectBrowserRead(readKey, () =>
+    readOptions
+      ? api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog, undefined, undefined, readOptions)
+      : api.listObjects(request.scope.connectionId, request.scope.database, request.scope.schema, types, undefined, undefined, undefined, request.scope.catalog),
+  );
   return buildObjectBrowserRows({
     objects: objects.filter((object) => !supportsSchemaIndexes.value || object.object_type !== "INDEX"),
     database: request.scope.database,
@@ -5406,10 +5453,11 @@ async function loadMongoObjectBrowserRows(connectionId: string, database: string
 async function loadObjectStatistics(request: ObjectBrowserRowsLoadHandle, cacheWriteToken: ObjectBrowserRowsCacheWriteToken, cachedAt: number | undefined) {
   if (!rows.value.some((row) => row.type === "TABLE")) return;
   try {
-    const stats = await api.listObjectStatistics(request.scope.connectionId, request.scope.database, request.scope.schema);
+    const stats = await shareObjectBrowserRead(JSON.stringify(["statistics", cacheWriteToken]), () => api.listObjectStatistics(request.scope.connectionId, request.scope.database, request.scope.schema));
     if (!objectBrowserRowsLoadGuard.isCurrent(request) || stats.length === 0) return;
     mergeObjectStatistics(stats, request.scope.schema, cacheWriteToken, cachedAt);
   } catch (e) {
+    if (usesLightweightMysqlBrowser(props.connection) && objectBrowserRowsLoadGuard.isCurrent(request)) scaffoldRefreshError.value = translateBackendError(t, e);
     console.debug("[ObjectBrowser] table statistics unavailable", e);
   }
 }
@@ -6135,6 +6183,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       <Button v-if="showInlineSidePanelToggle" variant="ghost" size="icon" class="h-7 w-7" :class="{ 'text-primary': isSidePanelOpen }" :title="isSidePanelOpen ? t('objects.closeDetailPanel') : t('objects.openDetailPanel')" @click="toggleSidePanel">
         <PanelRight class="h-3.5 w-3.5" />
       </Button>
+      <Button v-if="usesLightweightMysqlBrowser(props.connection)" variant="ghost" size="sm" :disabled="loadingObjects || refreshingObjects" @click="loadObjects({ preserveExistingRows: true, details: true })">{{ t("objects.loadDetails") }}</Button>
       <Button variant="ghost" size="icon" class="h-7 w-7" :title="refreshTooltip" :disabled="loadingObjects" @click="refresh">
         <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loadingObjects || refreshingObjects }" />
       </Button>
@@ -6569,7 +6618,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
           <div v-if="tableInfoTab !== 'relations'" class="flex items-center gap-1 px-2 py-1.5 border-b shrink-0 bg-background">
             <div class="relative min-w-0 flex-1">
               <Search class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <input v-model="tableInfoSearchQuery" data-table-info-search :placeholder="t('grid.tableInfoSearch')" class="w-full h-7 pl-7 pr-6 text-xs bg-muted/50 rounded border border-border focus:outline-none focus:border-primary/50" @keydown.escape="tableInfoSearchQuery = ''" />
+              <input v-model="tableInfoSearchQuery" data-table-info-search :placeholder="t('grid.tableInfoSearch')" class="w-full h-7 pl-7 pr-6 text-xs bg-muted/50 rounded border border-border focus:outline-none focus:border-primary/50" @keydown="onTableInfoSearchKeydown" />
               <button v-if="tableInfoSearchQuery" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" @click="tableInfoSearchQuery = ''">
                 <X class="w-3 h-3" />
               </button>
@@ -6577,6 +6626,17 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" :disabled="activeTableInfoLoading" :title="t('structureEditor.refresh')" :aria-label="t('structureEditor.refresh')" @click="refreshActiveTableInfo">
               <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': activeTableInfoLoading }" />
             </Button>
+            <template v-if="tableInfoTab === 'ddl'">
+              <span aria-live="polite" class="w-9 shrink-0 text-center text-[11px] tabular-nums text-muted-foreground">
+                {{ tableInfoSearchQuery ? (tableInfoDdlMatchCount > 0 ? `${tableInfoDdlMatchIndex + 1}/${tableInfoDdlMatchCount}` : "0") : "" }}
+              </span>
+              <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" :title="t('editor.search.prevMatch')" :aria-label="t('editor.search.prevMatch')" :disabled="tableInfoDdlMatchCount === 0" @click="navigateTableInfoDdlSearch(-1)">
+                <ChevronUp class="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="ghost" size="icon" class="h-7 w-7 shrink-0" :title="t('editor.search.nextMatch')" :aria-label="t('editor.search.nextMatch')" :disabled="tableInfoDdlMatchCount === 0" @click="navigateTableInfoDdlSearch(1)">
+                <ChevronDown class="h-3.5 w-3.5" />
+              </Button>
+            </template>
           </div>
           <div v-if="tableInfoTab === 'ddl' && (effectiveDatabaseType === 'oracle' || effectiveDatabaseType === 'oceanbase-oracle')" class="border-b px-3 py-2">
             <DdlStorageToggle :database-type="effectiveDatabaseType" :disabled="tableDdlLoading" />
@@ -6762,9 +6822,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
             ref="tableInfoDdlPreRef"
             data-native-clipboard
             tabindex="0"
-            class="flex-1 min-w-0 text-xs font-mono p-3 overflow-auto ddl-code leading-5 select-text outline-none"
+            class="flex-1 min-h-0 min-w-0 text-xs font-mono p-3 overflow-auto ddl-code leading-5 select-text outline-none"
             :class="settingsStore.editorSettings.tableDdlWordWrap ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'"
-            v-html="filteredTableDdlContent"
+            v-html="highlightedTableDdlContent"
             @keydown="onTableInfoDdlKeydown"
           ></pre>
           <div v-else class="flex-1 flex items-center justify-center">
@@ -7311,7 +7371,28 @@ html.dbx-legacy-webview.dark .object-browser-scroller:hover::-webkit-scrollbar-t
 }
 
 .ddl-code {
+  --ddl-search-bg: rgb(253, 245, 184);
+  --ddl-current-search-bg: rgba(253, 224, 71, 0.52);
+  --ddl-current-search-border: rgba(234, 179, 8, 0.82);
   container-type: inline-size;
+}
+
+.dark .ddl-code {
+  --ddl-search-bg: rgb(72, 57, 8);
+  --ddl-current-search-bg: rgb(116, 87, 0);
+  --ddl-current-search-border: rgb(239, 177, 0);
+}
+
+.ddl-code :deep(.ddl-search-match) {
+  border-radius: 2px;
+  background: var(--ddl-search-bg);
+  color: inherit;
+  padding: 0;
+}
+
+.ddl-code :deep(.ddl-search-match-active) {
+  background: var(--ddl-current-search-bg);
+  outline: 1px solid var(--ddl-current-search-border);
 }
 
 .object-browser-side-panel {

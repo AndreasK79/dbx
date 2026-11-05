@@ -127,6 +127,7 @@ import { buildTableSelectSql, qualifyTableReferencesInSql, quoteTableDataIdentif
 import { buildCreateIndexSql } from "@/lib/table/indexCreateSql";
 import { buildAddForeignKeySql } from "@/lib/table/foreignKeySql";
 import { buildAddConstraintSql } from "@/lib/table/constraintSql";
+import { dataGridExecutedQueryConditions } from "@/lib/dataGrid/dataGridExecutedQuery";
 import { uuid } from "@/lib/common/utils";
 import { generateCellValues, type CellValueGenerationKind, type CellValueGenerationOptions } from "@/lib/dataGrid/cellValueGeneration";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridClipboardText, mongoDocumentGridDisplayText, mongoDocumentGridEditorText, mongoDocumentGridExternalValue, mongoDocumentGridInputValue, mongoDocumentGridNumericValue, mongoDocumentRelaxedExtendedJson } from "@/lib/mongo/mongoDocumentValues";
@@ -7806,6 +7807,7 @@ const columnDetail = computed(() => {
     typeByColumn: columnTypeMap.value,
     resultColumnTypes: props.result.column_types,
     commentByColumn: columnCommentMap.value,
+    comment: resolvedColumnComment(props.result.columns[columnIndex] ?? "", columnIndex),
     displayValue: (value, index) => formatCellCached(value, index),
     rawValue: gridDetailRawValue,
     isNullValue: gridDetailIsNullValue,
@@ -9713,6 +9715,12 @@ let userFacingSqlGeneration = 0;
 // Legacy snapshots may retain a display page without the actual execution text.
 // Do not present the original, unpaginated statement as the executed SQL there.
 const actualExecutionSql = computed(() => props.result.sqlPage?.executedSql || props.result.executedStatement || (!props.pageSql ? props.result.sourceStatement || props.sql || "" : ""));
+// Both copy entries use the same reconstructed SQL for the displayed result.
+const canCopyQuickQuerySql = computed(() => !!userFacingSql.value && !props.loading && !isApplyingWhere.value && !isQueryExecutionErrorResult(props.result));
+
+async function copyQuickQuerySql() {
+  if (canCopyQuickQuerySql.value) await copyUserFacingSql();
+}
 
 function sqlWithDisplayDatabaseName(sql: string): string {
   const database = props.tableMeta?.database ?? props.database;
@@ -9726,21 +9734,31 @@ function sqlWithDisplayDatabaseName(sql: string): string {
 
 async function syncUserFacingSql() {
   const generation = ++userFacingSqlGeneration;
-  const executionSql = (props.result.sqlPage?.sql || props.pageSql || props.sql)?.trim() ?? "";
+  const executionSql = (props.result.sqlPage?.sql || props.pageSql || props.result.sourceStatement || props.sql)?.trim() ?? "";
   const includeDatabaseName = settingsStore.editorSettings.generateSqlIncludeDatabaseName;
-  const shouldRebuildSql = executionSql.includes("__DBX_LARGE_VALUE_BYTES_") || includeDatabaseName;
-  if (props.context !== "table-data" || !shouldRebuildSql || !props.tableMeta?.tableName) {
+  const hasPreviewProjection = executionSql.includes("__DBX_LARGE_VALUE_BYTES_");
+  const shouldRebuildSql = hasPreviewProjection || includeDatabaseName;
+  if (props.context !== "table-data" || !shouldRebuildSql) {
     userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
+    return;
+  }
+
+  // Clearing first prevents a copy of the previous page while its replacement
+  // is being rebuilt. A failed rebuild must never expose internal preview SQL.
+  userFacingSql.value = "";
+  const conditions = props.tableMeta?.tableName ? dataGridExecutedQueryConditions(executionSql, props.tableMeta.tableName, resolvedDatabaseType.value) : null;
+  if (!props.tableMeta?.tableName || !conditions) {
+    if (!hasPreviewProjection) userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
     return;
   }
 
   try {
     const config = props.connectionId ? connectionStore.getConfig(props.connectionId) : undefined;
     const footerPage = dataGridUserFacingPage({
-      executedPageLimit: props.executedPageLimit,
-      executedPageOffset: props.executedPageOffset,
-      pageLimit: props.pageLimit,
-      pageOffset: props.pageOffset,
+      executedPageLimit: props.result.sqlPage?.executedLimit ?? props.executedPageLimit,
+      executedPageOffset: props.result.sqlPage?.executedOffset ?? props.executedPageOffset,
+      pageLimit: props.result.sqlPage?.limit ?? props.pageLimit,
+      pageOffset: props.result.sqlPage?.offset ?? props.pageOffset,
       fallbackLimit: pageSize.value,
       fallbackOffset: Math.max(0, currentPage.value - 1) * pageSize.value,
     });
@@ -9756,19 +9774,19 @@ async function syncUserFacingSql() {
       tableType: props.tableMeta.tableType,
       includeDatabaseName,
       injectDefaultTimeSeriesWhere: true,
-      whereInput: currentWhereInput(),
-      orderBy: effectiveOrderBy(),
+      whereInput: conditions.whereInput,
+      orderBy: conditions.orderBy,
       limit: footerPage.limit,
       offset: footerPage.offset,
     });
     if (generation === userFacingSqlGeneration) userFacingSql.value = sqlWithDisplayDatabaseName(sql);
   } catch {
-    if (generation === userFacingSqlGeneration) userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
+    if (generation === userFacingSqlGeneration && !hasPreviewProjection) userFacingSql.value = sqlWithDisplayDatabaseName(executionSql);
   }
 }
 
 watch(
-  () => [props.sql, props.pageSql, props.result.sqlPage, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, currentWhereInput(), effectiveOrderBy(), settingsStore.editorSettings.generateSqlIncludeDatabaseName],
+  () => [props.sql, props.pageSql, props.result, props.result.sqlPage, props.result.sourceStatement, props.context, props.tableMeta, props.pageLimit, props.pageOffset, props.executedPageLimit, props.executedPageOffset, settingsStore.editorSettings.generateSqlIncludeDatabaseName],
   () => void syncUserFacingSql(),
   { immediate: true },
 );
@@ -15225,6 +15243,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   const deletableContextRowIds = deletableRowIds(rowIdsForDelete);
   const hasEditableSelection = selectionHasEditableCells();
   const selectedColumnCount = selectedVisibleColumnIndexes().length;
+  const canShowContextDeleteColumn = !!contextHeaderColumn.value && deleteColumnToolbarCapability.value.visible;
   const gridSnapshotContext = contextHeaderColumn.value && hasColumnSelection.value ? "columns" : contextCell.value?.col === -1 && affectedRowIds().length > 0 ? "rows" : contextCell.value && hasCellSelection.value && selectedCellMatrix.value ? "cells" : null;
   const previewItems: ContextMenuItem[] = [];
   if (!contextHeaderColumn.value && contextCell.value) {
@@ -15300,6 +15319,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         hideIdenticalColumns: identicalColumnCount > 0 ? t("grid.hideIdenticalColumnsCount", { count: identicalColumnCount }) : t("grid.hideIdenticalColumns"),
         showAllColumnsMenu: t("grid.showAllColumnsMenu"),
         clearRememberedColumnWidths: t("grid.clearRememberedColumnWidths"),
+        deleteColumn: dropColumnCandidatesNow().length > 1 ? t("grid.deleteColumns", { count: dropColumnCandidatesNow().length }) : t("grid.deleteColumn"),
       },
       icons: {
         copy: Copy,
@@ -15309,6 +15329,7 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         descending: ArrowDown,
         clearSort: Eraser,
         clearRememberedColumnWidths: RotateCcw,
+        deleteColumn: Columns3,
       },
       actions: {
         copyName: copyHeaderColumnOrSelected,
@@ -15353,7 +15374,12 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         hideSelectedColumns,
         hideIdenticalColumns,
         showAllColumnsMenu: showAllColumns,
+        deleteColumn: () => {
+          void requestDropColumns();
+        },
       },
+      canDeleteColumn: canShowContextDeleteColumn ? !deleteColumnToolbarCapability.value.disabled : undefined,
+      deferDeleteToDangerousMenu: true,
       filterSubmenu: filterSubmenu(),
       highlightSubmenu: highlightSubmenu(),
     }),
@@ -15429,7 +15455,40 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
           if (deletableContextRowIds.length > 0) requestDeleteRows(deletableContextRowIds);
         },
       },
+      deferDeleteToDangerousMenu: true,
     }),
+    [
+      {
+        label: t("dangerDialog.title"),
+        icon: AlertTriangle,
+        variant: "destructive",
+        visible: !!(canShowContextDeleteColumn || (row && !row.isDeleted && deletableContextRowIds.length > 0)),
+        children: [
+          ...(canShowContextDeleteColumn
+            ? [
+                {
+                  label: dropColumnCandidatesNow().length > 1 ? t("grid.deleteColumns", { count: dropColumnCandidatesNow().length }) : t("grid.deleteColumn"),
+                  action: () => void requestDropColumns(),
+                  disabled: deleteColumnToolbarCapability.value.disabled,
+                  variant: "destructive" as const,
+                  icon: Columns3,
+                },
+              ]
+            : []),
+          ...(canShowContextDeleteColumn && row && !row.isDeleted && deletableContextRowIds.length > 0 ? [{ label: "", separator: true }] : []),
+          ...(row && !row.isDeleted && deletableContextRowIds.length > 0
+            ? [
+                {
+                  label: rowLabels.delete,
+                  action: () => requestDeleteRows(deletableContextRowIds),
+                  variant: "destructive" as const,
+                  icon: Trash2,
+                },
+              ]
+            : []),
+        ],
+      },
+    ],
     [
       exportSubmenu(),
       ...(isTauriRuntime()
@@ -15633,6 +15692,16 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                   @apply-value-suggestions="applyFilterValueSuggestions"
                   @custom-mode-order="openFilterModeOrderDialog"
                 />
+                <div class="flex shrink-0 items-center border-r px-1">
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <Button data-grid-copy-query-sql type="button" variant="ghost" size="icon" class="h-5 w-5" :disabled="!canUseWhereSearch || !canCopyQuickQuerySql" :aria-label="t('grid.copyQuerySql')" @click="copyQuickQuerySql">
+                        <Copy class="h-3 w-3" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{{ t("grid.copyQuerySql") }}</TooltipContent>
+                  </Tooltip>
+                </div>
               </template>
 
               <slot name="search-bar" :local-filter-count="localFilterCount + serverColumnFilterCount" :has-local-column-filters="hasLocalColumnFilters || hasServerColumnFilters" :local-filter-summaries="localFilterSummaries" :clear-local-filter="clearLocalFilter" />
@@ -15648,7 +15717,6 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             :auto-refresh="autoRefreshToolbarCapability"
             :add-row="addRowToolbarCapability"
             :delete-row="deleteRowToolbarCapability"
-            :delete-column="deleteColumnToolbarCapability"
             :layer-preview="layerPreviewToolbarCapability"
             :preview="previewToolbarCapability"
             :save="saveToolbarCapability"

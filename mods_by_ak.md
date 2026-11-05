@@ -4,16 +4,14 @@ Personal mods on top of dbx, in order — all verified (specs + typecheck), buil
 
 - **Snippets** — VS Code import/export, list filter, bulk delete with shift-click ranges (#2, #3, #5, #12, #39), quick-add from the editor's context menu (#24), `$0` final cursor position (#23), a typed table/column name outranks a colliding snippet trigger (#28), a partially typed prefix keeps tables/columns ahead of snippets (#44), triggers containing spaces or hyphens match their separator-free spelling (#45), and a toggle removes them from typing autocomplete while Ctrl+Alt+Space lists them on demand (#52)
 - **Result grid** — DBeaver-style FK drill-through (#4) with a Back button / Alt+← that retraces the drill chain (#43), copy-SQL buttons for indexes, foreign keys, and constraints (#6, #7, #9), CSV export options dialog (#19) with a type-aware "strings" quote mode in export and copy extractors (#42), uncheck-all in the Columns dropdown (#33)
-- **Keyboard** — VS Code-style Ctrl+D occurrence selection (#13), Ctrl+Alt+D database picks hand focus back to the editor (#21), Ctrl+Shift+C commits the transaction (#22), Alt+1..5 copy a first-row value (#30), Ctrl+Alt+Enter replaces all in the find/replace panels (#35), Shift+Delete / Ctrl+X cut lines off the bottom of the editor (#53), configurable shortcut for "Convert to delimited text" (#1)
+- **Keyboard** — VS Code-style Ctrl+D occurrence selection (#13), Ctrl+Alt+D database picks hand focus back to the editor (#21), Ctrl+Shift+C commits the transaction (#22), Alt+1..5 copy a first-row value (#30), Ctrl+Alt+Enter replaces all in the find/replace panels (#35), Shift+Delete / Ctrl+X cut lines off the bottom of the editor (#53)
 - **Dialogs** — Enter confirms everywhere: delimited list (#8), SQL parameters (#14), danger confirms (#16), update center (#29); the SQL parameter dialog also stays open on outside clicks (#17)
 - **Search & parameters** — double-Shift database object search that opens the object's definition (#20, #25), with type filter chips and the sidebar's icons/colors (#34) and trigger search on PostgreSQL (#55); unfilled SQL parameters send NULL (#26)
 - **Errors** — full PostgreSQL error reports with failed statements' notices (#36), live notice streaming and a readable error banner (#37), query/edit errors never finish silently (#38), an aborted batch underlines the statement the error names (#50)
 - **Structure editor** — the columns tab colors each column's type with the grid's palette, and its search filters rows instead of only marking them (#31)
 - **Misc** — Postgres foreign-server browser (#15), GitHub Copilot as a first-class AI provider (#27) that signs in with your GitHub account (#46), hotfix build profile (#32), WHERE/SET filters keep their columns when a snippet also matches (#49), Windows-1252 as an import encoding (#57)
 
-1. Configurable keybinding for "Convert to delimited text"
-The shortcut became user-configurable in Settings → Shortcuts instead of a hardcoded binding.
-shortcutRegistry.ts, EditorSettingsDialog.vue
+1. Configurable keybinding for "Convert to delimited text" — UPSTREAMED (merged upstream as f82a3f4b7 in v0.6.66)
 
 2. VS Code snippets importer
 Settings → Snippets → Import reads VS Code snippets JSON (.json / .code-snippets): parses prefix/body pairs, auto-renames on prefix collisions, size-caps the file, and merges into the snippet draft without touching saved settings until Apply.
