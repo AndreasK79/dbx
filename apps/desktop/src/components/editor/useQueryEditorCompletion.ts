@@ -95,6 +95,18 @@ interface QueryEditorCompletionOptions {
   semanticCompletionEnabled: boolean;
 }
 
+// CodeMirror positions the cursor on snippet field selections only: a template
+// without any `${}`/`#{}` placeholder dispatches no selection, so the cursor
+// stays where the completion started — in front of the inserted text. That hits
+// every placeholder-free snippet completion (foreign-key JOIN conditions, `*`
+// column expansions, plain snippet bodies). Give those templates a `${0}`
+// final-cursor marker: the engine treats it as the last stop, selects it right
+// away, and installs no Tab-navigable snippet session. A lone `$` is not a
+// field, so PostgreSQL bind parameters (`$1`) never trigger this.
+function snippetTemplateWithFinalCursor(template: string): string {
+  return /[#$]\{/.test(template) ? template : `${template}\${0}`;
+}
+
 /**
  * Applies one snippet acceptance to the main selection and every additional
  * cursor that carries the same typed prefix, as a single transaction.
@@ -583,7 +595,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     };
     const batchColumnSelection = batchColumnSelectionMarkerForItem(item);
     if (shouldApplyCompletionAsSnippet(item) && item.apply) {
-      const completion = runtime.codeMirrorSnippetCompletion(item.apply, {
+      const completion = runtime.codeMirrorSnippetCompletion(snippetTemplateWithFinalCursor(item.apply), {
         ...labelPresentation,
         ...(sortText ? { sortText } : {}),
         type: item.type,
