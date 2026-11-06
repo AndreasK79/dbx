@@ -71,6 +71,16 @@ const FORMAT_META: Record<string, { ext: string; label: string }> = {
   txt: { ext: "txt", label: "Text" },
 };
 
+/** mod 61: CSV 导出对话框确认后回写上次选择，下次打开对话框时预填。 */
+function rememberCsvExportChoices(store: ReturnType<typeof useSettingsStore>, options: CsvTextFormatOptions): void {
+  store.updateEditorSettings({
+    csvQuoteMode: options.quoteMode,
+    csvExportDelimiter: options.delimiter,
+    csvExportQuoteChar: options.quoteChar,
+    csvExportIncludeHeader: options.includeHeader,
+  });
+}
+
 export interface DataGridExportTarget {
   rowIds?: number[];
   columnIndexes?: number[];
@@ -1517,8 +1527,15 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     await runExclusiveExport(async () => {
       try {
         if (await exportLocalSnapshot("csv", rowIds, columnIndexes, true)) return;
-        const csvOptions = await showCsvExportDialog({ quoteMode: useSettingsStore().editorSettings.csvQuoteMode });
+        const settingsStore = useSettingsStore();
+        const csvOptions = await showCsvExportDialog({
+          quoteMode: settingsStore.editorSettings.csvQuoteMode,
+          delimiter: settingsStore.editorSettings.csvExportDelimiter,
+          quoteChar: settingsStore.editorSettings.csvExportQuoteChar,
+          includeHeader: settingsStore.editorSettings.csvExportIncludeHeader,
+        });
         if (!csvOptions) return;
+        rememberCsvExportChoices(settingsStore, csvOptions);
         if (await exportQueryResultViaBackend("csv", rowIds, false, "name", true, undefined, false, columnIndexes, undefined, csvOptions)) return;
         if (await exportFullTableDataViaBackend("csv", rowIds, "name", true, undefined, false, columnIndexes, undefined, csvOptions)) return;
         if (await exportMemoryDataFile("csv", rowIds, columnIndexes, true)) return;
@@ -1609,8 +1626,15 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
       try {
         if (await exportLocalSnapshot("csv", undefined, columnIndexes, false)) return;
         if (await exportMemoryDataFile("csv", undefined, columnIndexes, false)) return;
-        const csvOptions = await showCsvExportDialog({ quoteMode: useSettingsStore().editorSettings.csvQuoteMode });
+        const settingsStore = useSettingsStore();
+        const csvOptions = await showCsvExportDialog({
+          quoteMode: settingsStore.editorSettings.csvQuoteMode,
+          delimiter: settingsStore.editorSettings.csvExportDelimiter,
+          quoteChar: settingsStore.editorSettings.csvExportQuoteChar,
+          includeHeader: settingsStore.editorSettings.csvExportIncludeHeader,
+        });
         if (!csvOptions) return;
+        rememberCsvExportChoices(settingsStore, csvOptions);
         const csvExtension = csvFileExtension(csvOptions.delimiter);
         let outputPath = exportFileName("export-page", csvExtension, { page: true });
         if (isTauriRuntime()) {

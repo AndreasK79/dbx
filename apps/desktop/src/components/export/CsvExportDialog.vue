@@ -23,13 +23,19 @@ const QUOTE_CHAR_VALUES: Record<Exclude<QuoteCharChoice, "custom">, string> = {
 
 const { t } = useI18n();
 const open = defineModel<boolean>("open", { default: false });
-const props = defineProps<{ defaultQuoteMode?: CsvQuoteMode }>();
+// withDefaults 是必须的：Boolean prop 缺省会被 Vue 强转成 false，`?? true` 兜不住。
+const props = withDefaults(defineProps<{ defaultQuoteMode?: CsvQuoteMode; defaultDelimiter?: string; defaultQuoteChar?: string; defaultIncludeHeader?: boolean }>(), { defaultIncludeHeader: true });
 const quoteMode = ref<CsvQuoteMode>(props.defaultQuoteMode ?? "all");
-const delimiterChoice = ref<DelimiterChoice>("comma");
-const customDelimiter = ref("");
-const quoteCharChoice = ref<QuoteCharChoice>("double");
-const customQuoteChar = ref("");
-const includeHeader = ref(true);
+// 上次的原始字符反查下拉选项：命不中已知值（, ; \t | / " ' `）就落到 custom 并预填该字符。
+const initialDelimiter = props.defaultDelimiter ?? DEFAULT_CSV_DELIMITER;
+const initialDelimiterChoice = (Object.keys(DELIMITER_VALUES) as Exclude<DelimiterChoice, "custom">[]).find((key) => DELIMITER_VALUES[key] === initialDelimiter);
+const delimiterChoice = ref<DelimiterChoice>(initialDelimiterChoice ?? "custom");
+const customDelimiter = ref(initialDelimiterChoice ? "" : initialDelimiter);
+const initialQuoteChar = props.defaultQuoteChar ?? DEFAULT_CSV_QUOTE_CHAR;
+const initialQuoteCharChoice = (Object.keys(QUOTE_CHAR_VALUES) as Exclude<QuoteCharChoice, "custom">[]).find((key) => QUOTE_CHAR_VALUES[key] === initialQuoteChar);
+const quoteCharChoice = ref<QuoteCharChoice>(initialQuoteCharChoice ?? "custom");
+const customQuoteChar = ref(initialQuoteCharChoice ? "" : initialQuoteChar);
+const includeHeader = ref(props.defaultIncludeHeader ?? true);
 let outcomeEmitted = false;
 
 const emit = defineEmits<{

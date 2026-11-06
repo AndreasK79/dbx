@@ -13,6 +13,7 @@ import { DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS } from "@/lib/dataGrid/dataGridCopy
 import { clearDataGridClipboardCopy, parseDataGridClipboard } from "@/lib/dataGrid/dataGridClipboard";
 import { MONGO_DOCUMENT_GRID_NULL, mongoDocumentGridExternalValue } from "@/lib/mongo/mongoDocumentValues";
 import { saveTextFile } from "@/lib/export/saveTextFile";
+import { showCsvExportDialog } from "@/lib/export/csvExportDialog";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const toast = vi.fn();
@@ -2517,6 +2518,23 @@ describe("useDataGridExport prepared row statements", () => {
     await state.exportCurrentPageCsv();
 
     expect(exportQueryResultCsv).toHaveBeenLastCalledWith(expect.any(String), ["created_at"], [[timestamp]], expect.anything(), expect.objectContaining({ csvWithoutBom: false }));
+  });
+
+  it("remembers the confirmed CSV dialog choices in editor settings (mod 61)", async () => {
+    setActivePinia(createPinia());
+    vi.mocked(showCsvExportDialog).mockResolvedValueOnce({ quoteMode: "necessary", delimiter: ";", quoteChar: "'", includeHeader: false });
+    const table: DataGridTableMeta = { tableName: "events", primaryKeys: [], columns: [{ name: "id", data_type: "int" }] };
+    const state = createExportState(table, ["id"], undefined, ["1"]);
+
+    await state.exportCurrentPageCsv();
+
+    // 上次选择回写设置，且打开对话框时把设置里的现值作为默认值传入。
+    expect(showCsvExportDialog).toHaveBeenCalledWith(expect.objectContaining({ quoteMode: "all", delimiter: ",", quoteChar: '"', includeHeader: true }));
+    const settings = useSettingsStore();
+    expect(settings.editorSettings.csvQuoteMode).toBe("necessary");
+    expect(settings.editorSettings.csvExportDelimiter).toBe(";");
+    expect(settings.editorSettings.csvExportQuoteChar).toBe("'");
+    expect(settings.editorSettings.csvExportIncludeHeader).toBe(false);
   });
 
   it("exports only visible Mongo columns from the full result set", async () => {

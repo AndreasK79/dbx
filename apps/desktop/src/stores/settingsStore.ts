@@ -55,7 +55,7 @@ import { normalizeCompletionTriggerMode, type SqlCompletionTriggerMode } from "@
 import { DEFAULT_SQL_COMPLETION_MATCH_MODE, normalizeCompletionMatchMode, type SqlCompletionMatchMode } from "@/lib/sql/sqlCompletionMatchMode";
 import { normalizeExcludedCompletionItems } from "@/lib/editor/excludedCompletions";
 import { DEFAULT_SQL_TABLE_COMPLETION_SCHEMA_QUALIFICATION, normalizeSqlTableCompletionSchemaQualification, type SqlTableCompletionSchemaQualification } from "@/lib/sql/sqlCompletionSchemaQualification";
-import { DEFAULT_CSV_QUOTE_MODE, normalizeCsvQuoteMode, type CsvQuoteMode } from "@/lib/export/csvQuoteMode";
+import { DEFAULT_CSV_DELIMITER, DEFAULT_CSV_QUOTE_CHAR, DEFAULT_CSV_QUOTE_MODE, normalizeCsvQuoteMode, type CsvQuoteMode } from "@/lib/export/csvQuoteMode";
 import { DEFAULT_CSV_NULL_MODE, normalizeCsvNullMode, type CsvNullMode } from "@/lib/export/csvNullMode";
 import { DEFAULT_QUERY_RESULT_EXPORT_FILE_NAME_SOURCE, normalizeQueryResultExportFileNameSource, type QueryResultExportFileNameSource } from "@/lib/export/saveTextFile";
 import { configureMetadataRuntimeCache, METADATA_CACHE_DEFAULT_MEMORY_MB, normalizeMetadataCacheMemoryMb } from "@/lib/metadata/metadataRuntimeCache";
@@ -1296,6 +1296,10 @@ export interface EditorSettings {
   csvWithoutBom: boolean;
   csvQuoteMode: CsvQuoteMode;
   csvNullMode: CsvNullMode;
+  /** CSV 导出对话框上次的选择（mod 61）：打开时预填，确认后由调用方回写。 */
+  csvExportDelimiter: string;
+  csvExportQuoteChar: string;
+  csvExportIncludeHeader: boolean;
   queryResultExportFileNameSource: QueryResultExportFileNameSource;
   /** Global Redis key-search templates; overridden by non-empty connection templates. */
   redisKeyTemplates: string[];
@@ -1671,6 +1675,9 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   csvWithoutBom: false,
   csvQuoteMode: DEFAULT_CSV_QUOTE_MODE,
   csvNullMode: DEFAULT_CSV_NULL_MODE,
+  csvExportDelimiter: DEFAULT_CSV_DELIMITER,
+  csvExportQuoteChar: DEFAULT_CSV_QUOTE_CHAR,
+  csvExportIncludeHeader: true,
   queryResultExportFileNameSource: DEFAULT_QUERY_RESULT_EXPORT_FILE_NAME_SOURCE,
   redisKeyTemplates: [],
   redisDatabaseDisplayLimit: REDIS_DATABASE_DISPLAY_LIMIT_DEFAULT,
@@ -2464,6 +2471,9 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     csvWithoutBom: settings.csvWithoutBom === true,
     csvQuoteMode: normalizeCsvQuoteMode(settings.csvQuoteMode),
     csvNullMode: normalizeCsvNullMode(settings.csvNullMode),
+    csvExportDelimiter: typeof settings.csvExportDelimiter === "string" && settings.csvExportDelimiter.length > 0 ? settings.csvExportDelimiter[0] : DEFAULT_EDITOR_SETTINGS.csvExportDelimiter,
+    csvExportQuoteChar: typeof settings.csvExportQuoteChar === "string" && settings.csvExportQuoteChar.length > 0 ? settings.csvExportQuoteChar[0] : DEFAULT_EDITOR_SETTINGS.csvExportQuoteChar,
+    csvExportIncludeHeader: typeof settings.csvExportIncludeHeader === "boolean" ? settings.csvExportIncludeHeader : DEFAULT_EDITOR_SETTINGS.csvExportIncludeHeader,
     queryResultExportFileNameSource: normalizeQueryResultExportFileNameSource(settings.queryResultExportFileNameSource),
     redisKeyTemplates: normalizeRedisKeyTemplates(settings.redisKeyTemplates),
     redisValuePreviewLimitKiB: normalizeRedisValuePreviewLimitKiB(settings.redisValuePreviewLimitKiB),
@@ -3406,6 +3416,9 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.csvWithoutBom !== undefined) editorSettings.value.csvWithoutBom = partial.csvWithoutBom === true;
     if (partial.csvQuoteMode !== undefined) editorSettings.value.csvQuoteMode = normalizeCsvQuoteMode(partial.csvQuoteMode);
     if (partial.csvNullMode !== undefined) editorSettings.value.csvNullMode = normalizeCsvNullMode(partial.csvNullMode);
+    if (partial.csvExportDelimiter !== undefined) editorSettings.value.csvExportDelimiter = partial.csvExportDelimiter.length > 0 ? partial.csvExportDelimiter[0] : DEFAULT_EDITOR_SETTINGS.csvExportDelimiter;
+    if (partial.csvExportQuoteChar !== undefined) editorSettings.value.csvExportQuoteChar = partial.csvExportQuoteChar.length > 0 ? partial.csvExportQuoteChar[0] : DEFAULT_EDITOR_SETTINGS.csvExportQuoteChar;
+    if (partial.csvExportIncludeHeader !== undefined) editorSettings.value.csvExportIncludeHeader = partial.csvExportIncludeHeader === true;
     if (partial.queryResultExportFileNameSource !== undefined) editorSettings.value.queryResultExportFileNameSource = normalizeQueryResultExportFileNameSource(partial.queryResultExportFileNameSource);
     if (partial.redisValuePreviewLimitKiB !== undefined) editorSettings.value.redisValuePreviewLimitKiB = normalizeRedisValuePreviewLimitKiB(partial.redisValuePreviewLimitKiB);
     if (partial.redisKeyTemplates !== undefined) editorSettings.value.redisKeyTemplates = normalizeRedisKeyTemplates(partial.redisKeyTemplates);

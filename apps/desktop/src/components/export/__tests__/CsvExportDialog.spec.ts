@@ -38,13 +38,13 @@ afterEach(() => {
   i18n.global.locale.value = "en";
 });
 
-async function mountDialog(onConfirm = () => {}, onCancel = () => {}, defaultQuoteMode?: "all" | "necessary" | "never") {
+async function mountDialog(onConfirm = () => {}, onCancel = () => {}, defaultQuoteMode?: "all" | "necessary" | "never", defaults?: { defaultDelimiter?: string; defaultQuoteChar?: string; defaultIncludeHeader?: boolean }) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const app = createApp(
     defineComponent({
       setup() {
-        return () => h(CsvExportDialog, { open: true, defaultQuoteMode, onConfirm, onCancel });
+        return () => h(CsvExportDialog, { open: true, defaultQuoteMode, ...defaults, onConfirm, onCancel });
       },
     }),
   );
@@ -150,5 +150,31 @@ describe("CsvExportDialog", () => {
 
     expect(onCancel).toHaveBeenCalledOnce();
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("prefills known characters from the remembered defaults", async () => {
+    const onConfirm = vi.fn();
+    await mountDialog(onConfirm, () => {}, "strings", { defaultDelimiter: ";", defaultQuoteChar: "'", defaultIncludeHeader: false });
+
+    expect(document.querySelector<HTMLInputElement>('input[data-csv-quote-mode="strings"]')?.checked).toBe(true);
+    expect(document.querySelector<HTMLSelectElement>("[data-csv-delimiter]")?.value).toBe("semicolon");
+    expect(document.querySelector<HTMLSelectElement>("[data-csv-quote-char]")?.value).toBe("single");
+    expect(document.querySelector<HTMLInputElement>("[data-csv-include-header]")?.checked).toBe(false);
+
+    document.querySelector<HTMLButtonElement>("[data-csv-export-confirm]")?.click();
+    expect(onConfirm).toHaveBeenCalledWith({ quoteMode: "strings", delimiter: ";", quoteChar: "'", includeHeader: false });
+  });
+
+  it("falls back to custom with the remembered character prefilled", async () => {
+    const onConfirm = vi.fn();
+    await mountDialog(onConfirm, () => {}, undefined, { defaultDelimiter: "\t", defaultQuoteChar: "~" });
+
+    expect(document.querySelector<HTMLSelectElement>("[data-csv-delimiter]")?.value).toBe("tab");
+    expect(document.querySelector<HTMLSelectElement>("[data-csv-quote-char]")?.value).toBe("custom");
+    expect(document.querySelector<HTMLInputElement>("[data-csv-custom-quote-char]")?.value).toBe("~");
+    expect(document.querySelector<HTMLInputElement>("[data-csv-custom-delimiter]")).toBeNull();
+
+    document.querySelector<HTMLButtonElement>("[data-csv-export-confirm]")?.click();
+    expect(onConfirm).toHaveBeenCalledWith({ quoteMode: "all", delimiter: "\t", quoteChar: "~", includeHeader: true });
   });
 });
