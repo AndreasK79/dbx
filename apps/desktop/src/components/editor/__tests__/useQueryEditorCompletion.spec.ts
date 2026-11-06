@@ -944,3 +944,78 @@ describe.each([false, true])("bare alias-dot column resolution (semantic=%s)", (
     expect(result?.options.some((option) => option.label === "id")).toBe(true);
   });
 });
+
+describe.each([false, true])("did-you-mean completion for misspelled identifiers (semantic=%s)", (semanticCompletionEnabled) => {
+  // This suite switches to real timers so the completion debounce actually elapses.
+  beforeEach(() => vi.useRealTimers());
+
+  it("offers near-miss columns in the popup while typing a misspelled column (mod 62)", async () => {
+    const harness = createHarness({ databaseType: "mysql", dialect: "mysql", modelValue: "SELECT custumer_id FROM users" }, undefined, semanticCompletionEnabled);
+    harness.store.listCompletionColumns.mockResolvedValue([
+      { name: "id", table: "users" },
+      { name: "customer_id", table: "users" },
+      { name: "name", table: "users" },
+    ]);
+    harness.store.refreshCompletionColumns.mockResolvedValue([
+      { name: "id", table: "users" },
+      { name: "customer_id", table: "users" },
+      { name: "name", table: "users" },
+    ]);
+    // Cursor right after the misspelled word (mid-statement).
+    harness.currentView.dispatch({ selection: { anchor: "SELECT ".length + "custumer_id".length } });
+    const result = await harness.provide();
+    expect(result).not.toBeNull();
+    const option = result!.options.find((candidate) => candidate.label === "customer_id");
+    expect(option).toBeDefined();
+    expect(option!.detail).toBe("editor.sqlQuickFixDidYouMean");
+    // Near-miss labels never pass CodeMirror's matcher, so the result must bypass it.
+    expect((result as unknown as { filter?: boolean }).filter).toBe(false);
+    expect(result!.from).toBe("SELECT ".length);
+    // Accepting the suggestion replaces the whole misspelled word.
+    if (typeof option!.apply === "function") option!.apply(harness.currentView, option!, result!.from, result!.from + "custumer_id".length);
+    else harness.currentView.dispatch(insertCompletionText(harness.currentView.state, option!.apply ?? option!.label, result!.from, result!.from + "custumer_id".length));
+    expect(harness.currentView.state.doc.toString()).toBe("SELECT customer_id FROM users");
+  }, 8000);
+
+  it("offers near-miss tables from the cached table list (mod 62)", async () => {
+    const harness = createHarness(
+      { databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM custmers" },
+      (metadata) => {
+        metadata.cachedTables = [{ name: "customers" } as SqlCompletionTable, { name: "orders" } as SqlCompletionTable];
+      },
+      semanticCompletionEnabled,
+    );
+    const result = await harness.provide();
+    expect(result).not.toBeNull();
+    expect((result?.options ?? []).map((option) => option.label)).toEqual(["customers"]);
+    expect((result?.options ?? []).every((option) => option.type === "table")).toBe(true);
+    expect((result as unknown as { filter?: boolean }).filter).toBe(false);
+    expect(result!.from).toBe("SELECT * FROM ".length);
+  }, 8000);
+
+  it("keeps regular table completions untouched when the prefix matches", async () => {
+    const harness = createHarness(
+      { databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM cust" },
+      (metadata) => {
+        metadata.cachedTables = [{ name: "customers" } as SqlCompletionTable];
+      },
+      semanticCompletionEnabled,
+    );
+    harness.store.listCompletionTables.mockResolvedValue([{ name: "customers" }]);
+    const result = await harness.provide();
+    expect(result?.options.some((option) => option.label === "customers")).toBe(true);
+    expect(result?.options.some((option) => option.detail === "editor.sqlQuickFixDidYouMean")).toBe(false);
+  }, 8000);
+
+  it("stays silent when nothing in the pool is close enough", async () => {
+    const harness = createHarness(
+      { databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM zzzqqq" },
+      (metadata) => {
+        metadata.cachedTables = [{ name: "customers" } as SqlCompletionTable];
+      },
+      semanticCompletionEnabled,
+    );
+    const result = await harness.provide();
+    expect(result).toBeNull();
+  }, 8000);
+});

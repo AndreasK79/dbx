@@ -2509,7 +2509,7 @@ export default withEnglishFallback({
     changeQueryTimeout: "修改查询超时时间",
     locateError: "定位错误（第 {line} 行，第 {column} 列）",
     errorPositionUnavailable: "错误位置与当前编辑器内容不一致，无法定位。",
-    sqlQuickFixDidYouMean: "是否想输入：",
+    sqlQuickFixDidYouMean: "是否想输入",
     connectionMayBeLost: "连接可能已断开，请刷新数据重试",
     showResultsPane: "显示结果",
     hideResultsPane: "收起",

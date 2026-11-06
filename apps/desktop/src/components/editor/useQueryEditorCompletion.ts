@@ -22,6 +22,7 @@ import {
   shouldChainSqlCompletionAfterAccept,
   extractCteDefinitions,
 } from "@/lib/sql/sqlCompletion";
+import { sqlQuickFixSuggestions } from "@/lib/sql/sqlQuickFixSuggestions";
 import { originForSqlCompletionProvider, originForTypedSqlCompletionStart, shouldAllowSqlCompletionTrigger, type SqlCompletionTriggerFacts, type SqlCompletionTriggerOrigin } from "@/lib/sql/sqlCompletionTriggerPolicy";
 import { excludedCompletionLabelSet, filterExcludedCompletions } from "@/lib/editor/excludedCompletions";
 import { driverProfileHasCompletionCandidates } from "@/lib/database/driverProfileExtensions";
@@ -186,6 +187,9 @@ function applySnippetWithAdditionalCursors(view: EditorViewType, originalApply: 
     }),
   );
 }
+
+/** mod 62：did-you-mean 兜底候选池的原始输入（列名来自当前引用表的全量列，表名来自缓存表清单）。派生名字的操作延迟到真正需要兜底时。 */
+type SqlQuickFixCompletionPools = { columnsByTable?: ReadonlyMap<string, readonly SqlCompletionColumn[]>; tables?: readonly SqlCompletionTable[] };
 
 export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) {
   const { props, view, connectionStore, settingsStore, sqlDriverProfile, t, runtime, isEditorComposing } = options;
@@ -404,7 +408,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
     };
   }
 
-  function buildSqlCompletionResult(items: SqlCompletionItem[], completionContext: SqlCompletionContext, fullDoc: string, position: number) {
+  function buildSqlCompletionResult(items: SqlCompletionItem[], completionContext: SqlCompletionContext, fullDoc: string, position: number, quickFixPools?: SqlQuickFixCompletionPools) {
     const replacement = prepareSqlCompletionReplacement(fullDoc, position, completionContext, items);
     const session = prepareBatchColumnSelectionSession(replacement.items, fullDoc, replacement.from, position);
     const actions: BatchColumnSelectionActionItem[] = session
@@ -432,7 +436,60 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
           },
         ]
       : [];
-    return buildCompletionResult(actions.length > 0 ? [...replacement.items, ...actions] : replacement.items, replacement.from, getSqlCompletionResultValidFor(fullDoc, position), completionContext.prefix, fullDoc.slice(replacement.from, position));
+    const result = buildCompletionResult(actions.length > 0 ? [...replacement.items, ...actions] : replacement.items, replacement.from, getSqlCompletionResultValidFor(fullDoc, position), completionContext.prefix, fullDoc.slice(replacement.from, position));
+    if (result) return result;
+    return buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools);
+  }
+
+  // mod 62：已输入前缀在常规候选里一个都匹配不上时（多半是表名/列名拼错），
+  // 用 Damerau-Levenshtein 从元数据池里挑最接近的几个候选，直接以补全弹窗的
+  // 形式给出——边打字边出现、方向键+回车接受，与普通补全完全一致，不再依赖
+  // 悬停点击。filter:false 接管 CodeMirror 的匹配器，否则近似拼写
+  // （custumer_id→customer_id）会被当作不匹配而整行过滤掉。
+  function sqlQuickFixColumnNames(columnsByTable: ReadonlyMap<string, readonly SqlCompletionColumn[]>): string[] {
+    const names = new Set<string>();
+    for (const columns of columnsByTable.values()) {
+      for (const column of columns) names.add(column.name);
+    }
+    return [...names];
+  }
+
+  function sqlQuickFixTableNames(tables: readonly SqlCompletionTable[]): string[] {
+    const names = new Set<string>();
+    for (const table of [...tables, ...completionMetadata.cachedTables]) names.add(table.name);
+    return [...names];
+  }
+
+  function buildSqlQuickFixCompletionResult(completionContext: SqlCompletionContext, from: number, pools?: SqlQuickFixCompletionPools) {
+    const prefix = completionContext.prefix;
+    // 引号内、过短或非普通标识符的前缀不猜，避免噪声。
+    if (!pools || prefix.length < 3 || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(prefix)) return null;
+    const columnContext = completionContext.suggestColumns || completionContext.exclusiveColumnSuggestions || !!completionContext.qualifier;
+    const orderedPools: Array<{ names: readonly string[]; type: SqlCompletionItem["type"] }> = columnContext
+      ? [...(pools.columnsByTable ? [{ names: sqlQuickFixColumnNames(pools.columnsByTable), type: "column" as const }] : []), ...(completionContext.suggestTables && pools.tables ? [{ names: sqlQuickFixTableNames(pools.tables), type: "table" as const }] : [])]
+      : completionContext.suggestTables && pools.tables
+        ? [{ names: sqlQuickFixTableNames(pools.tables), type: "table" as const }]
+        : [];
+    for (const pool of orderedPools) {
+      if (pool.names.length === 0) continue;
+      const items: SqlCompletionItem[] = sqlQuickFixSuggestions(prefix, pool.names).map((label) => ({
+        label,
+        type: pool.type,
+        detail: t("editor.sqlQuickFixDidYouMean"),
+        boost: 0,
+      }));
+      const visible = filterExcludedCompletions(items, excludedCompletionLabelSet(settingsStore.editorSettings.excludedCompletionItems));
+      if (visible.length === 0) continue;
+      return {
+        from,
+        options: visible.map((item) => completionOptionForItem(item)),
+        filter: false as const,
+        // 不带有效 validFor：每次按键重新走补全管线，前缀一旦匹配上真实候选，
+        // 弹窗自然切回常规补全列表。
+        validFor: undefined,
+      };
+    }
+    return null;
   }
 
   // The "Show snippets in autocomplete" toggle removes snippets from typing
@@ -1455,6 +1512,8 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       }
     }
 
+    const sqlQuickFixPools: SqlQuickFixCompletionPools = { columnsByTable, tables };
+
     if (
       tables.length === 0 &&
       completionObjects.length === 0 &&
@@ -1463,7 +1522,9 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       !driverProfileHasCompletionCandidates(sqlDriverProfile.value, completionContext) &&
       (completionContext.exclusiveTableSuggestions || completionContext.exclusiveColumnSuggestions || completionContext.exclusiveRoutineSuggestions)
     ) {
-      return null;
+      // 独占上下文里本地池全空，常见于前缀拼错导致按前缀过滤的查找直接为空：
+      // 不直接放弃，先走 did-you-mean 兜底（mod 62），无近似候选时仍返回 null。
+      return buildSqlCompletionResult([], completionContext, fullDoc, position, sqlQuickFixPools);
     }
 
     const items = buildSqlCompletionItemsFromContext(completionContext, {
@@ -1489,7 +1550,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       completionMatchMode: settingsStore.editorSettings.completionMatchMode,
     });
 
-    return buildSqlCompletionResult(items, completionContext, fullDoc, position);
+    return buildSqlCompletionResult(items, completionContext, fullDoc, position, sqlQuickFixPools);
   }
 
   function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof getSqlCompletionContext>, fullDoc: string, position: number, scope: CompletionMetadataScope) {
@@ -2038,7 +2099,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       completionMatchMode: settingsStore.editorSettings.completionMatchMode,
     });
 
-    return buildSqlCompletionResult(items, completionContext, fullDoc, position);
+    return buildSqlCompletionResult(items, completionContext, fullDoc, position, { columnsByTable, tables });
   }
 
   function isReferencedTableQualifier(completionContext: ReturnType<typeof getSqlCompletionContext>): boolean {

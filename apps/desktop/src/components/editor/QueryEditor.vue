@@ -1878,106 +1878,57 @@ async function expandSelectStar(target = selectStarExpansionTarget.value) {
   currentView.focus();
 }
 
-const {
-  sqlErrorDecorationRange,
-  sqlSemanticDecorationRanges,
-  sqlQuickFixesAt,
-  reconfigureDiagnostics,
-  setSemanticDiagnostics,
-  clearScheduledSemanticDiagnostics,
-  invalidateSemanticDiagnosticsForDocumentChange,
-  shouldSkipSqlSemanticDiagnostics,
-  scheduleSemanticDiagnostics,
-  loadSqlUnknownObjectSpans,
-} = useQueryEditorDiagnostics({
-  props,
-  view,
-  settingsStore,
-  connectionStore,
-  sqlDriverProfile,
-  sqlStatementParameterOptions,
-  sqlBehaviorDialect,
-  sqlSyntaxDialect,
-  queryEditorSelectionLanguage,
-  semanticCompletionEnabled: SEMANTIC_SQL_COMPLETION_ENABLED,
-  maxCompletionTables: MAX_COMPLETION_TABLES,
-  unknownObjectHighlightEnabled: SQL_UNKNOWN_OBJECT_HIGHLIGHT_ENABLED,
-  boundedAnalysisEnabled: boundedEditorAnalysisEnabled,
-  runtime: {
-    get setSqlDiagnosticsEffect() {
-      return codeMirrorRuntime.setSqlDiagnosticsEffect;
+const { sqlErrorDecorationRange, sqlSemanticDecorationRanges, reconfigureDiagnostics, setSemanticDiagnostics, clearScheduledSemanticDiagnostics, invalidateSemanticDiagnosticsForDocumentChange, shouldSkipSqlSemanticDiagnostics, scheduleSemanticDiagnostics, loadSqlUnknownObjectSpans } =
+  useQueryEditorDiagnostics({
+    props,
+    view,
+    settingsStore,
+    connectionStore,
+    sqlDriverProfile,
+    sqlStatementParameterOptions,
+    sqlBehaviorDialect,
+    sqlSyntaxDialect,
+    queryEditorSelectionLanguage,
+    semanticCompletionEnabled: SEMANTIC_SQL_COMPLETION_ENABLED,
+    maxCompletionTables: MAX_COMPLETION_TABLES,
+    unknownObjectHighlightEnabled: SQL_UNKNOWN_OBJECT_HIGHLIGHT_ENABLED,
+    boundedAnalysisEnabled: boundedEditorAnalysisEnabled,
+    runtime: {
+      get setSqlDiagnosticsEffect() {
+        return codeMirrorRuntime.setSqlDiagnosticsEffect;
+      },
+      get diagnosticComp() {
+        return codeMirrorRuntime.diagnosticComp;
+      },
+      get buildSqlDiagnosticExtension() {
+        return codeMirrorRuntime.buildSqlDiagnosticExtension;
+      },
+      get codeMirrorCompletionStatus() {
+        return codeMirrorRuntime.codeMirrorCompletionStatus;
+      },
+      get executableStatementRangeCache() {
+        return executableStatementRangeCache;
+      },
+      set executableStatementRangeCache(value) {
+        executableStatementRangeCache = value;
+      },
+      get editorIsActive() {
+        return editorIsActive;
+      },
     },
-    get diagnosticComp() {
-      return codeMirrorRuntime.diagnosticComp;
+    metadata: {
+      get cachedTables() {
+        return completionMetadata.cachedTables;
+      },
+      cachedColumnsByTable,
+      loadedColumnsByTable,
+      usesOracleSessionCompletionColumns,
+      findExactSemanticDiagnosticTable,
+      completionCacheKey,
+      ensureColumnsForTable,
+      isMissingTableMetadataError,
     },
-    get buildSqlDiagnosticExtension() {
-      return codeMirrorRuntime.buildSqlDiagnosticExtension;
-    },
-    get codeMirrorCompletionStatus() {
-      return codeMirrorRuntime.codeMirrorCompletionStatus;
-    },
-    get executableStatementRangeCache() {
-      return executableStatementRangeCache;
-    },
-    set executableStatementRangeCache(value) {
-      executableStatementRangeCache = value;
-    },
-    get editorIsActive() {
-      return editorIsActive;
-    },
-  },
-  metadata: {
-    get cachedTables() {
-      return completionMetadata.cachedTables;
-    },
-    cachedColumnsByTable,
-    loadedColumnsByTable,
-    usesOracleSessionCompletionColumns,
-    findExactSemanticDiagnosticTable,
-    completionCacheKey,
-    ensureColumnsForTable,
-    isMissingTableMetadataError,
-  },
-});
-
-/**
- * mod 62: hovering a squiggle that carries quick-fix candidates shows a
- * "Did you mean" tooltip; clicking an entry replaces the misspelled
- * identifier (only its last segment, so an `o.` qualifier survives).
- */
-function buildSqlQuickFixHoverTooltip(currentView: EditorViewType, pos: number) {
-  const hit = sqlQuickFixesAt(currentView.state, pos);
-  if (!hit) return null;
-  return {
-    pos: hit.from,
-    above: true,
-    create() {
-      const dom = document.createElement("div");
-      dom.className = "flex flex-col gap-1 p-2";
-      const label = document.createElement("div");
-      label.className = "text-xs text-muted-foreground";
-      label.textContent = t("editor.sqlQuickFixDidYouMean");
-      dom.append(label);
-      for (const fix of hit.quickFixes) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "rounded px-2 py-1 text-left font-mono text-xs text-primary hover:bg-accent hover:underline";
-        button.dataset.sqlQuickFix = fix;
-        button.textContent = fix;
-        button.addEventListener("click", () => {
-          currentView.dispatch({
-            changes: { from: hit.from, to: hit.to, insert: fix },
-            userEvent: "input.sqlQuickFix",
-          });
-          dom.closest(".cm-tooltip")?.remove();
-          currentView.focus();
-        });
-        dom.append(button);
-      }
-      return { dom };
-    },
-  };
-}
+  });
 
 async function formatCurrentSql() {
   if (props.readOnly) return;
@@ -2435,7 +2386,6 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
           }),
         ),
         hoverTooltip((currentView, pos) => resolveSqlHoverTooltip(currentView, pos)),
-        hoverTooltip((currentView, pos) => buildSqlQuickFixHoverTooltip(currentView, pos)),
         initializedRuntime.sqlSignatureComp.of(sqlExtensions.buildSqlSignatureExtension()),
         initializedRuntime.diagnosticComp.of(sqlExtensions.buildSqlDiagnosticExtension()),
         createInsertValueHintsExtension({
