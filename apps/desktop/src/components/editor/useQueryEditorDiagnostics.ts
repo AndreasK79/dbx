@@ -165,6 +165,7 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
               ...range,
               message: diagnostic.message,
               severity: diagnostic.severity,
+              quickFixes: diagnostic.quickFixes,
             }
           : null;
       })
@@ -176,8 +177,25 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
           to: number;
           message: string;
           severity: "error" | "warning";
+          quickFixes: string[] | undefined;
         } => !!range,
       );
+  }
+
+  /** 命中带替换候选的诊断（mod 62）：只替换标识符最后一段，保留 `o.` 限定符。 */
+  function sqlQuickFixesAt(currentState: import("@codemirror/state").EditorState, pos: number): { from: number; to: number; quickFixes: string[] } | null {
+    const doc = currentState.doc;
+    for (const diagnostic of semanticDiagnostics) {
+      if (!diagnostic.quickFixes || diagnostic.quickFixes.length === 0) continue;
+      const range = sqlTextSpanToDocRange(doc, diagnostic.span);
+      if (!range || pos < range.from || pos > range.to) continue;
+      const spanText = doc.sliceString(range.from, range.to);
+      const nameStart = spanText.lastIndexOf(".");
+      const from = nameStart >= 0 ? range.from + nameStart + 1 : range.from;
+      if (from >= range.to) continue;
+      return { from, to: range.to, quickFixes: diagnostic.quickFixes };
+    }
+    return null;
   }
 
   // See queryEditorDiagnosticCaretAnchor.ts for why the browser caret needs re-anchoring.
@@ -712,6 +730,7 @@ export function useQueryEditorDiagnostics(options: QueryEditorDiagnosticsOptions
   return {
     sqlErrorDecorationRange,
     sqlSemanticDecorationRanges,
+    sqlQuickFixesAt,
     reconfigureDiagnostics,
     setSemanticDiagnostics,
     clearScheduledSemanticDiagnostics,

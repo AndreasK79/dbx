@@ -358,3 +358,93 @@ describe("buildSqlSemanticDiagnostics projection aliases in GROUP BY / ORDER BY 
     expect(diagnostics.map((d) => d.message)).toEqual(["Unknown column missing_col"]);
   });
 });
+
+describe("buildSqlSemanticDiagnostics quick fix suggestions (mod 62)", () => {
+  it("attaches near-match columns as quick fixes for an unknown column", () => {
+    const sql = "SELECT custumer_id FROM orders;";
+    const colStart = sql.indexOf("custumer_id");
+    const colEnd = colStart + "custumer_id".length;
+
+    const analysis: SqlReferenceAnalysis = {
+      tables: [{ name: "orders", span: span(sql.indexOf("orders") + 1, sql.indexOf("orders") + "orders".length) }],
+      columns: [{ name: "custumer_id", qualifier: null, span: span(colStart + 1, colEnd) }],
+    };
+
+    const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+      tables: [{ name: "orders" }],
+      columnsByTable: new Map([["orders", [{ name: "customer_id" }, { name: "status" }]]]),
+      loadedColumnTables: new Set(["orders"]),
+      sql,
+      databaseType: "mysql",
+    });
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toBe("Unknown column custumer_id");
+    expect(diagnostics[0]!.quickFixes).toEqual(["customer_id"]);
+  });
+
+  it("attaches near-match table names as quick fixes for an unknown table", () => {
+    const sql = "SELECT id FROM custmers;";
+    const tableStart = sql.indexOf("custmers");
+
+    const analysis: SqlReferenceAnalysis = {
+      tables: [{ name: "custmers", span: span(tableStart + 1, tableStart + "custmers".length) }],
+      columns: [{ name: "id", qualifier: null, span: span(sql.indexOf("id") + 1, sql.indexOf("id") + 2) }],
+    };
+
+    const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+      tables: [{ name: "customers" }, { name: "orders" }],
+      columnsByTable: new Map(),
+      missingTables: new Set(["custmers"]),
+      sql,
+      databaseType: "mysql",
+    });
+
+    expect(diagnostics.map((d) => d.message)).toEqual(["Unknown table custmers"]);
+    expect(diagnostics[0]!.quickFixes).toEqual(["customers"]);
+  });
+
+  it("attaches in-scope table and alias names as quick fixes for an unknown alias", () => {
+    const sql = "SELECT urs.id FROM users usr;";
+    const qualifierStart = sql.indexOf("urs.");
+
+    const analysis: SqlReferenceAnalysis = {
+      tables: [{ name: "users", alias: "usr", span: span(sql.indexOf("users") + 1, sql.indexOf("users") + "users".length) }],
+      columns: [{ name: "id", qualifier: "urs", span: span(sql.indexOf("id") + 1, sql.indexOf("id") + 2) }],
+      unknown_qualifiers: [{ qualifier: "urs", span: span(qualifierStart + 1, qualifierStart + "urs".length) }],
+    };
+
+    const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+      tables: [{ name: "users" }],
+      columnsByTable: new Map([["users", [{ name: "id" }]]]),
+      sql,
+      databaseType: "mysql",
+    });
+
+    const aliasDiagnostic = diagnostics.find((d) => d.message === "Unknown table alias urs");
+    expect(aliasDiagnostic).toBeTruthy();
+    expect(aliasDiagnostic!.quickFixes).toEqual(["usr"]);
+  });
+
+  it("omits quick fixes when nothing in the metadata is close", () => {
+    const sql = "SELECT missing_col FROM users;";
+    const colStart = sql.indexOf("missing_col");
+    const colEnd = colStart + "missing_col".length;
+
+    const analysis: SqlReferenceAnalysis = {
+      tables: [{ name: "users", span: span(sql.indexOf("users") + 1, sql.indexOf("users") + "users".length) }],
+      columns: [{ name: "missing_col", qualifier: null, span: span(colStart + 1, colEnd) }],
+    };
+
+    const diagnostics = buildSqlSemanticDiagnostics(analysis, {
+      tables: [{ name: "users" }],
+      columnsByTable: new Map([["users", [{ name: "id" }, { name: "name" }]]]),
+      loadedColumnTables: new Set(["users"]),
+      sql,
+      databaseType: "mysql",
+    });
+
+    expect(diagnostics.map((d) => d.message)).toEqual(["Unknown column missing_col"]);
+    expect(diagnostics[0]!.quickFixes).toBeUndefined();
+  });
+});

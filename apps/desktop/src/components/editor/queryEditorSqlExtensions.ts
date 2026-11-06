@@ -115,7 +115,8 @@ export function configureQueryEditorSqlExtensions(options: QueryEditorSqlExtensi
       const semanticDecorations = sqlSemanticDecorationRanges(state).map((range) =>
         Decoration.mark({
           class: range.severity === "error" ? "cm-sql-error" : "cm-sql-semantic-warning",
-          attributes: { title: range.message },
+          // mod 62: native tooltip also carries the closest matches for discoverability.
+          attributes: { title: range.quickFixes && range.quickFixes.length > 0 ? `${range.message} — did you mean: ${range.quickFixes.join(", ")}?` : range.message },
         }).range(range.from, range.to),
       );
       return Decoration.set([...errorDecorations, ...semanticDecorations], true);

@@ -2577,6 +2577,7 @@ export default {
     changeQueryTimeout: "Change query timeout",
     locateError: "Locate error (line {line}, col {column})",
     errorPositionUnavailable: "The error position no longer matches the editor content, so it cannot be located.",
+    sqlQuickFixDidYouMean: "Did you mean:",
     connectionMayBeLost: "The connection may have been lost. Refresh data and try again.",
     showResultsPane: "Show results",
     hideResultsPane: "Hide results",

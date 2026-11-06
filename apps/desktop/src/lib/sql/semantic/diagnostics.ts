@@ -1,6 +1,7 @@
 import type { SqlCompletionColumn, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
 import { getSqlCompletionContext, isOraclePseudoColumnName, isOracleSystemValueName, matchesOceanBaseCompletionCacheKey } from "@/lib/sql/sqlCompletion";
 import { tokenizeSqlSemantic, tokenIsIdentifier } from "@/lib/sql/semantic/tokens";
+import { sqlQuickFixSuggestions } from "@/lib/sql/sqlQuickFixSuggestions";
 import { executableStatementRanges, keepsOracleStyleBlockTogether, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
 import { DBX_TDENGINE_TBNAME_COLUMN, isTdengineStableTableType } from "@/lib/table/tableEditing";
 import type { DatabaseType, SqlColumnReference, SqlGroupByViolation, SqlReferenceAnalysis, SqlReferenceScope, SqlTableReference, SqlTextSpan } from "@/types/database";
@@ -9,6 +10,8 @@ export interface SqlSemanticDiagnostic {
   span: SqlTextSpan;
   message: string;
   severity: "error" | "warning";
+  /** 一键替换候选（mod 62）：缺省/为空表示元数据里没有相近项。 */
+  quickFixes?: string[];
 }
 
 export interface SqlSemanticDiagnosticSchema {
@@ -278,13 +281,25 @@ export function buildSqlSemanticDiagnostics(analysis: SqlReferenceAnalysis, sche
     if (table.schema) knownTables.set(normalizeName(`${table.schema}.${table.name}`), table);
   }
 
+  // 未知限定符的替换候选：本语句在用的表名与别名（mod 62）。
+  const qualifierCandidates = new Set<string>();
+  for (const table of tables) {
+    qualifierCandidates.add(table.name);
+    if (table.alias) qualifierCandidates.add(table.alias);
+  }
+
   for (const table of tables) {
     if (isSqlVirtualTableReference(table, schema.databaseType)) continue;
     if (!schema.missingTables?.has(tableReferenceKey(table))) continue;
+    const tableQuickFixes = sqlQuickFixSuggestions(
+      table.name,
+      schema.tables.map((candidate) => candidate.name),
+    );
     diagnostics.push({
       span: trimSqlTextSpanWhitespace(schema.sql, table.span),
       message: `Unknown table ${displayTableName(table)}`,
       severity: "error",
+      quickFixes: tableQuickFixes.length > 0 ? tableQuickFixes : undefined,
     });
   }
 
@@ -292,10 +307,12 @@ export function buildSqlSemanticDiagnostics(analysis: SqlReferenceAnalysis, sche
   // (`b.id` when only `a` is declared) is an error on its own: the column
   // itself cannot be checked, because no relation owns it.
   for (const unknown of analysis.unknown_qualifiers ?? []) {
+    const aliasQuickFixes = sqlQuickFixSuggestions(unknown.qualifier, [...qualifierCandidates]);
     diagnostics.push({
       span: trimSqlTextSpanWhitespace(schema.sql, unknown.span),
       message: `Unknown table alias ${unknown.qualifier}`,
       severity: "error",
+      quickFixes: aliasQuickFixes.length > 0 ? aliasQuickFixes : undefined,
     });
   }
 
@@ -324,10 +341,15 @@ export function buildSqlSemanticDiagnostics(analysis: SqlReferenceAnalysis, sche
     if (schema.sql && isVisibleProjectionAlias(schema.sql, column.span, column.name, schema.databaseType)) continue;
 
     const displayName = column.qualifier ? `${column.qualifier}.${column.name}` : column.name;
+    const columnQuickFixes = sqlQuickFixSuggestions(
+      column.name,
+      columns.map((item) => item.name),
+    );
     diagnostics.push({
       span: trimSqlTextSpanWhitespace(schema.sql, column.span),
       message: `Unknown column ${displayName}`,
       severity: "error",
+      quickFixes: columnQuickFixes.length > 0 ? columnQuickFixes : undefined,
     });
   }
 
