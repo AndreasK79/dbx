@@ -438,30 +438,41 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
       : [];
     const result = buildCompletionResult(actions.length > 0 ? [...replacement.items, ...actions] : replacement.items, replacement.from, getSqlCompletionResultValidFor(fullDoc, position), completionContext.prefix, fullDoc.slice(replacement.from, position));
     if (result) {
-      if (!quickFixPools) return result;
-      // fuzzy 匹配模式下，函数/关键字几乎总能和任意短前缀构成子序列匹配
-      // （"usre" 能对上 SUBSTRING_INDEX），结果非空却全是无关种类。只要结果里
-      // 没有一个与上下文同类的标识符，且存在够近的 did-you-mean 候选，就用后者
-      // 接管弹窗（mod 62）；没有近似候选则保持原结果不动。
-      const relevantKinds = sqlQuickFixRelevantItemKinds(completionContext);
-      if (!result.options.some((option) => relevantKinds.has(String(option.type)))) {
-        return buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools) ?? result;
-      }
-      return result;
+      // 常规候选里有标签以当前前缀开头的（真正的正常补全进行中）就绝不插手，
+      // did-you-mean 只做救场，不抢正常补全的活。顺带让打前缀的热路径完全
+      // 跳过下面的距离计算。
+      const prefixLower = completionContext.prefix.toLowerCase();
+      if (
+        result.options.some((option) => {
+          const label = typeof option.displayLabel === "string" ? option.displayLabel : String(option.label);
+          return label.toLowerCase().startsWith(prefixLower);
+        })
+      )
+        return result;
     }
-    return buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools);
+    // fuzzy 匹配模式下子序列匹配几乎总能捞到点什么（"usre" 能对上 SUBSTRING_INDEX，
+    // 也能对上 user_name——偏偏对不上真正想要的 user_id，因为它的 e 在 r 前面），
+    // 所以常规结果非空也未必有想要的列。只要有够近的 did-you-mean，就把它们
+    // 排到弹窗最前面（filter:false 下 CodeMirror 按数组顺序渲染），常规候选去掉
+    // 重复后跟在后面；常规结果为空则只有 did-you-mean（mod 62）。
+    const quickFixResult = buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools);
+    if (!quickFixResult) return result;
+    if (!result) return quickFixResult;
+    const quickFixLabels = new Set(quickFixResult.options.map((option) => String(option.label).toLowerCase()));
+    return {
+      from: quickFixResult.from,
+      options: [...quickFixResult.options, ...result.options.filter((option) => !quickFixLabels.has(String(option.label).toLowerCase()))],
+      filter: false as const,
+      validFor: undefined,
+    };
   }
 
-  function sqlQuickFixRelevantItemKinds(completionContext: SqlCompletionContext): ReadonlySet<string> {
-    const columnContext = completionContext.suggestColumns || completionContext.exclusiveColumnSuggestions || !!completionContext.qualifier;
-    return columnContext ? new Set(["column", "variable"]) : new Set(["table", "schema", "sequence", "variable"]);
-  }
-
-  // mod 62：已输入前缀在常规候选里一个都匹配不上时（多半是表名/列名拼错），
-  // 用 Damerau-Levenshtein 从元数据池里挑最接近的几个候选，直接以补全弹窗的
-  // 形式给出——边打字边出现、方向键+回车接受，与普通补全完全一致，不再依赖
-  // 悬停点击。filter:false 接管 CodeMirror 的匹配器，否则近似拼写
-  // （custumer_id→customer_id）会被当作不匹配而整行过滤掉。
+  // mod 62：已输入前缀在常规候选里匹配不上想要的名字时（多半是表名/列名拼
+  // 错），用 Damerau-Levenshtein（补全模式额外比对候选同长度前缀，容忍还在
+  // 打字中的短词）从元数据池里挑最接近的几个候选，直接以补全弹窗的形式给出
+  // ——边打字边出现、方向键+回车接受，与普通补全完全一致，不再依赖悬停点
+  // 击。filter:false 接管 CodeMirror 的匹配器，否则近似拼写（custumer_id→
+  // customer_id）会被当作不匹配而整行过滤掉。
   function sqlQuickFixColumnNames(columnsByTable: ReadonlyMap<string, readonly SqlCompletionColumn[]>): string[] {
     const names = new Set<string>();
     for (const columns of columnsByTable.values()) {

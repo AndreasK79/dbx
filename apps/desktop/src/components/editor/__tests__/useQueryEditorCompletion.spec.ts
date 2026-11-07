@@ -993,11 +993,46 @@ describe.each([false, true])("did-you-mean completion for misspelled identifiers
     ]);
     const result = await harness.provide();
     expect(result).not.toBeNull();
-    const option = result!.options.find((candidate) => candidate.label === "user_id");
-    expect(option).toBeDefined();
-    expect(option!.detail).toBe("editor.sqlQuickFixDidYouMean");
+    // "usre" fuzzy-subsequence-matches SUBSTRING_INDEX, so the merged list keeps
+    // that function row — but the did-you-mean entry must lead (filter:false
+    // renders options in array order).
+    expect(result!.options[0]!.label).toBe("user_id");
+    expect(result!.options[0]!.detail).toBe("editor.sqlQuickFixDidYouMean");
     expect((result as unknown as { filter?: boolean }).filter).toBe(false);
     expect(result!.from).toBe("SELECT * FROM users WHERE ".length);
+  }, 8000);
+
+  it("outranks fuzzy subsequence matches when a near-miss column exists (mod 62)", async () => {
+    // Real-world repro: "usre" is an ordered subsequence of "user_name" but NOT
+    // of "user_id" (its e sits before the r), so the normal fuzzy list shows the
+    // wrong user_* column and hides the intended one. The did-you-mean rows must
+    // lead the popup anyway.
+    const harness = createHarness(
+      { databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM station_profile WHERE usre" },
+      (metadata) => {
+        metadata.cachedTables = [{ name: "station_profile" } as SqlCompletionTable];
+      },
+      semanticCompletionEnabled,
+    );
+    harness.store.listCompletionTables.mockResolvedValue([{ name: "station_profile" }]);
+    const columns = [
+      { name: "station_id", table: "station_profile" },
+      { name: "user_id", table: "station_profile" },
+      { name: "user_name", table: "station_profile" },
+      { name: "status", table: "station_profile" },
+    ];
+    harness.store.listCompletionColumns.mockResolvedValue(columns);
+    harness.store.refreshCompletionColumns.mockResolvedValue(columns);
+    const result = await harness.provide();
+    expect(result).not.toBeNull();
+    expect(result!.options[0]!.label).toBe("user_id");
+    expect(result!.options[0]!.detail).toBe("editor.sqlQuickFixDidYouMean");
+    // user_name is ALSO a one-swap prefix near-miss, so it joins the did-you-mean
+    // rows — and its duplicate normal fuzzy row is deduped away.
+    const userNameOptions = result!.options.filter((candidate) => candidate.label === "user_name");
+    expect(userNameOptions).toHaveLength(1);
+    expect(userNameOptions[0]!.detail).toBe("editor.sqlQuickFixDidYouMean");
+    expect(result!.options.filter((candidate) => candidate.label === "user_id")).toHaveLength(1);
   }, 8000);
 
   it("offers near-miss tables from the cached table list (mod 62)", async () => {
