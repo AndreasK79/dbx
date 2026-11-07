@@ -977,6 +977,29 @@ describe.each([false, true])("did-you-mean completion for misspelled identifiers
     expect(harness.currentView.state.doc.toString()).toBe("SELECT customer_id FROM users");
   }, 8000);
 
+  it("offers a longer column when only its same-length prefix nearly matches (mod 62)", async () => {
+    // Real-world repro: typing "usre" for "user_id" — 4 edits from the full name
+    // but a single transposition inside its "user" prefix.
+    const harness = createHarness({ databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM users WHERE usre" }, undefined, semanticCompletionEnabled);
+    harness.store.listCompletionColumns.mockResolvedValue([
+      { name: "id", table: "users" },
+      { name: "user_id", table: "users" },
+      { name: "name", table: "users" },
+    ]);
+    harness.store.refreshCompletionColumns.mockResolvedValue([
+      { name: "id", table: "users" },
+      { name: "user_id", table: "users" },
+      { name: "name", table: "users" },
+    ]);
+    const result = await harness.provide();
+    expect(result).not.toBeNull();
+    const option = result!.options.find((candidate) => candidate.label === "user_id");
+    expect(option).toBeDefined();
+    expect(option!.detail).toBe("editor.sqlQuickFixDidYouMean");
+    expect((result as unknown as { filter?: boolean }).filter).toBe(false);
+    expect(result!.from).toBe("SELECT * FROM users WHERE ".length);
+  }, 8000);
+
   it("offers near-miss tables from the cached table list (mod 62)", async () => {
     const harness = createHarness(
       { databaseType: "mysql", dialect: "mysql", modelValue: "SELECT * FROM custmers" },

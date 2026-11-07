@@ -57,3 +57,26 @@ describe("sqlQuickFixSuggestions", () => {
     expect(new Set(suggestions)).toEqual(new Set(["sale", "sales2", "saless"]));
   });
 });
+
+describe("sqlQuickFixSuggestions matchCandidatePrefix (completion mode, mod 62)", () => {
+  it("matches a short mid-typing word against the candidate's same-length prefix", () => {
+    // "usre" vs the full "user_id" is 4 edits; vs its prefix "user" it is a
+    // single adjacent swap — exactly the shape typed live in the editor.
+    expect(sqlQuickFixSuggestions("usre", ["id", "user_id", "name"], 3, { matchCandidatePrefix: true })).toEqual(["user_id"]);
+  });
+
+  it("still suggests when only a longer candidate's prefix matches", () => {
+    // "customre" is 4 edits from the full "customer_id" but a single swap inside
+    // its "customer" prefix.
+    expect(sqlQuickFixSuggestions("customre", ["customer_id", "orders"], 3, { matchCandidatePrefix: true })).toEqual(["customer_id"]);
+  });
+
+  it("does not offer an exact prefix of a longer name (normal completions own that)", () => {
+    expect(sqlQuickFixSuggestions("user", ["user_id", "user_name"], 3, { matchCandidatePrefix: true })).toEqual([]);
+  });
+
+  it("keeps whole-word matching when the option is absent", () => {
+    expect(sqlQuickFixSuggestions("usre", ["id", "user_id", "name"])).toEqual([]);
+    expect(sqlQuickFixSuggestions("customer", ["customer_id", "customer_name"])).toEqual([]);
+  });
+});

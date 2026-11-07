@@ -437,8 +437,24 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
         ]
       : [];
     const result = buildCompletionResult(actions.length > 0 ? [...replacement.items, ...actions] : replacement.items, replacement.from, getSqlCompletionResultValidFor(fullDoc, position), completionContext.prefix, fullDoc.slice(replacement.from, position));
-    if (result) return result;
+    if (result) {
+      if (!quickFixPools) return result;
+      // fuzzy 匹配模式下，函数/关键字几乎总能和任意短前缀构成子序列匹配
+      // （"usre" 能对上 SUBSTRING_INDEX），结果非空却全是无关种类。只要结果里
+      // 没有一个与上下文同类的标识符，且存在够近的 did-you-mean 候选，就用后者
+      // 接管弹窗（mod 62）；没有近似候选则保持原结果不动。
+      const relevantKinds = sqlQuickFixRelevantItemKinds(completionContext);
+      if (!result.options.some((option) => relevantKinds.has(String(option.type)))) {
+        return buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools) ?? result;
+      }
+      return result;
+    }
     return buildSqlQuickFixCompletionResult(completionContext, replacement.from, quickFixPools);
+  }
+
+  function sqlQuickFixRelevantItemKinds(completionContext: SqlCompletionContext): ReadonlySet<string> {
+    const columnContext = completionContext.suggestColumns || completionContext.exclusiveColumnSuggestions || !!completionContext.qualifier;
+    return columnContext ? new Set(["column", "variable"]) : new Set(["table", "schema", "sequence", "variable"]);
   }
 
   // mod 62：已输入前缀在常规候选里一个都匹配不上时（多半是表名/列名拼错），
@@ -472,7 +488,7 @@ export function useQueryEditorCompletion(options: QueryEditorCompletionOptions) 
         : [];
     for (const pool of orderedPools) {
       if (pool.names.length === 0) continue;
-      const items: SqlCompletionItem[] = sqlQuickFixSuggestions(prefix, pool.names).map((label) => ({
+      const items: SqlCompletionItem[] = sqlQuickFixSuggestions(prefix, pool.names, 3, { matchCandidatePrefix: true }).map((label) => ({
         label,
         type: pool.type,
         detail: t("editor.sqlQuickFixDidYouMean"),
