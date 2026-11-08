@@ -54,6 +54,7 @@ export interface QueryEditorSurfaceHandle {
 }
 
 export interface QueryResultSurfaceHandle {
+  copyActiveResult(isValid?: () => boolean): boolean;
   focusResultGrid(): boolean;
   cancelResultGridFocus(): void;
   focusSearch(target?: Element | null): boolean;
