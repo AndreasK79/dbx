@@ -2366,6 +2366,7 @@ export interface TreeNode {
   partitionParentName?: string;
   hiddenChildren?: TreeNode[];
   tableSearchParentId?: string;
+  indexSearchOnly?: boolean;
   savedSqlId?: string;
   savedSqlFolderId?: string;
   /** Set on synthetic table virtual-group container nodes. */

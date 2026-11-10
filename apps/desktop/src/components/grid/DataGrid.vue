@@ -4786,6 +4786,7 @@ const editor = useDataGridEditor({
   onManualTransactionMutation: () => props.onManualTransactionMutation?.(),
   onSaveConflict: (message) => toast(message, 5000),
   onAdoptedSaveCompleted: () => toast(t("grid.saveCompleted"), 3000),
+  hasPendingEditorDraft: () => hasPendingDataEditorDraft.value,
   sql: computed(() => props.sql),
   searchText,
   whereFilterInput,
@@ -6150,6 +6151,8 @@ const {
   formatterJsonPath,
   formatterMaskPrefix,
   formatterMaskSuffix,
+  formatterNumberGrouping,
+  formatterNumberDecimalPlaces,
   formatterCustomId,
   formatterCustomName,
   formatterCustomTemplate,
@@ -16510,6 +16513,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                                     <SelectItem value="datetime">{{ t("grid.formatterDatetime") }}</SelectItem>
                                     <SelectItem value="json-path">{{ t("grid.formatterJsonPath") }}</SelectItem>
                                     <SelectItem value="mask">{{ t("grid.formatterMask") }}</SelectItem>
+                                    <SelectItem value="number">{{ t("grid.formatterNumber") }}</SelectItem>
                                     <SelectItem value="foreign-key-display">{{ t("grid.formatterForeignKeyDisplay") }}</SelectItem>
                                     <SelectItem value="custom-template">{{ t("grid.formatterCustomTemplate") }}</SelectItem>
                                   </SelectContent>
@@ -16567,6 +16571,18 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                                     @update:model-value="(value: any) => (formatterDateTimezone = value)"
                                   />
                                 </div>
+                              </div>
+
+                              <div v-else-if="formatterKind === 'number'" class="space-y-3">
+                                <label class="flex items-center justify-between gap-3 text-xs font-medium">
+                                  <span>{{ t("grid.formatterNumberGrouping") }}</span>
+                                  <Switch v-model="formatterNumberGrouping" size="sm" />
+                                </label>
+                                <label class="block space-y-1.5">
+                                  <span class="text-xs font-medium text-muted-foreground">{{ t("grid.formatterNumberDecimalPlaces") }}</span>
+                                  <input v-model.number="formatterNumberDecimalPlaces" type="number" min="0" max="20" step="1" :placeholder="t('grid.formatterNumberAutomatic')" class="h-8 w-full rounded border bg-background px-2 text-xs outline-none focus:border-primary" />
+                                </label>
+                                <div class="text-[11px] leading-4 text-muted-foreground">{{ t("grid.formatterNumberHint") }}</div>
                               </div>
 
                               <div v-else-if="formatterKind === 'json-path'" class="space-y-1.5">
