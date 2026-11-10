@@ -69,6 +69,9 @@ interface SidebarTableExportTarget {
   rowLimit: number | null;
   csvWithoutBom: boolean;
   csvQuoteMode: CsvQuoteMode;
+  csvDelimiter: string;
+  csvQuoteChar: string;
+  csvIncludeHeader: boolean;
   /** 导出 CSV 时 NULL 的字面量；空串表示关闭（旧行为）。 */
   nullLiteral: string;
   primaryKeyMode: api.TableExportRequest["primaryKeyMode"];
@@ -532,6 +535,9 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
       rowLimit: editorSettings.exportRowLimitEnabled ? editorSettings.exportRowLimit : null,
       csvWithoutBom: editorSettings.csvWithoutBom,
       csvQuoteMode: editorSettings.csvQuoteMode,
+      csvDelimiter: editorSettings.csvExportDelimiter,
+      csvQuoteChar: editorSettings.csvExportQuoteChar,
+      csvIncludeHeader: editorSettings.csvExportIncludeHeader,
       nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
       primaryKeyMode: editorSettings.dataGridExtractorOptions.sql.primaryKeyMode,
       omitDatabaseQualifier: dropsSchemaQualifier(effectiveDatabaseTypeForConnection(config), editorSettings.generateSqlIncludeDatabaseName, node.catalog),
@@ -582,7 +588,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
         if (operation) currentTask.canCancel = false;
         operation?.setActive(currentTask, undefined);
         if (format === "csv") {
-          await read(() => api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode, { nullLiteral: target.nullLiteral, csvWithoutBom: target.csvWithoutBom }));
+          await read(() => api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode, { delimiter: target.csvDelimiter, quoteChar: target.csvQuoteChar, includeHeader: target.csvIncludeHeader, nullLiteral: target.nullLiteral, csvWithoutBom: target.csvWithoutBom }));
         } else {
           const comments = result.columns.map((name) => exportColumnInfos?.find((column) => column.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.comment);
           const headerOverrides = buildXlsxHeaderOverrides(result.columns, comments, headerMode);
@@ -626,6 +632,9 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
           : {}),
         csvWithoutBom: target.csvWithoutBom,
         csvQuoteMode: target.csvQuoteMode,
+        csvDelimiter: target.csvDelimiter,
+        csvQuoteChar: target.csvQuoteChar,
+        csvIncludeHeader: target.csvIncludeHeader,
         nullLiteral: target.nullLiteral,
         columns: queryColumns,
         columnComments,

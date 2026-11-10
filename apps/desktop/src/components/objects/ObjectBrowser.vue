@@ -4216,7 +4216,15 @@ async function exportTableData(
         if (native && task) task.canCancel = false;
         if (format === "json") await read(() => api.exportQueryResultJson(filePath, result.columns, result.rows));
         else if (format === "csv") {
-          await read(() => api.exportQueryResultCsv(filePath, result.columns, result.rows, settings.csvQuoteMode, { nullLiteral: csvNullLiteralForMode(settings.csvNullMode), csvWithoutBom: settings.csvWithoutBom }));
+          await read(() =>
+            api.exportQueryResultCsv(filePath, result.columns, result.rows, settings.csvQuoteMode, {
+              delimiter: settings.csvExportDelimiter,
+              quoteChar: settings.csvExportQuoteChar,
+              includeHeader: settings.csvExportIncludeHeader,
+              nullLiteral: csvNullLiteralForMode(settings.csvNullMode),
+              csvWithoutBom: settings.csvWithoutBom,
+            }),
+          );
         } else {
           const comments = result.columns.map((name) => columnInfos?.find((column) => column.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.comment);
           const headerOverrides = buildXlsxHeaderOverrides(result.columns, comments, headerMode);

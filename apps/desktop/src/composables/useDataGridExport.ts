@@ -1398,7 +1398,14 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
           if (writeWorkbook) assertSnapshotXlsxCellLengths(selected.rows as CellValue[][]);
           onProgress(progress("Writing"));
           let writing: Promise<void>;
-          if (format === "csv" && !hasLocators) writing = api.exportQueryResultCsv(outputPath, names, selected.rows as CellValue[][], editorSettings.csvQuoteMode, { nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode), csvWithoutBom: editorSettings.csvWithoutBom });
+          if (format === "csv" && !hasLocators)
+            writing = api.exportQueryResultCsv(outputPath, names, selected.rows as CellValue[][], editorSettings.csvQuoteMode, {
+              delimiter: editorSettings.csvExportDelimiter,
+              quoteChar: editorSettings.csvExportQuoteChar,
+              includeHeader: editorSettings.csvExportIncludeHeader,
+              nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
+              csvWithoutBom: editorSettings.csvWithoutBom,
+            });
           else if (format === "json" && !hasLocators) writing = api.exportQueryResultJson(outputPath, names, selected.rows as CellValue[][]);
           else if (format === "csv" || format === "json") {
             const request = { ...selected, context: { ...selected.context, executionId }, format, quoteMode: ["all", "strings"].includes(editorSettings.csvQuoteMode) ? editorSettings.csvQuoteMode : "necessary", nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode) };
@@ -1549,7 +1556,14 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
         const sqlData = insertOptions ? captureSqlInsertExportData(result, selectedSqlColumns, sqlContext)(result.rows) : undefined;
         onProgress({ exportId, tableName: title, rowsExported: result.rows.length, totalRows: result.rows.length, status: "Writing" });
         if (writeWorkbook) await writeWorkbook(outputPath, result);
-        else if (format === "csv") await api.exportQueryResultCsv(outputPath, result.columns, result.rows, settings.csvQuoteMode, { nullLiteral: csvNullLiteralForMode(settings.csvNullMode), csvWithoutBom: settings.csvWithoutBom });
+        else if (format === "csv")
+          await api.exportQueryResultCsv(outputPath, result.columns, result.rows, settings.csvQuoteMode, {
+            delimiter: settings.csvExportDelimiter,
+            quoteChar: settings.csvExportQuoteChar,
+            includeHeader: settings.csvExportIncludeHeader,
+            nullLiteral: csvNullLiteralForMode(settings.csvNullMode),
+            csvWithoutBom: settings.csvWithoutBom,
+          });
         else if (format === "json") await api.exportQueryResultJson(outputPath, result.columns, result.rows);
         else if (format === "markdown") await api.exportQueryResultMarkdown(outputPath, result.columns, result.rows);
         else if (format === "html") await api.exportQueryResultHtml(outputPath, title, result.columns, result.rows);
@@ -2523,7 +2537,14 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
         : {}),
       csvWithoutBom: editorSettings.csvWithoutBom,
       csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : editorSettings.csvQuoteMode,
-      ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
+      // 无对话框的后台/批量导出回退到上次对话框确认过的选择（mod 61）。
+      ...(format === "csv"
+        ? {
+            csvDelimiter: csvOptions?.delimiter ?? editorSettings.csvExportDelimiter,
+            csvQuoteChar: csvOptions?.quoteChar ?? editorSettings.csvExportQuoteChar,
+            csvIncludeHeader: csvOptions?.includeHeader ?? editorSettings.csvExportIncludeHeader,
+          }
+        : {}),
       nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
       columns: exportedColumns,
       columnTypes: columnTypes.value ? [...columnTypes.value] : undefined,
@@ -2776,7 +2797,14 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
       ...(format === "sql" ? { selectedColumns: sqlExportOptions?.selectedColumns?.map((column) => ({ ...column })) } : {}),
       csvWithoutBom: editorSettings.csvWithoutBom,
       csvQuoteMode: format === "csv" && csvOptions ? csvOptions.quoteMode : editorSettings.csvQuoteMode,
-      ...(format === "csv" && csvOptions ? { csvDelimiter: csvOptions.delimiter, csvQuoteChar: csvOptions.quoteChar, csvIncludeHeader: csvOptions.includeHeader } : {}),
+      // 无对话框的后台/批量导出回退到上次对话框确认过的选择（mod 61）。
+      ...(format === "csv"
+        ? {
+            csvDelimiter: csvOptions?.delimiter ?? editorSettings.csvExportDelimiter,
+            csvQuoteChar: csvOptions?.quoteChar ?? editorSettings.csvExportQuoteChar,
+            csvIncludeHeader: csvOptions?.includeHeader ?? editorSettings.csvExportIncludeHeader,
+          }
+        : {}),
       nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
       ...sqlExportPrimaryKeyOptions(format),
       dateTimeFormat: editorSettings.globalDateTimeExportFormat || undefined,

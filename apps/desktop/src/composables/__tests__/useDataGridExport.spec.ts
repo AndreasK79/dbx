@@ -76,6 +76,13 @@ vi.mock("@/lib/export/saveTextFile", async (importOriginal) => {
   };
 });
 
+// happy-dom 下真实 isTauriRuntime 恒为 false；个别用例需要原生路径（保存对话框、
+// 内存快照导出）时临时翻成 true，用完在 afterEach 复位。
+const tauriRuntimeMock = vi.hoisted(() => vi.fn((): boolean => false));
+vi.mock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: tauriRuntimeMock }));
+const promptSavePathMock = vi.hoisted(() => vi.fn(async () => "C:\\tmp\\export-page.csv"));
+vi.mock("@/lib/export/exportPath", () => ({ promptExportSavePath: promptSavePathMock }));
+
 function row(data: unknown[]) {
   return {
     id: 1,
@@ -218,6 +225,26 @@ describe("original LOB result exports", () => {
     await state.exportCurrentPageCsv();
     expect(resolveSourceValues).toHaveBeenCalledWith([1], [0, 1]);
     expect(exportQueryResultCsv).toHaveBeenCalledWith(expect.any(String), ["id", "name"], [[1, "缤纷彩虹完整值"]], expect.anything(), expect.objectContaining({ csvWithoutBom: false }));
+  });
+
+  it("uses the remembered CSV dialog choices for dialog-less exports (mod 61)", async () => {
+    // 原生运行时下，遗留大值解析后的快照导出（exportLocalSnapshot）不弹 CSV
+    // 选项对话框——上次对话框确认过的分隔符/引号/表头必须照样生效。
+    tauriRuntimeMock.mockReturnValue(true);
+    try {
+      useSettingsStore().updateEditorSettings({ csvQuoteMode: "necessary", csvExportDelimiter: ";", csvExportQuoteChar: "'", csvExportIncludeHeader: false });
+      // exportLocalSnapshot 用 captureSourceValues 解析遗留大值（与对话框路径的
+      // resolveSourceValues 是两个不同的钩子）。
+      const captureSourceValues = vi.fn(() => async () => new Map([[1, new Map([[1, "缤纷彩虹完整值"]])]]));
+      const { original, state } = snapshotState({ mysqlDataCharsetReadOnly: computed(() => true), captureSourceValues });
+      original.large_value_cells = [{ row_index: 0, column_index: 1, original_bytes: 20000, pending_decode: true }];
+      await state.exportCurrentPageCsv();
+      expect(showCsvExportDialog).not.toHaveBeenCalled();
+      expect(captureSourceValues).toHaveBeenCalled();
+      expect(exportQueryResultCsv).toHaveBeenCalledWith(expect.any(String), ["id", "name"], [[1, "缤纷彩虹完整值"]], "necessary", expect.objectContaining({ delimiter: ";", quoteChar: "'", includeHeader: false }));
+    } finally {
+      tauriRuntimeMock.mockReturnValue(false);
+    }
   });
 
   it("blocks compatibility SQL and unsupported local exports before extraction or saving", async () => {
