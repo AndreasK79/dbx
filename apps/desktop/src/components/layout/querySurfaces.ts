@@ -50,6 +50,7 @@ export interface QueryEditorSurfaceHandle {
   focusStatementRange(range: StatementRange | null): boolean;
   focusErrorPosition(offset: number): boolean;
   foldAll?(): boolean;
+  toggleLineComment?(): boolean;
   unfoldAll?(): boolean;
 }
 
