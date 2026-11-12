@@ -276,7 +276,7 @@ import type { PluginTableMetadata, PluginTableMetadataRequest } from "@/types/pl
 import type { PluginDataGrant, PluginDataQueryRequest, PluginDataQueryResult } from "@/types/pluginData";
 import type { PluginToolPreview } from "@/types/pluginAiTools";
 import type { CsvQuoteMode, CsvTextFormatOptions } from "@/lib/export/csvQuoteMode";
-import type { MigrationPreflight, MigrationReport } from "./migration";
+import type { MigrationPreflight, MigrationReport, CredentialResetPreparation, CredentialResetReport } from "./migration";
 export type { MigrationPreflight, MigrationReport } from "./migration";
 export const migrationStatus = (retry = false): Promise<MigrationPreflight> => get(`/api/migration/status${retry ? "?retry=true" : ""}`);
 export const migrationStart = (): Promise<MigrationReport> => post("/api/migration/start", {});
@@ -6113,3 +6113,6 @@ export async function deletePluginUiStorage(_pluginId: string, _key: string): Pr
 export async function openQueryResultTempFile(_path: string): Promise<void> {
   throw new Error("Opening query results requires the desktop app");
 }
+
+export const migrationPrepareCredentialReset = (): Promise<CredentialResetPreparation> => Promise.reject(new Error("Credential reset is only available in the Windows desktop app"));
+export const migrationResetCredentials = (_confirmationToken: string, _confirmed: boolean): Promise<CredentialResetReport> => Promise.reject(new Error("Credential reset is only available in the Windows desktop app"));

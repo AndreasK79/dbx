@@ -695,6 +695,7 @@ interface DataGridProps {
   tabId?: string;
   cacheKey?: string;
   columnWidthCacheKey?: string;
+  columnWidthResultKey?: string;
   pendingStateKey?: string;
   /**
    * Owner key for the tab-switch view snapshot. Defaults to `cacheKey`, which
@@ -1419,6 +1420,8 @@ const allFilterModeOptions: Array<{ value: FilterMode; labelKey: string }> = [
   { value: "not-like", labelKey: "grid.filterBuilderNotContains" },
   { value: "begins-with", labelKey: "grid.filterBuilderBeginsWith" },
   { value: "ends-with", labelKey: "grid.filterBuilderEndsWith" },
+  { value: "not-begins-with", labelKey: "grid.filterBuilderNotBeginsWith" },
+  { value: "not-ends-with", labelKey: "grid.filterBuilderNotEndsWith" },
   { value: "greater-than", labelKey: "grid.filterBuilderGreaterThan" },
   {
     value: "greater-than-or-equal",
@@ -2951,6 +2954,7 @@ const { initColumnWidths, growColumnWidthsToFitSamples, onResizeStart, autoFitCo
   compactColumnHeaderActions,
   columnIndexIndicators: visibleColumnIndexIndicators,
   cacheKey: columnWidthCacheKey,
+  resultKey: computed(() => props.columnWidthResultKey),
   columnStructureSignature,
   measureHeaderText: measureColumnHeaderText,
   headerMeasurementKey: columnHeaderMeasurementKey,

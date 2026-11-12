@@ -2145,6 +2145,7 @@ export const useQueryStore = defineStore("query", () => {
     // A legacy run without the token must not inherit a stale tab value: fail
     // safe by starting a fresh logical result.
     tab.resultViewGeneration = run.resultViewGeneration ?? uuid();
+    tab.resultColumnWidthRevision = run.resultColumnWidthRevision;
     tab.batchSqlExecution = cloneBatchSqlExecution(run.batchSqlExecution);
     tab.resultBaseSql = run.resultBaseSql;
     tab.resultEditorFingerprint = run.resultEditorFingerprint;
@@ -2542,6 +2543,7 @@ export const useQueryStore = defineStore("query", () => {
       activeResultIndex: tab.activeResultIndex,
       resultGridRevision: tab.resultGridRevision,
       resultViewGeneration: tab.resultViewGeneration,
+      resultColumnWidthRevision: tab.resultColumnWidthRevision,
       batchSqlExecution: cloneBatchSqlExecution(tab.batchSqlExecution),
       resultBaseSql: tab.resultBaseSql,
       resultEditorFingerprint: tab.resultEditorFingerprint,
@@ -2667,6 +2669,7 @@ export const useQueryStore = defineStore("query", () => {
       activeResultIndex: tab.activeResultIndex,
       resultGridRevision: tab.resultGridRevision,
       resultViewGeneration: tab.resultViewGeneration,
+      resultColumnWidthRevision: tab.resultColumnWidthRevision,
       batchSqlExecution: cloneBatchSqlExecution(tab.batchSqlExecution),
       resultBaseSql: tab.resultBaseSql,
       resultEditorFingerprint: tab.resultEditorFingerprint,
@@ -2751,6 +2754,9 @@ export const useQueryStore = defineStore("query", () => {
       return;
     }
     tab.resultViewGeneration = uuid();
+    if (origin === "refresh" && tab.mode === "query" && tab.result && !isQueryExecutionErrorResult(tab.result)) {
+      tab.resultColumnWidthRevision = tab.resultViewGeneration;
+    }
   }
 
   function sortTabResultLocally(id: string, column: string, columnIndex: number, direction: DataGridSortDirection | null) {
@@ -8874,7 +8880,7 @@ export const useQueryStore = defineStore("query", () => {
             current.result = allResults[0];
           }
           // Redis command batches always replace the visible result.
-          publishResultGeneration(current, "execute");
+          publishResultGeneration(current, options?.publicationOrigin ?? "execute");
           producedResult = current.result !== undefined;
           touchResult(current);
           current.queryAnalysis = undefined;
@@ -9349,7 +9355,7 @@ export const useQueryStore = defineStore("query", () => {
           if (!captureResultRun && previousDisplayedResults.some(Boolean)) {
             releaseReplacedResultLargeValues(current, ...previousDisplayedResults);
           }
-          publishResultGeneration(current, shouldAppendResult ? "append" : "execute");
+          publishResultGeneration(current, shouldAppendResult ? "append" : (options?.publicationOrigin ?? "execute"));
           producedResult = current.result !== undefined;
           touchResult(current);
           current.queryAnalysis = undefined;
@@ -9423,7 +9429,7 @@ export const useQueryStore = defineStore("query", () => {
           current.activeResultIndex = allResults.length > 1 ? resultIndex : undefined;
           current.result = allResults[resultIndex];
           // Elasticsearch batch requests replace the visible result.
-          publishResultGeneration(current, "execute");
+          publishResultGeneration(current, options?.publicationOrigin ?? "execute");
           producedResult = current.result !== undefined;
           touchResult(current);
           current.queryAnalysis = undefined;
