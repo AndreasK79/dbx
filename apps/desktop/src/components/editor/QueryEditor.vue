@@ -136,6 +136,7 @@ import { shouldParseQueryEditorSyntax, shouldUseQueryEditorLargeDocumentMode, sh
 import { startsQueryEditorRectangularSelection } from "@/lib/editor/queryEditorPointerSelection";
 import { LARGE_PASTE_HISTORY_USER_EVENT, normalizeQueryEditorPasteText, recoverableNativePasteSuffix, shouldRecoverLargeTauriPaste } from "@/lib/editor/queryEditorLargePaste";
 
+import { keepQueryEditorPasteCaretOnLastContentLine } from "@/lib/editor/queryEditorClipboardPaste";
 import { computePasteCaretResyncTarget } from "@/lib/editor/queryEditorPasteCaretResync";
 
 import { extendQueryEditorSelection, runQueryEditorAltExtendSelection } from "@/lib/editor/queryEditorExtendSelection";
@@ -143,6 +144,7 @@ import { addNextQueryEditorSelectionOccurrence, selectAllQueryEditorSelectionOcc
 import { selectLineEnds } from "@/lib/editor/selectLineEnds";
 import { scrollEditorLine } from "@/lib/editor/scrollEditorLine";
 import { createQueryEditorStringMouseSelection } from "@/lib/editor/queryEditorStringMouseSelection";
+import { createQueryEditorParenthesisMouseSelection } from "@/lib/editor/queryEditorParenthesisMouseSelection";
 import { createQueryEditorCompletionShortcutBindings } from "@/lib/editor/queryEditorCompletionShortcut";
 import { handleQueryEditorCompletionNavigation } from "@/lib/editor/queryEditorCompletionNavigation";
 import { createQueryEditorLineCommentShortcutBindings } from "@/lib/editor/queryEditorLineComment";
@@ -2285,6 +2287,10 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
       doc: props.modelValue,
       selection: normalizedEditorSelection(props.initialSelection, props.modelValue.length),
       extensions: [
+        EditorState.transactionFilter.of((transaction) => {
+          if (props.hideExecutionControls || settingsStore.editorSettings.executeMode !== "current" || queryEditorSelectionLanguage() !== "sql" || !supportsExecutionTargetPicker(props.databaseType)) return transaction;
+          return keepQueryEditorPasteCaretOnLastContentLine(transaction);
+        }),
         cmSearch({
           top: true,
           createPanel: () => {
@@ -2338,6 +2344,16 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
               language: queryEditorSelectionLanguage(),
               composing: isEditorComposing(currentView),
               selectStringContent: settingsStore.editorSettings.doubleClickStringSelectionMode !== "word",
+            }),
+          ),
+        ),
+        Prec.highest(
+          EditorView.mouseSelectionStyle.of((currentView, event) =>
+            createQueryEditorParenthesisMouseSelection(currentView, event, {
+              databaseType: props.databaseType,
+              dialect: sqlBehaviorDialect(),
+              language: queryEditorSelectionLanguage(),
+              composing: isEditorComposing(currentView),
             }),
           ),
         ),
