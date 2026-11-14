@@ -21,6 +21,7 @@ import { useI18n } from "vue-i18n";
 import { launchPlDebug, openPlDebugRecovery } from "@/components/debug/plDebugLaunch";
 import { supportsPlDebugRoutine } from "@/lib/database/databaseFeatureSupport";
 import { translateBackendError } from "@/i18n/backend-errors";
+import { exportOracleObjectDdl, supportsOracleObjectExport } from "@/lib/export/oracleObjectExport";
 import { normalizeBackendError } from "@/lib/backend/errorUtils";
 import { isConnectionTimeoutErrorMessage } from "@/lib/sql/queryError";
 import {
@@ -499,7 +500,9 @@ const props = defineProps<{
 }>();
 
 const ModelGenerateDialog = defineAsyncComponent(() => import("@/components/generate/ModelGenerateDialog.vue"));
+const OracleTableGrantsDialog = defineAsyncComponent(() => import("@/components/objects/OracleTableGrantsDialog.vue"));
 const modelGenerationTarget = shallowRef<TreeNode | null>(null);
+const oracleTableGrantsTarget = shallowRef<{ connectionId: string; database: string; schema: string; tableName: string; catalog?: string } | null>(null);
 function openModelGeneration() {
   modelGenerationTarget.value = { ...activeNode.value };
 }
@@ -977,7 +980,27 @@ async function openDirectNavigationNode(node: TreeNode, requestId: number) {
     queryStore.openDamengJobAdmin(node.connectionId);
   } else if (node.type === "database-job-admin") {
     queryStore.openDatabaseJobAdmin(node.connectionId);
+  } else if (node.type === "postgres-aggregate-functions") {
+    await openPostgresAggregateFunctions(node, requestId);
   }
+}
+
+async function openPostgresAggregateFunctions(node: TreeNode, requestId: number) {
+  if (!node.connectionId || !node.database || !node.schema || databaseTypeForNode(node) !== "postgres") return;
+  // Escape strings are interpreted consistently regardless of standard_conforming_strings.
+  const schemaLiteral = `E'${node.schema.replaceAll("\\", "\\\\").replaceAll("'", "''")}'`;
+  const sql = `SELECT p.proname AS aggregate_name,
+       pg_catalog.pg_get_function_arguments(p.oid) AS argument_types,
+       pg_catalog.pg_get_function_result(p.oid) AS return_type,
+       pg_catalog.obj_description(p.oid, 'pg_proc') AS comment
+FROM pg_catalog.pg_aggregate AS a
+JOIN pg_catalog.pg_proc AS p ON p.oid = a.aggfnoid
+JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace
+WHERE n.nspname = ${schemaLiteral}
+ORDER BY p.proname, argument_types;`;
+  if (!isCurrentNavigationRequest(requestId)) return;
+  const tabId = queryStore.createTab(node.connectionId, node.database, `${t("tree.aggregateFunctions")} - ${node.schema}`, "query", node.schema, sql, node.catalog, { forceNew: true, sourceView: true });
+  await queryStore.executeTabSql(tabId, sql);
 }
 
 async function toggle(requestId = beginNavigationRequest()) {
@@ -3326,6 +3349,31 @@ async function openDatabaseObjectDependencies() {
   }
 }
 
+async function openPostgresRowLevelSecurity(node: TreeNode) {
+  if (!node.connectionId || !hasTreeNodeDatabaseContext(node) || (node.type === "schema" && !node.schema)) return;
+  // An escape string keeps schema names containing backslashes safe with either
+  // setting of standard_conforming_strings.
+  const schemaFilter = node.type === "schema" && node.schema ? `\n  AND n.nspname = E'${node.schema.replaceAll("\\", "\\\\").replaceAll("'", "''")}'` : "";
+  const sql = `SELECT n.nspname AS schema_name, c.relname AS table_name,
+       c.relrowsecurity AS rls_enabled, c.relforcerowsecurity AS rls_forced,
+       p.policyname AS policy_name, p.permissive, p.roles, p.cmd AS command,
+       p.qual AS using_expression, p.with_check AS check_expression
+FROM pg_catalog.pg_class AS c
+JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_policies AS p ON p.schemaname = n.nspname AND p.tablename = c.relname
+WHERE (c.relrowsecurity OR c.relforcerowsecurity OR p.policyname IS NOT NULL)${schemaFilter}
+ORDER BY n.nspname, c.relname, p.policyname;`;
+  try {
+    await connectionStore.ensureConnected(node.connectionId);
+    connectionStore.activeConnectionId = node.connectionId;
+    const title = `${t("contextMenu.viewPostgresRowLevelSecurity")} - ${node.label}`;
+    const tabId = queryStore.createTab(node.connectionId, node.database, title, "query", node.schema, sql, node.catalog, { forceNew: true });
+    await queryStore.executeTabSql(tabId, sql);
+  } catch (error) {
+    toast(t("contextMenu.tableOperationFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  }
+}
+
 async function compileXuguObject() {
   const node = activeNode.value;
   if (currentDatabaseType() !== "xugu" || !node.connectionId || !node.database) return;
@@ -3828,6 +3876,8 @@ async function dropSqlForTreeNode(node: TreeNode, options?: { cascade?: boolean 
       tableName: node.label,
       cascade: options?.cascade && supportsDropTableCascade(databaseTypeForNode(node)),
       identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
+      // PostgreSQL needs `DROP FOREIGN TABLE` for relkind = 'f' (#14717).
+      foreignTable: node.tableType?.toUpperCase() === "FOREIGN TABLE",
     });
   }
   const objectOptions = dropObjectSqlOptionsForNode(node);
@@ -7840,6 +7890,26 @@ function buildDatabaseSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     if (canOpenObjectBrowser.value) {
       items.push({ sidebarActionId: "contextMenu.openObjectBrowser", label: t("contextMenu.openObjectBrowser"), action: openObjectBrowser, icon: TableProperties });
     }
+    if (node.type === "schema" && node.schema && databaseTypeForNode(node) === "postgres") {
+      items.push({
+        sidebarActionId: "tree.aggregateFunctions",
+        label: t("tree.aggregateFunctions"),
+        icon: Braces,
+        action: async () => {
+          if (!node.connectionId) return;
+          const requestId = beginNavigationRequest();
+          try {
+            await connectionStore.ensureConnected(node.connectionId);
+            await openPostgresAggregateFunctions(node, requestId);
+          } catch (error) {
+            if (isCurrentNavigationRequest(requestId)) toastConnectFailed(node.connectionId, error);
+          }
+        },
+      });
+    }
+    if (currentDatabaseType() === "postgres" && hasTreeNodeDatabaseContext(node)) {
+      items.push({ sidebarActionId: "contextMenu.viewPostgresRowLevelSecurity", label: t("contextMenu.viewPostgresRowLevelSecurity"), action: () => openPostgresRowLevelSecurity(node), icon: ShieldCheck });
+    }
     if (canCreateOracleTriggerAt(node)) items.push({ sidebarActionId: "contextMenu.createTrigger", label: t("contextMenu.createTrigger"), action: createOracleTrigger, icon: Plus });
     if (supportsConnectionQueryActions(currentDatabaseType())) {
       items.push({ sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
@@ -7884,6 +7954,10 @@ function buildDatabaseSidebarMenu(context: SidebarMenuFactoryContext): boolean {
       items.push(createTableMenuItem());
     }
     if (canCreateDatabaseFromNode(node)) items.push(createDatabaseMenuItem(node));
+    if (node.type === "schema" && node.connectionId) {
+      const objectTemplate = sidebarObjectTemplateForGroup(connectionStore.getConfig(node.connectionId), node);
+      if (objectTemplate) items.push({ label: t(objectTemplate.titleKey), action: createSidebarObjectTemplate, icon: Plus });
+    }
     const isSimpleDisplay = settingsStore.editorSettings.sidebarObjectDisplay === "simple";
     if (canCreateTable.value && isSimpleDisplay && isTableVGroupContainerNode(node) && !node.children?.some(isGroupLabel)) {
       items.push({
@@ -8272,6 +8346,23 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 
 function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
   const { node, items, deleteMenuLabel, deleteMenuAction, truncateMenuLabel, truncateMenuAction, emptyMenuLabel, emptyMenuAction, batchAutoIncrementCount, autoIncrementMenuLabel, autoIncrementMenuAction } = context;
+  const sourceTarget = objectSourceTargetForTreeNode(node);
+  const { connectionId, database, catalog } = node;
+  const isPackageMember = (node.type === "procedure" || node.type === "function") && node.parentType === "package" && !!node.parentName;
+  if (connectionId && database && sourceTarget && !isPackageMember && supportsOracleObjectExport(databaseTypeForNode(node), sourceTarget.objectType)) {
+    items.push({
+      label: t("contextMenu.exportObjectDdl"),
+      icon: FileCode,
+      action: async () => {
+        try {
+          const saved = await exportOracleObjectDdl({ ...sourceTarget, connectionId, database, catalog, schema: sourceTarget.schema || database });
+          if (saved === "saved") toast(t("grid.exported"));
+        } catch (error) {
+          toast(t("grid.exportFailed", { message: translateBackendError(t, error) }), 5000);
+        }
+      },
+    });
+  }
   // 虚拟分组移动入口：对所有可分组行类型统一注入（含 procedure/function/trigger/
   // sequence/event/synonym/job/package/type 等专属分支——它们各自 return true，
   // 若只在 table/view/mv 分支注入，这些行将没有任何分组入口）。表行保持原行为
@@ -8339,6 +8430,21 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     }
     if (canViewDatabaseObjectDependencies(currentDatabaseType(), node)) {
       items.push({ sidebarActionId: "contextMenu.viewDependencies", label: t("contextMenu.viewDependencies"), action: openDatabaseObjectDependencies, icon: Network });
+    }
+    if (node.type === "table" && currentDatabaseType() === "oracle" && node.connectionId && node.database && node.schema) {
+      const connectionId = node.connectionId;
+      const schema = node.schema;
+      const config = connectionStore.getConfig(connectionId);
+      const database = config && connectionUsesVisibleSchemaFilter(config) ? config.database || node.database : node.database;
+      const target = { connectionId, database, schema, tableName: node.objectName || node.label, catalog: node.catalog };
+      items.push({
+        sidebarActionId: "oracleSecurity.tableGrants",
+        label: t("oracleSecurity.tableGrants"),
+        action: () => {
+          oracleTableGrantsTarget.value = target;
+        },
+        icon: UsersRound,
+      });
     }
     if (node.type === "view" || node.type === "materialized_view") {
       items.push({ sidebarActionId: "contextMenu.editView", label: t("contextMenu.editView"), action: () => openObjectSourceDialog(true), icon: Pencil });
@@ -8592,7 +8698,6 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
 
   // 8. Procedure / Function / Package
   if (node.type === "procedure" || node.type === "function") {
-    const isPackageMember = node.parentType === "package" && !!node.parentName;
     if (node.connectionId && node.database && supportsPlDebugRoutine(currentDatabaseType())) {
       const target = {
         connectionId: node.connectionId,
@@ -8675,7 +8780,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     return true;
   }
 
-  if (node.type === "sequence" || (node.type === "synonym" && currentDatabaseType() === "oceanbase-oracle")) {
+  if (node.type === "sequence" || (node.type === "synonym" && supportsOracleObjectExport(databaseTypeForNode(node), "SYNONYM"))) {
     items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
     if (currentDatabaseType() === "oceanbase-oracle") {
       items.push({ label: t("contextMenu.editObject"), action: () => openObjectSourceDialog(true), icon: Pencil });
@@ -9335,6 +9440,7 @@ defineExpose({
   />
   <ModelGenerateDialog v-if="modelGenerationTarget" :key="modelGenerationTarget.id" :target="modelGenerationTarget" @close="modelGenerationTarget = null" />
   <SqlTemplateInsertRowsDialog v-model:open="insertTemplateRowsOpen" @confirm="confirmInsertTemplateRows" />
+  <OracleTableGrantsDialog v-if="oracleTableGrantsTarget" :target="oracleTableGrantsTarget" @close="oracleTableGrantsTarget = null" />
   <Dialog
     :open="!!pluginDialog"
     @update:open="

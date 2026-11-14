@@ -17,6 +17,8 @@ export type ShortcutActionId =
   | "acceptCompletion"
   | "triggerCompletion"
   | "openSnippetMenu"
+  | "previousCompletion"
+  | "nextCompletion"
   | "indentMore"
   | "indentLess"
   | "insertLineBelow"
@@ -300,6 +302,18 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutOpenSnippetMenu",
     scope: "editor",
     defaultShortcut: "Mod+Alt+Space",
+  },
+  {
+    id: "previousCompletion",
+    labelKey: "settings.shortcutPreviousCompletion",
+    scope: "editor",
+    defaultShortcut: "Ctrl+P",
+  },
+  {
+    id: "nextCompletion",
+    labelKey: "settings.shortcutNextCompletion",
+    scope: "editor",
+    defaultShortcut: "Ctrl+N",
   },
   {
     id: "indentMore",

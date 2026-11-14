@@ -82,7 +82,11 @@ fn probe_branch_sql(
         _ if database_type == Some(DatabaseType::Teradata) => {
             format!("SELECT TOP {limit} 1 FROM {qualified_table} WHERE ({where_clause})")
         }
-        TablePaginationStrategy::SqlServerTop | TablePaginationStrategy::IrisTop | TablePaginationStrategy::OdbcTop => {
+        // Totality arm: the guard above already handled Teradata.
+        TablePaginationStrategy::SqlServerTop
+        | TablePaginationStrategy::IrisTop
+        | TablePaginationStrategy::OdbcTop
+        | TablePaginationStrategy::TeradataTop => {
             format!("SELECT TOP {limit} 1 FROM {qualified_table} WHERE ({where_clause})")
         }
         TablePaginationStrategy::InformixFirst => {

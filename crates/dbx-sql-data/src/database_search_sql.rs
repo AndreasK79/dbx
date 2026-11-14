@@ -144,6 +144,8 @@ pub fn build_database_search_sql(options: DatabaseSearchSqlOptions) -> Option<Da
         _ if options.database_type == Some(DatabaseType::Teradata) => {
             format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause});")
         }
+        // Totality arm: the guard above already handled Teradata.
+        TablePaginationStrategy::TeradataTop => format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause})"),
         TablePaginationStrategy::SqlServerTop | TablePaginationStrategy::OdbcTop => {
             format!("SELECT TOP {limit} * FROM {table} WHERE ({where_clause})")
         }
