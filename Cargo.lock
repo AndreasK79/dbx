@@ -2187,6 +2187,7 @@ dependencies = [
  "dbx-tauri-consul",
  "dbx-tauri-schema",
  "deadpool-postgres",
+ "encoding_rs",
  "font-kit",
  "futures",
  "grep",

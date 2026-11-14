@@ -150,6 +150,7 @@ import { findDatabaseTreeNode } from "@/lib/sidebar/treeRefreshTarget";
 import { simpleModeEmptyShellNeedsConfirmedLoad, treeNodeLoadedChildrenContentPresent } from "@/lib/sidebar/treeLoadedChildrenMarker";
 import { shouldMarkDisconnected } from "@/lib/connection/connectionHealth";
 import { connectionAttemptOriginalErrorMessage, connectionAttemptTimeoutMessage, connectionAttemptTimeoutMs } from "@/lib/connection/connectionAttemptTimeout";
+import { connectionVpnProfile, ensureConnectionVpnProfile } from "@/lib/connection/vpnProfile";
 import { loadTimeoutInheritanceBackup, saveTimeoutInheritanceBackup } from "@/lib/connection/timeoutInheritanceBackup";
 import { migrateSqlServerLegacyCompatibilityConfig, requiresSqlServerLegacyCompatibilityComponent, SQLSERVER_LEGACY_COMPATIBILITY_DRIVER_KEY } from "@/lib/connection/sqlServerLegacyCompatibility";
 import { gaussdbMTypeDisplayName } from "@/lib/table/postgresDataTypeHelp";
@@ -5536,8 +5537,12 @@ export const useConnectionStore = defineStore("connection", () => {
   }
 
   async function connectDbWithPasswordRetry(config: ConnectionConfig, localAttempt: number): Promise<{ config: ConnectionConfig; id: string; rememberPassword: boolean }> {
+    // The VPN dial (#63) runs inside the attempt-timeout budget (it carries
+    // its own buffer). A profile-less connection calls connectDb directly —
+    // no extra microtask hops, keeping the in-flight dedup cadence intact.
+    const connectWithVpn = () => withConnectionAttemptTimeout(connectionVpnProfile(config) ? ensureConnectionVpnProfile(config).then(() => api.connectDb(config, localAttempt)) : api.connectDb(config, localAttempt), config);
     try {
-      const id = await withConnectionAttemptTimeout(api.connectDb(config, localAttempt), config);
+      const id = await connectWithVpn();
       return { config, id, rememberPassword: false };
     } catch (error) {
       const message = connectionErrorMessage(error);
@@ -5545,7 +5550,7 @@ export const useConnectionStore = defineStore("connection", () => {
       const prompted = await ensureConnectionPassword(config, true);
       config = prompted.config;
       ensureLocalConnectionAttemptActive(config.id, localAttempt);
-      const id = await withConnectionAttemptTimeout(api.connectDb(config, localAttempt), config);
+      const id = await connectWithVpn();
       return { config, id, rememberPassword: prompted.rememberPassword };
     }
   }
