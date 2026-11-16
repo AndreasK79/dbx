@@ -241,7 +241,7 @@ import {
   type GaussdbTargetServerType,
 } from "@/lib/database/jdbcDialect";
 import { normalizeStoredConnectionDatabase } from "@/lib/database/sqliteNamespace";
-import { connectionVpnProfile, ensureConnectionVpnProfile, isVpnControlAvailable } from "@/lib/connection/vpnProfile";
+import { connectionVpnProfile, ensureConnectionVpnProfile, isVpnControlAvailable, vpnDialSaysProfileMissing } from "@/lib/connection/vpnProfile";
 import {
   createJdbcProductConnectionFieldsByMode,
   isJdbcProductDefaultDriverClass,
@@ -3638,7 +3638,11 @@ async function runVpnAction(action: "connect" | "disconnect") {
     else await api.vpnDisconnect(profile);
     await refreshVpnState();
   } catch (error) {
-    toast(errorMessage(error), 5000);
+    const message = errorMessage(error);
+    // 623 means the typed name matches no phonebook entry — an external
+    // client's profile (Azure VPN Client & friends). Say that instead of the
+    // bare RAS text, which reads like an internal error.
+    toast(vpnDialSaysProfileMissing(message) ? t("connection.vpnExternalClientHint", { profile }) : message, 6000);
   } finally {
     vpnActionBusy.value = false;
   }

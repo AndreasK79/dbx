@@ -20,6 +20,9 @@ import {
   Settings,
   LogOut,
   CloudDownload,
+  Shield,
+  ShieldCheck,
+  Loader2,
   Package,
   PlugZap,
   FileDown,
@@ -41,6 +44,9 @@ import AppLogo from "@/components/icons/AppLogo.vue";
 import { MAC_TRAFFIC_LIGHT_X, macTrafficLightInsetPaddingForScale, shouldReserveMacTrafficLightInset, useWindowControls } from "@/composables/useWindowControls";
 import { useToast } from "@/composables/useToast";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useConnectionStore } from "@/stores/connectionStore";
+import { connectionVpnProfile, isVpnControlAvailable, vpnDialSaysProfileMissing } from "@/lib/connection/vpnProfile";
+import * as api from "@/lib/backend/api";
 import { isSystemAppThemeMode, type AppThemeMode } from "@/lib/app/appTheme";
 import { formatShortcutTooltip } from "@/lib/editor/shortcutDisplay";
 
@@ -208,6 +214,56 @@ function onToolbarDblClick(e: MouseEvent) {
 const toolbarEl = ref<HTMLElement>();
 const newConnectionLabelEl = ref<HTMLElement>();
 const toolbarCollapsed = ref(false);
+
+// VPN (#63): one-click dial/hang-up of the active connection's Windows VPN
+// profile, so bringing the tunnel up never requires opening the edit dialog.
+// External clients (Azure VPN Client & friends) have no phonebook entry, so
+// their dial ends in rasdial 623 — the toast explains that instead of the
+// bare error text.
+const connectionStore = useConnectionStore();
+const vpnControlAvailable = isVpnControlAvailable();
+const activeVpnProfile = computed(() => {
+  if (!vpnControlAvailable) return "";
+  const id = connectionStore.activeConnectionId;
+  return id ? connectionVpnProfile(connectionStore.getConfig(id) ?? {}) : "";
+});
+const activeVpnConnected = ref(false);
+const vpnToggleBusy = ref(false);
+
+async function refreshActiveVpnState() {
+  if (!activeVpnProfile.value) return;
+  try {
+    const state = await api.vpnProfiles();
+    const wanted = activeVpnProfile.value.toLowerCase();
+    activeVpnConnected.value = state.connected.some((name) => name.trim().toLowerCase() === wanted);
+  } catch {
+    activeVpnConnected.value = false;
+  }
+}
+
+async function toggleActiveVpn() {
+  const profile = activeVpnProfile.value;
+  if (!profile || vpnToggleBusy.value) return;
+  vpnToggleBusy.value = true;
+  try {
+    if (activeVpnConnected.value) await api.vpnDisconnect(profile);
+    else await api.vpnConnect(profile);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    toast(vpnDialSaysProfileMissing(message) ? t("connection.vpnExternalClientHint", { profile }) : `${t("toolbar.vpnError", { profile })}: ${message}`, 6000);
+  } finally {
+    vpnToggleBusy.value = false;
+    await refreshActiveVpnState();
+  }
+}
+
+watch(
+  activeVpnProfile,
+  () => {
+    void refreshActiveVpnState();
+  },
+  { immediate: true },
+);
 const pluginCenterGroup = ref<HTMLElement | null>(null);
 const showPluginCenterShortcuts = computed(() => settingsStore.editorSettings.pluginShortcuts.enabled && settingsStore.editorSettings.pluginShortcuts.position === "plugin-center");
 const shouldReserveTrafficLightInset = computed(() => shouldReserveMacTrafficLightInset(isMac, isFullscreen.value, isDesktop));
@@ -647,6 +703,20 @@ const toolbarStyle = computed(() => {
         <span ref="newConnectionLabelEl" :class="toolbarTextLabelClass">{{ t("toolbar.newConnection") }}</span>
       </span>
     </Button>
+
+    <Tooltip v-if="vpnControlAvailable && activeVpnProfile">
+      <TooltipTrigger as-child>
+        <Button variant="ghost" size="sm" :class="toolbarTextButtonClass" :disabled="vpnToggleBusy" :data-testid="'toolbar-vpn-toggle'" @click="toggleActiveVpn">
+          <span class="inline-flex items-center gap-1">
+            <Loader2 v-if="vpnToggleBusy" class="h-3.5 w-3.5 animate-spin" />
+            <ShieldCheck v-else-if="activeVpnConnected" class="h-3.5 w-3.5 text-emerald-500" />
+            <Shield v-else class="h-3.5 w-3.5" />
+            <span :class="toolbarTextLabelClass">{{ activeVpnConnected ? t("toolbar.vpnDisconnect") : t("toolbar.vpnConnect") }}</span>
+          </span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{{ activeVpnConnected ? t("toolbar.vpnDisconnectTooltip", { profile: activeVpnProfile }) : t("toolbar.vpnConnectTooltip", { profile: activeVpnProfile }) }}</TooltipContent>
+    </Tooltip>
 
     <Tooltip v-if="canNewQuery">
       <TooltipTrigger as-child>
