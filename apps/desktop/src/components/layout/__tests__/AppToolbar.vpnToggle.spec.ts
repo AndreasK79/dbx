@@ -53,10 +53,12 @@ vi.mock("@/components/layout/ToolbarUpdateIcon.vue", () => ({
 const vpnProfilesMock = vi.fn();
 const vpnConnectMock = vi.fn();
 const vpnDisconnectMock = vi.fn();
+const vpnOpenNetworkFlyoutMock = vi.fn();
 vi.mock("@/lib/backend/api", () => ({
   vpnProfiles: (...args: unknown[]) => vpnProfilesMock(...args),
   vpnConnect: (...args: unknown[]) => vpnConnectMock(...args),
   vpnDisconnect: (...args: unknown[]) => vpnDisconnectMock(...args),
+  vpnOpenNetworkFlyout: (...args: unknown[]) => vpnOpenNetworkFlyoutMock(...args),
 }));
 
 const toastMock = vi.fn();
@@ -128,7 +130,10 @@ function mount(props: Record<string, unknown> = {}) {
             vpnConnect: "Connect VPN",
             vpnDisconnect: "Disconnect VPN",
           },
-          connection: { vpnExternalClientHint: '"{profile}" is not a native Windows VPN entry' },
+          connection: {
+            vpnExternalClientHint: '"{profile}" is not a native Windows VPN entry',
+            vpnOpenedNetworkFlyout: 'No phonebook entry for "{profile}" — opened the Windows network panel; click the profile there',
+          },
           updates: { check: "Check for updates", updateAction: "Update" },
           exportProgress: { tooltip: "Export" },
         },
@@ -214,15 +219,29 @@ describe("AppToolbar VPN toggle (mod 63)", () => {
     expect(vpnConnectMock).not.toHaveBeenCalled();
   });
 
-  it("toasts the external-client hint when the dial reports 623", async () => {
+  it("opens the Windows network flyout when the dial reports 623", async () => {
     connectionStoreMock.activeConnectionId = "c1";
     connectionStoreMock.getConfig.mockReturnValue({ vpn_profile: "Azure VPN" });
     vpnConnectMock.mockRejectedValue(new Error("Remote Access error 623 - The system could not find the phone book entry for this connection."));
+    vpnOpenNetworkFlyoutMock.mockReset().mockResolvedValue(undefined);
     mounted = mount();
     await settle();
     vpnButton()!.click();
     await settle();
     expect(vpnConnectMock).toHaveBeenCalledWith("Azure VPN");
+    expect(vpnOpenNetworkFlyoutMock).toHaveBeenCalledTimes(1);
+    expect(toastMock).toHaveBeenCalledWith(expect.stringContaining("opened the Windows network panel"), 6000);
+  });
+
+  it("falls back to the hint toast when the flyout cannot be opened", async () => {
+    connectionStoreMock.activeConnectionId = "c1";
+    connectionStoreMock.getConfig.mockReturnValue({ vpn_profile: "Azure VPN" });
+    vpnConnectMock.mockRejectedValue(new Error("Remote Access error 623 - The system could not find the phone book entry for this connection."));
+    vpnOpenNetworkFlyoutMock.mockReset().mockRejectedValue(new Error("explorer blocked"));
+    mounted = mount();
+    await settle();
+    vpnButton()!.click();
+    await settle();
     expect(toastMock).toHaveBeenCalledWith(expect.stringContaining("not a native Windows VPN entry"), 6000);
   });
 });

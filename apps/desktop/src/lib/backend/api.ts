@@ -104,6 +104,7 @@ export const testTunnelProfile = forward("testTunnelProfile");
 export const vpnProfiles = forward("vpnProfiles");
 export const vpnConnect = forward("vpnConnect");
 export const vpnDisconnect = forward("vpnDisconnect");
+export const vpnOpenNetworkFlyout = forward("vpnOpenNetworkFlyout");
 export const listSshAgentIdentities = forward("listSshAgentIdentities");
 export const resolveSshPrompt = forward("resolveSshPrompt");
 export const readKeychainPassword = forward("readKeychainPassword");

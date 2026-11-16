@@ -2534,6 +2534,7 @@ export default {
     vpnStatusNotConnected: "Not connected",
     vpnNoProfilesHint: "No native Windows VPN profiles found. External VPN clients (e.g. Azure VPN Client) do not register phonebook entries and cannot be dialed by DBX — connect them in the client itself, then connect here.",
     vpnExternalClientHint: '"{profile}" is not a native Windows VPN entry (rasdial error 623). External clients such as Azure VPN Client must be connected in their own app.',
+    vpnOpenedNetworkFlyout: 'No phonebook entry for "{profile}" — opened the Windows network panel; click the profile there to connect it. External VPN clients (e.g. Azure VPN Client) are connected from there, not from DBX.',
     dremioArrowFlightSqlMode: "Arrow Flight SQL",
     dremioLegacyJdbcMode: "Legacy JDBC",
     phoenixDirectMode: "Direct",

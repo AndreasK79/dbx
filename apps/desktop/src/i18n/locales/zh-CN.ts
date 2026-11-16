@@ -2470,6 +2470,7 @@ export default withEnglishFallback({
     vpnStatusNotConnected: "未连接",
     vpnNoProfilesHint: "未找到 Windows 原生 VPN 配置文件。外部 VPN 客户端（如 Azure VPN Client）不注册电话簿条目，DBX 无法代为拨号——请先在客户端内连接，再在此处连接数据库。",
     vpnExternalClientHint: "“{profile}”不是 Windows 原生 VPN 条目（rasdial 错误 623）。Azure VPN Client 等外部客户端请在自身应用中连接。",
+    vpnOpenedNetworkFlyout: "未找到“{profile}”的电话簿条目——已打开 Windows 网络面板，请在其中点击该配置进行连接。外部 VPN 客户端（如 Azure VPN Client）需在该面板连接，DBX 无法代拨。",
     dremioArrowFlightSqlMode: "Arrow Flight SQL",
     dremioLegacyJdbcMode: "Legacy JDBC",
     phoenixDirectMode: "直连",

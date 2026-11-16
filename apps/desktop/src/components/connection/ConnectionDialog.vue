@@ -3641,8 +3641,22 @@ async function runVpnAction(action: "connect" | "disconnect") {
     const message = errorMessage(error);
     // 623 means the typed name matches no phonebook entry — an external
     // client's profile (Azure VPN Client & friends). Say that instead of the
-    // bare RAS text, which reads like an internal error.
-    toast(vpnDialSaysProfileMissing(message) ? t("connection.vpnExternalClientHint", { profile }) : message, 6000);
+    // bare RAS text, which reads like an internal error, and on Connect pop
+    // the Windows network flyout so the user's own click there dials it.
+    if (vpnDialSaysProfileMissing(message)) {
+      if (action === "connect") {
+        try {
+          await api.vpnOpenNetworkFlyout();
+          toast(t("connection.vpnOpenedNetworkFlyout", { profile }), 6000);
+        } catch {
+          toast(t("connection.vpnExternalClientHint", { profile }), 6000);
+        }
+      } else {
+        toast(t("connection.vpnExternalClientHint", { profile }), 6000);
+      }
+    } else {
+      toast(message, 6000);
+    }
   } finally {
     vpnActionBusy.value = false;
   }

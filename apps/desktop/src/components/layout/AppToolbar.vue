@@ -250,7 +250,19 @@ async function toggleActiveVpn() {
     else await api.vpnConnect(profile);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    toast(vpnDialSaysProfileMissing(message) ? t("connection.vpnExternalClientHint", { profile }) : `${t("toolbar.vpnError", { profile })}: ${message}`, 6000);
+    if (vpnDialSaysProfileMissing(message)) {
+      // 623 = an external client's profile. Pop the same network flyout the
+      // tray icon opens so the user's own one click there connects it — the
+      // OS only lets the shell and the owning app dial plugin VPNs headlessly.
+      try {
+        await api.vpnOpenNetworkFlyout();
+        toast(t("connection.vpnOpenedNetworkFlyout", { profile }), 6000);
+      } catch {
+        toast(t("connection.vpnExternalClientHint", { profile }), 6000);
+      }
+    } else {
+      toast(`${t("toolbar.vpnError", { profile })}: ${message}`, 6000);
+    }
   } finally {
     vpnToggleBusy.value = false;
     await refreshActiveVpnState();

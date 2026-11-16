@@ -3211,6 +3211,11 @@ export async function vpnDisconnect(profile: string): Promise<string> {
   return invoke("vpn_disconnect", { profile });
 }
 
+/** Open the Windows network flyout (VPN section) for external VPN clients. */
+export async function vpnOpenNetworkFlyout(): Promise<void> {
+  return invoke("vpn_open_network_flyout");
+}
+
 export async function listSshAgentIdentities(sshAgentSockPath: string): Promise<SshAgentIdentity[]> {
   return invoke("list_ssh_agent_identities", { sshAgentSockPath });
 }

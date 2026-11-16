@@ -721,6 +721,10 @@ export async function vpnDisconnect(_profile: string): Promise<string> {
   throw new Error("Windows VPN control is only supported in the desktop app");
 }
 
+export async function vpnOpenNetworkFlyout(): Promise<void> {
+  throw new Error("Windows VPN control is only supported in the desktop app");
+}
+
 export async function resolveSshPrompt(resolution: SshPromptResolution): Promise<void> {
   await post("/api/ssh/prompts/resolve", resolution);
 }

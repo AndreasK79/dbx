@@ -3265,6 +3265,7 @@ pub fn run() {
             commands::vpn::vpn_profiles,
             commands::vpn::vpn_connect,
             commands::vpn::vpn_disconnect,
+            commands::vpn::vpn_open_network_flyout,
         ])))
         .build(tauri::generate_context!())
         .inspect(|app| {

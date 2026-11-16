@@ -193,6 +193,30 @@ pub async fn vpn_disconnect(profile: String) -> Result<String, String> {
     run_rasdial(&[profile, "/d"], Duration::from_secs(VPN_DISCONNECT_TIMEOUT_SECS)).await
 }
 
+/// Open the Windows network flyout (`ms-availablenetworks:`) — the same panel
+/// the tray network icon opens, VPN section one click away. Offered when a
+/// profile name matches no phonebook entry (623): external clients such as
+/// Azure VPN Client can only be connected from there, because the OS reserves
+/// programmatic dialing of plugin profiles for the shell and the owning app.
+#[tauri::command]
+pub async fn vpn_open_network_flyout() -> Result<(), String> {
+    vpn_open_network_flyout_impl().await
+}
+
+async fn vpn_open_network_flyout_impl() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let mut command = tokio::process::Command::new("explorer.exe");
+        command.arg("ms-availablenetworks:").creation_flags(CREATE_NO_WINDOW);
+        command.spawn().map_err(|error| format!("Failed to open the network panel: {error}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("Windows VPN control is only available on Windows".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
