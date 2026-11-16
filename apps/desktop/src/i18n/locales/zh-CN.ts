@@ -2463,6 +2463,7 @@ export default withEnglishFallback({
     vpnDisconnect: "断开",
     vpnStatusConnected: "已连接",
     vpnStatusNotConnected: "未连接",
+    vpnNoProfilesHint: "未找到 Windows 原生 VPN 配置文件。外部 VPN 客户端（如 Azure VPN Client）不注册电话簿条目，DBX 无法代为拨号——请先在客户端内连接，再在此处连接数据库。",
     dremioArrowFlightSqlMode: "Arrow Flight SQL",
     dremioLegacyJdbcMode: "Legacy JDBC",
     phoenixDirectMode: "直连",

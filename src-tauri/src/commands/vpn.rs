@@ -146,8 +146,13 @@ pub async fn vpn_profiles() -> Result<VpnProfileState, String> {
 async fn vpn_profiles_impl() -> Result<VpnProfileState, String> {
     #[cfg(windows)]
     {
-        let status = run_rasdial(&[], Duration::from_secs(VPN_LIST_TIMEOUT_SECS)).await?;
-        let connected = parse_connected_profiles(&status);
+        // A bare-rasdial status probe must not blank the phonebook list: the
+        // profiles are still selectable and dialable, only the live connected
+        // state is unknown (machines that lock down rasdial still list fine).
+        let connected = match run_rasdial(&[], Duration::from_secs(VPN_LIST_TIMEOUT_SECS)).await {
+            Ok(status) => parse_connected_profiles(&status),
+            Err(_) => Vec::new(),
+        };
         let mut profiles: Vec<String> = Vec::new();
         for path in phonebook_paths() {
             if let Some(content) = read_phonebook(&path) {

@@ -2527,6 +2527,7 @@ export default {
     vpnDisconnect: "Disconnect",
     vpnStatusConnected: "Connected",
     vpnStatusNotConnected: "Not connected",
+    vpnNoProfilesHint: "No native Windows VPN profiles found. External VPN clients (e.g. Azure VPN Client) do not register phonebook entries and cannot be dialed by DBX — connect them in the client itself, then connect here.",
     dremioArrowFlightSqlMode: "Arrow Flight SQL",
     dremioLegacyJdbcMode: "Legacy JDBC",
     phoenixDirectMode: "Direct",

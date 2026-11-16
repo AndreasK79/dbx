@@ -30,9 +30,25 @@ function profileIsConnected(connected: string[], profile: string): boolean {
 }
 
 /**
+ * rasdial reports a name that is in no phonebook as error 623. Vendor and UWP
+ * VPN clients (Azure VPN Client, AnyConnect, GlobalProtect …) never register
+ * a RAS phonebook entry, so a profile name typed for one of them always lands
+ * here. Such an entry is not DBX's to dial — the user connects it in the
+ * client's own app, and the database attempt must still proceed.
+ */
+export function vpnDialSaysProfileMissing(message: string): boolean {
+  const text = message.toLowerCase();
+  return text.includes("error 623") || text.includes("phone book entry");
+}
+
+/**
  * Bring the connection's VPN profile up if it is not already connected.
  * Throws with rasdial's own message when dialing fails, so the connect/test
  * error surfaces name the VPN instead of the unreachable database behind it.
+ * The one non-fatal case is a missing phonebook entry (623): the name may
+ * belong to an external VPN client, so the connection goes ahead and either
+ * reaches the database over the already-up VPN or fails with the database's
+ * own unreachable error.
  */
 export async function ensureConnectionVpnProfile(config: Pick<ConnectionConfig, "vpn_profile">): Promise<void> {
   const profile = connectionVpnProfile(config);
@@ -44,6 +60,7 @@ export async function ensureConnectionVpnProfile(config: Pick<ConnectionConfig, 
     await api.vpnConnect(profile);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (vpnDialSaysProfileMissing(message)) return;
     throw new Error(`VPN "${profile}" could not be connected: ${message}`);
   }
 }

@@ -11582,6 +11582,9 @@ function openExternalUrl(url: string) {
                       <span class="mx-1">·</span>
                       {{ t("connection.vpnProfileHint") }}
                     </p>
+                    <p v-if="!vpnStateLoading && vpnProfileOptions.length === 0" class="text-[11px] leading-4 text-muted-foreground">
+                      {{ t("connection.vpnNoProfilesHint") }}
+                    </p>
                   </div>
                 </div>
               </div>
