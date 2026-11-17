@@ -209,6 +209,11 @@ async function copyResolvedSql() {
             </Button>
           </div>
 
+          <label v-if="showPreserveQuotedParameters" class="flex w-fit items-center gap-2 text-xs">
+            <input v-model="preserveQuotedBracedParameters" type="checkbox" class="h-3.5 w-3.5 shrink-0 accent-primary" />
+            {{ t("sqlParameters.preserveQuotedBracedParameters") }}
+          </label>
+
           <div class="relative z-20 max-h-[302px] overflow-auto rounded-md border bg-background">
             <div class="min-w-[680px]">
               <div class="sticky top-0 z-10 grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] border-b bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
