@@ -130,15 +130,3 @@ describe("searchKeymapWithoutShortcutConflicts", () => {
     });
   });
 });
-
-describe("searchKeymapWithoutModD strips Mod-f (#14623)", () => {
-  it("removes the built-in Mod-f openSearchPanel binding", () => {
-    const filtered = searchKeymapWithoutModD(searchKeymap);
-    expect(filtered.some((binding) => binding.key === "Mod-f")).toBe(false);
-  });
-
-  it("keeps unrelated bindings", () => {
-    const filtered = searchKeymapWithoutModD(searchKeymap);
-    expect(filtered.some((binding) => binding.key === "Mod-g")).toBe(true);
-  });
-});
