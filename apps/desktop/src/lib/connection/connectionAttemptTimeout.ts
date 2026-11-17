@@ -3,8 +3,6 @@ import { mongoConnectionUsesOidc } from "@/lib/mongo/mongoConnectionOptions";
 
 export const CONNECTION_ATTEMPT_TIMEOUT_BUFFER_MS = 2_000;
 export const MONGO_LEGACY_FALLBACK_TIMEOUT_BUFFER_MS = 30_000;
-/** Budget for dialing the connection's VPN profile before the DB attempt (#63). */
-export const VPN_PROFILE_DIAL_BUFFER_MS = 120_000;
 export const MONGO_OIDC_BROWSER_AUTH_TIMEOUT_MS = 5 * 60_000;
 export const AGENT_DRIVER_MIN_CONNECT_TIMEOUT_SECS = 30;
 export const ACCESS_AGENT_MIN_CONNECT_TIMEOUT_SECS = 30;
@@ -75,7 +73,7 @@ function resolvedTimeoutLayer(layer: TransportLayerConfig, resolveTunnelProfile?
   return { ...profile, id: layer.id, enabled: layer.enabled, profile_id: layer.profile_id } as TransportLayerConfig;
 }
 
-export function connectionAttemptTimeoutMs(config: Pick<ConnectionConfig, "connect_timeout_secs" | "transport_layers"> & Partial<Pick<ConnectionConfig, "db_type" | "url_params" | "connection_string" | "vpn_profile">>, resolveTunnelProfile?: TunnelProfileResolver): number {
+export function connectionAttemptTimeoutMs(config: Pick<ConnectionConfig, "connect_timeout_secs" | "transport_layers"> & Partial<Pick<ConnectionConfig, "db_type" | "url_params" | "connection_string">>, resolveTunnelProfile?: TunnelProfileResolver): number {
   const baseTimeoutSecs = positiveSeconds(config.connect_timeout_secs, DEFAULT_CONNECT_TIMEOUT_SECS);
   const agentMinTimeoutSecs = config.db_type === "access" ? ACCESS_AGENT_MIN_CONNECT_TIMEOUT_SECS : AGENT_DRIVER_MIN_CONNECT_TIMEOUT_SECS;
   let timeoutSecs = DRIVER_STARTUP_FLOOR_TYPES.has(config.db_type as DatabaseType) ? Math.max(baseTimeoutSecs, agentMinTimeoutSecs) : baseTimeoutSecs;
@@ -95,11 +93,7 @@ export function connectionAttemptTimeoutMs(config: Pick<ConnectionConfig, "conne
   const usesMongoOidc = config.db_type === "mongodb" && mongoConnectionUsesOidc(config.url_params, config.connection_string);
   const fallbackBuffer = config.db_type === "mongodb" && !usesMongoOidc ? MONGO_LEGACY_FALLBACK_TIMEOUT_BUFFER_MS : 0;
   const browserAuthBuffer = usesMongoOidc ? MONGO_OIDC_BROWSER_AUTH_TIMEOUT_MS : 0;
-  // A VPN profile dial runs ahead of the whole sequence (#63) and may take
-  // over a minute on a slow EAP handshake; budget it so the UI guard cannot
-  // abort a dial that rasdial is still working on.
-  const vpnDialBuffer = (config.vpn_profile ?? "").trim() ? VPN_PROFILE_DIAL_BUFFER_MS : 0;
-  return Math.ceil(timeoutSecs * 1000 + CONNECTION_ATTEMPT_TIMEOUT_BUFFER_MS + fallbackBuffer + browserAuthBuffer + vpnDialBuffer);
+  return Math.ceil(timeoutSecs * 1000 + CONNECTION_ATTEMPT_TIMEOUT_BUFFER_MS + fallbackBuffer + browserAuthBuffer);
 }
 
 export function connectionAttemptTimeoutMessage(timeoutMs: number): string {

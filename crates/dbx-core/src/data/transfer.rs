@@ -15591,7 +15591,6 @@ for line in sys.stdin:
             production_badge_scope: None,
             database_info: None,
             docs_notes_path: None,
-            vpn_profile: None,
         }
     }
 
@@ -23886,7 +23885,6 @@ SELECT 1 FROM dual"#
             oracle_oci_nls_lang: None,
             oracle_oci_tns_admin: None,
             docs_notes_path: None,
-            vpn_profile: None,
             id: "sr".to_string(),
             name: "sr".to_string(),
             note: String::new(),

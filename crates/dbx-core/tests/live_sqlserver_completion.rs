@@ -21,7 +21,6 @@ fn live_sqlserver_config(id: &str, database: &str) -> dbx_core::models::connecti
         oracle_oci_nls_lang: None,
         oracle_oci_tns_admin: None,
         docs_notes_path: None,
-        vpn_profile: None,
         id: id.to_string(),
         name: id.to_string(),
         note: String::new(),

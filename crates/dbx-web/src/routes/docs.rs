@@ -207,7 +207,6 @@ mod tests {
     fn postgres_config(id: &str, docs_notes_path: Option<&str>) -> ConnectionConfig {
         ConnectionConfig {
             docs_notes_path: docs_notes_path.map(str::to_string),
-            vpn_profile: None,
             id: id.to_string(),
             name: "Postgres".to_string(),
             note: String::new(),

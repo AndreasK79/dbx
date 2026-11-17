@@ -173,12 +173,6 @@ export interface ConnectionConfig {
    * lets the notes file live in a repository and be reviewed in pull requests.
    */
   docs_notes_path?: string;
-  /**
-   * Windows RAS VPN profile (rasdial phonebook entry) the desktop app dials
-   * before connecting. Absent/empty means no VPN handling; the profile must
-   * keep its credentials cached in Windows.
-   */
-  vpn_profile?: string;
   transport_layers?: TransportLayerConfig[];
   connect_timeout_secs?: number;
   connect_timeout_inherit?: boolean;

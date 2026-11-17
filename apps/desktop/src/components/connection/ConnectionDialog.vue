@@ -241,7 +241,6 @@ import {
   type GaussdbTargetServerType,
 } from "@/lib/database/jdbcDialect";
 import { normalizeStoredConnectionDatabase } from "@/lib/database/sqliteNamespace";
-import { connectionVpnProfile, ensureConnectionVpnProfile, isVpnControlAvailable, vpnDialSaysProfileMissing } from "@/lib/connection/vpnProfile";
 import {
   createJdbcProductConnectionFieldsByMode,
   isJdbcProductDefaultDriverClass,
@@ -466,7 +465,6 @@ const defaultForm = (): ConnectionForm => ({
   password: "",
   database: undefined,
   color: "",
-  vpn_profile: "",
   transport_layers: [],
   connect_timeout_secs: settingsStore.editorSettings.globalConnectTimeoutSecs,
   connect_timeout_inherit: true,
@@ -2790,11 +2788,7 @@ async function testConnectionWithTimeout(config: ConnectionConfig, runId: number
   await tunnelProfileStore.init();
   const timeoutMs = connectionAttemptTimeoutMs(config, tunnelProfileStore.profileById);
   const timeoutMessage = connectionAttemptTimeoutMessage(timeoutMs);
-  // The VPN dial (#63) runs inside the raced deadline — its budget is part of
-  // connectionAttemptTimeoutMs — so a slow EAP handshake cannot outlive the UI guard.
-  // A profile-less connection calls straight through: no extra microtask hops,
-  // so the plain-test timing (and its specs) stay exactly as they were.
-  const promise = connectionVpnProfile(config) ? ensureConnectionVpnProfile(config).then(() => api.testConnectionWithInfo(config)) : api.testConnectionWithInfo(config);
+  const promise = api.testConnectionWithInfo(config);
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   void promise.catch((error) => {
@@ -3363,7 +3357,6 @@ watch(
         database: config.db_type === "redis" ? normalizeRedisDatabaseValue(config.database) || "" : config.database,
         default_schema: config.default_schema,
         color: config.color || "",
-        vpn_profile: config.vpn_profile || "",
         transport_layers: transportLayersForConfig(legacyConfig),
         connect_timeout_secs: config.connect_timeout_inherit === true ? settingsStore.editorSettings.globalConnectTimeoutSecs : config.connect_timeout_secs || 10,
         connect_timeout_inherit: config.connect_timeout_inherit === true,
@@ -3599,76 +3592,6 @@ const databasePlaceholder = computed(() => {
 
 const transportLayers = computed(() => form.value.transport_layers || []);
 const hasEnabledSshLayer = computed(() => transportLayers.value.some((layer) => layer.enabled !== false && layer.type === "ssh"));
-
-// Windows VPN dialing (#63): profile list + live connected state for the
-// Tunnel/Proxy tab's manual control row. A failed rasdial probe keeps the
-// section usable as a plain typed profile name.
-const vpnControlAvailable = ref(isVpnControlAvailable());
-const vpnProfileOptions = ref<string[]>([]);
-const vpnConnectedProfiles = ref<string[]>([]);
-const vpnStateLoading = ref(false);
-const vpnActionBusy = ref(false);
-const vpnProfileValue = computed(() => connectionVpnProfile(form.value));
-const vpnProfileConnected = computed(() => {
-  const wanted = vpnProfileValue.value.toLowerCase();
-  return !!wanted && vpnConnectedProfiles.value.some((name) => name.trim().toLowerCase() === wanted);
-});
-
-async function refreshVpnState() {
-  if (!vpnControlAvailable.value) return;
-  vpnStateLoading.value = true;
-  try {
-    const state = await api.vpnProfiles();
-    vpnProfileOptions.value = state.profiles;
-    vpnConnectedProfiles.value = state.connected;
-  } catch {
-    vpnProfileOptions.value = [];
-    vpnConnectedProfiles.value = [];
-  } finally {
-    vpnStateLoading.value = false;
-  }
-}
-
-async function runVpnAction(action: "connect" | "disconnect") {
-  const profile = vpnProfileValue.value;
-  if (!profile || vpnActionBusy.value) return;
-  vpnActionBusy.value = true;
-  try {
-    if (action === "connect") await api.vpnConnect(profile);
-    else await api.vpnDisconnect(profile);
-    await refreshVpnState();
-  } catch (error) {
-    const message = errorMessage(error);
-    // 623 means the typed name matches no phonebook entry — an external
-    // client's profile (Azure VPN Client & friends). Say that instead of the
-    // bare RAS text, which reads like an internal error, and on Connect pop
-    // the Windows network flyout so the user's own click there dials it.
-    if (vpnDialSaysProfileMissing(message)) {
-      if (action === "connect") {
-        try {
-          await api.vpnOpenNetworkFlyout();
-          toast(t("connection.vpnOpenedNetworkFlyout", { profile }), 6000);
-        } catch {
-          toast(t("connection.vpnExternalClientHint", { profile }), 6000);
-        }
-      } else {
-        toast(t("connection.vpnExternalClientHint", { profile }), 6000);
-      }
-    } else {
-      toast(message, 6000);
-    }
-  } finally {
-    vpnActionBusy.value = false;
-  }
-}
-
-watch(
-  [open, configTab],
-  ([isOpen, tab]) => {
-    if (isOpen && tab === "transport" && vpnControlAvailable.value) void refreshVpnState();
-  },
-  { immediate: true },
-);
 const selectedTransportLayer = computed(() => {
   const layers = transportLayers.value;
   return layers.find((layer) => layer.id === selectedTransportLayerId.value) || layers[0] || null;
@@ -5223,7 +5146,6 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.driver_profile = nebulaDefaultDriverProfile;
   }
   config.database_info = undefined;
-  config.vpn_profile = config.vpn_profile?.trim() || undefined;
   config.database = normalizeStoredConnectionDatabase(config.db_type, config.database);
   // Plugin providers own their field semantics; trim only the built-in form where a
   // hostname/user name/database can never carry meaningful surrounding whitespace.
@@ -11559,50 +11481,6 @@ function openExternalUrl(url: string) {
                       <ShieldCheck v-else class="mr-1.5 h-3.5 w-3.5" />
                       {{ isTestingSshTunnel ? t("connection.sshTunnelTesting") : t("connection.sshTunnelTest") }}
                     </Button>
-                  </div>
-                </div>
-
-                <div v-if="vpnControlAvailable" class="grid grid-cols-4 items-center gap-4 border-t pt-4">
-                  <div class="flex items-center gap-1">
-                    <Label for="connection-vpn-profile" :class="connectionLabelSmallClass">{{ t("connection.vpnProfile") }}</Label>
-                    <Tooltip>
-                      <TooltipTrigger as-child>
-                        <CircleHelp class="h-3.5 w-3.5 cursor-help text-muted-foreground hover:text-foreground" />
-                      </TooltipTrigger>
-                      <TooltipContent side="top" align="center" class="max-w-[320px] text-xs leading-relaxed">
-                        {{ t("connection.vpnProfileHint") }}
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <div class="col-span-3 grid min-w-0 gap-2">
-                    <div class="flex min-w-0 flex-wrap items-center gap-2">
-                      <Input id="connection-vpn-profile" v-model="form.vpn_profile" :placeholder="t('connection.vpnProfilePlaceholder')" list="connection-vpn-profile-options" class="h-8 min-w-40" />
-                      <datalist id="connection-vpn-profile-options">
-                        <option v-for="profile in vpnProfileOptions" :key="profile" :value="profile" />
-                      </datalist>
-                      <Button type="button" variant="outline" size="sm" :disabled="vpnStateLoading || vpnActionBusy" @click="refreshVpnState">
-                        <Loader2 v-if="vpnStateLoading" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        <RefreshCw v-else class="mr-1.5 h-3.5 w-3.5" />
-                        {{ t("connection.vpnProfilesRefresh") }}
-                      </Button>
-                      <Button v-if="!vpnProfileConnected" type="button" variant="outline" size="sm" :disabled="!vpnProfileValue || vpnActionBusy" @click="runVpnAction('connect')">
-                        <Loader2 v-if="vpnActionBusy" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        {{ t("connection.vpnConnect") }}
-                      </Button>
-                      <Button v-else type="button" variant="outline" size="sm" :disabled="vpnActionBusy" @click="runVpnAction('disconnect')">
-                        <Loader2 v-if="vpnActionBusy" class="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                        {{ t("connection.vpnDisconnect") }}
-                      </Button>
-                    </div>
-                    <p v-if="vpnProfileValue" class="text-[11px] leading-4 text-muted-foreground">
-                      <span class="mr-1 inline-block h-2 w-2 rounded-full align-middle" :class="vpnProfileConnected ? 'bg-emerald-500' : 'bg-muted-foreground/40'" />
-                      {{ vpnProfileConnected ? t("connection.vpnStatusConnected") : t("connection.vpnStatusNotConnected") }}
-                      <span class="mx-1">·</span>
-                      {{ t("connection.vpnProfileHint") }}
-                    </p>
-                    <p v-if="!vpnStateLoading && vpnProfileOptions.length === 0" class="text-[11px] leading-4 text-muted-foreground">
-                      {{ t("connection.vpnNoProfilesHint") }}
-                    </p>
                   </div>
                 </div>
               </div>

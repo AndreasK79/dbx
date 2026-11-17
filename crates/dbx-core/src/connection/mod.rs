@@ -9354,7 +9354,6 @@ mod tests {
             oracle_oci_nls_lang: None,
             oracle_oci_tns_admin: None,
             docs_notes_path: None,
-            vpn_profile: None,
             id: "conn".to_string(),
             name: "MySQL".to_string(),
             note: String::new(),
@@ -13284,7 +13283,6 @@ sleep 30
     fn keepalive_test_config(id: &str, interval_secs: u64) -> ConnectionConfig {
         ConnectionConfig {
             docs_notes_path: None,
-            vpn_profile: None,
             id: id.to_string(),
             name: id.to_string(),
             note: String::new(),

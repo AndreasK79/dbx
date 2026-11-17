@@ -3262,10 +3262,6 @@ pub fn run() {
             commands::tunnel_profiles::save_tunnel_profiles,
             commands::tunnel_profiles::test_tunnel_profile,
             commands::tunnel_profiles::list_ssh_agent_identities,
-            commands::vpn::vpn_profiles,
-            commands::vpn::vpn_connect,
-            commands::vpn::vpn_disconnect,
-            commands::vpn::vpn_open_network_flyout,
         ])))
         .build(tauri::generate_context!())
         .inspect(|app| {

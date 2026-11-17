@@ -3192,30 +3192,6 @@ export async function testTunnelProfile(profile: TunnelProfile): Promise<string>
   return invoke("test_tunnel_profile", { profile });
 }
 
-export interface VpnProfileState {
-  /** Phonebook entry names from the user/all-user rasphone.pbk. */
-  profiles: string[];
-  /** Entry names rasdial currently reports as connected. */
-  connected: string[];
-}
-
-export async function vpnProfiles(): Promise<VpnProfileState> {
-  return invoke("vpn_profiles");
-}
-
-export async function vpnConnect(profile: string): Promise<string> {
-  return invoke("vpn_connect", { profile });
-}
-
-export async function vpnDisconnect(profile: string): Promise<string> {
-  return invoke("vpn_disconnect", { profile });
-}
-
-/** Open the Windows network flyout (VPN section) for external VPN clients. */
-export async function vpnOpenNetworkFlyout(): Promise<void> {
-  return invoke("vpn_open_network_flyout");
-}
-
 export async function listSshAgentIdentities(sshAgentSockPath: string): Promise<SshAgentIdentity[]> {
   return invoke("list_ssh_agent_identities", { sshAgentSockPath });
 }

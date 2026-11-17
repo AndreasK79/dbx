@@ -79,7 +79,6 @@ mod update_cache;
 mod update_portable;
 pub mod user_skills;
 pub mod vector_cmd;
-pub mod vpn;
 pub mod window_controls;
 pub mod xlsx_export;
 pub mod zookeeper_cmd;

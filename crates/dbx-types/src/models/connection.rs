@@ -204,11 +204,6 @@ pub struct ConnectionConfig {
     /// desktop app; the CLI takes an explicit `--notes` path instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docs_notes_path: Option<String>,
-    /// Windows RAS VPN profile (rasdial phonebook entry) the desktop app dials
-    /// before establishing this connection. Absent/empty means no VPN handling;
-    /// the profile itself must keep its credentials cached in Windows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vpn_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transport_layers: Vec<TransportLayerConfig>,
     #[serde(default = "default_connect_timeout_secs")]
@@ -792,8 +787,6 @@ struct ConnectionConfigData {
     #[serde(default)]
     pub docs_notes_path: Option<String>,
     #[serde(default)]
-    pub vpn_profile: Option<String>,
-    #[serde(default)]
     pub transport_layers: Vec<TransportLayerConfig>,
     #[serde(default = "default_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
@@ -916,7 +909,6 @@ impl From<ConnectionConfigData> for ConnectionConfig {
             init_script: data.init_script,
             color: data.color,
             docs_notes_path: data.docs_notes_path,
-            vpn_profile: data.vpn_profile,
             transport_layers: data.transport_layers,
             connect_timeout_secs: data.connect_timeout_secs,
             query_timeout_secs: data.query_timeout_secs,
@@ -3528,7 +3520,6 @@ mod tests {
             attached_databases: Vec::new(),
             init_script: None,
             color: None,
-            vpn_profile: None,
             transport_layers: Vec::new(),
             connect_timeout_secs: super::default_connect_timeout_secs(),
             query_timeout_secs: default_query_timeout_secs(),
@@ -3644,38 +3635,6 @@ mod tests {
         }))
         .expect("config with a notes path must parse");
         assert_eq!(with_path.docs_notes_path.as_deref(), Some("docs/dbx-docs.json"));
-    }
-
-    #[test]
-    fn vpn_profile_defaults_to_none_and_round_trips() {
-        let legacy: ConnectionConfig = serde_json::from_value(serde_json::json!({
-            "id": "c1",
-            "name": "local",
-            "db_type": "postgres",
-            "host": "127.0.0.1",
-            "port": 5432,
-            "username": "postgres",
-            "password": "",
-            "database": null
-        }))
-        .expect("legacy config must still parse");
-        assert_eq!(legacy.vpn_profile, None);
-        assert!(serde_json::to_value(&legacy).unwrap().get("vpn_profile").is_none());
-
-        let with_profile: ConnectionConfig = serde_json::from_value(serde_json::json!({
-            "id": "c1",
-            "name": "local",
-            "db_type": "postgres",
-            "host": "10.0.0.5",
-            "port": 5432,
-            "username": "postgres",
-            "password": "",
-            "database": null,
-            "vpn_profile": "Work VPN"
-        }))
-        .expect("config with a vpn profile must parse");
-        assert_eq!(with_profile.vpn_profile.as_deref(), Some("Work VPN"));
-        assert_eq!(serde_json::to_value(&with_profile).unwrap()["vpn_profile"], serde_json::json!("Work VPN"));
     }
 
     #[test]

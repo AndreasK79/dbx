@@ -70,7 +70,6 @@ fn live_connection_config(id: &str, database: &str) -> ConnectionConfig {
         init_script: None,
         color: None,
         docs_notes_path: None,
-        vpn_profile: None,
         transport_layers: Vec::new(),
         connect_timeout_secs: 10,
         query_timeout_secs: 60,

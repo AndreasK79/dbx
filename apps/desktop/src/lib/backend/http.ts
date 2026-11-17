@@ -705,26 +705,6 @@ export async function listSshAgentIdentities(_sshAgentSockPath: string): Promise
   return []; // The web backend cannot reach a local SSH agent socket
 }
 
-// Windows VPN control is desktop-only: the web backend runs wherever it was
-// deployed and can never dial a VPN on the machine in front of the browser.
-export type VpnProfileState = import("./tauri").VpnProfileState;
-
-export async function vpnProfiles(): Promise<VpnProfileState> {
-  throw new Error("Windows VPN control is only supported in the desktop app");
-}
-
-export async function vpnConnect(_profile: string): Promise<string> {
-  throw new Error("Windows VPN control is only supported in the desktop app");
-}
-
-export async function vpnDisconnect(_profile: string): Promise<string> {
-  throw new Error("Windows VPN control is only supported in the desktop app");
-}
-
-export async function vpnOpenNetworkFlyout(): Promise<void> {
-  throw new Error("Windows VPN control is only supported in the desktop app");
-}
-
 export async function resolveSshPrompt(resolution: SshPromptResolution): Promise<void> {
   await post("/api/ssh/prompts/resolve", resolution);
 }
