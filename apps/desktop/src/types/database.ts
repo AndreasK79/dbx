@@ -97,7 +97,7 @@ export interface SqlShortcutAction {
 
 export type CompletionAssistantObjectKind = "database" | "schema" | "table" | "view" | "routine" | "procedure" | "function" | "column" | "sequence";
 
-export type CompletionAssistantCandidateKind = "database" | "schema" | "table" | "view" | "procedure" | "function" | "column" | "sequence" | "object";
+export type CompletionAssistantCandidateKind = "database" | "schema" | "table" | "view" | "materialized_view" | "procedure" | "function" | "column" | "sequence" | "object";
 
 export type CompletionAssistantMatchMode = "prefix" | "contains";
 
@@ -2344,6 +2344,7 @@ export interface TreeNode {
   nacosNamespaceName?: string;
   schema?: string;
   tableName?: string;
+  columnIndexKind?: "primary" | "unique" | "index";
   objectName?: string;
   /** Distinguishes schema indexes from the existing table-child index actions. */
   objectScope?: "schema";
@@ -2586,6 +2587,7 @@ export interface TabUiState {
   activeOutputView?: TabOutputView;
   /** Redis query results default to grid; a per-tab override selects command-line output. */
   redisResultViewMode?: RedisResultViewMode;
+  resultTransposeEnabled?: boolean;
   resultPaneOpen?: boolean;
   /** Tracks whether the active output view was auto-switched to "messages" by live server output during execution. */
   autoSwitchedToMessagesDuringExecution?: boolean;
@@ -2624,6 +2626,7 @@ export interface DatabaseSearchTableTask {
 export interface DatabaseSearchTabState {
   keyword: string;
   searchScope?: DatabaseSearchScope;
+  selectedObjects?: string[];
   perTableLimit: number;
   progressDone: number;
   progressTotal: number;
@@ -2879,7 +2882,7 @@ export interface QueryTab {
   structureTableName?: string;
   structureExactIdentity?: boolean;
   /** Navigation type of the opened structure object; views matter for "view data" routing. */
-  structureTableType?: "table" | "view";
+  structureTableType?: "table" | "view" | "materialized_view";
   structureInitialTab?: TableInfoTab;
   structureInitialTabRequestId?: number;
   structureInitialTarget?: TableStructureEditorTarget;

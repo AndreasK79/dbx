@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ToolbarSettingsList from "@/components/editor/ToolbarSettingsList.vue";
+import { TOOLBAR_ITEM_GROUPS, toolbarGroupOrder, replaceToolbarItemOrder, mergeToolbarItemOrder, type ToolbarItemGroup, type ToolbarItemKey } from "@/lib/settings/toolbarCustomization";
 import { SIDEBAR_HOVER_DELAY_MIN, SIDEBAR_HOVER_DELAY_MAX, normalizeSidebarHoverDelay } from "@/lib/sidebar/sidebarHoverSettings";
 import { cleanupMcpHistoryRetention, loadMcpHistoryRetentionLimit, saveMcpHistoryRetentionLimit } from "@/lib/backend/api";
 import { HISTORY_RETENTION_LIMITS, useHistoryRetentionSetting } from "@/composables/useHistoryRetentionSetting";
@@ -245,6 +247,7 @@ import {
   type SyncSnapshotCatalog,
   type WebDavConfig,
 } from "@/lib/backend/api";
+import type { DesktopSettings } from "@/lib/backend/tauri";
 import {
   MAX_SNIPPET_AUTO_UPLOAD_INTERVAL_MINUTES,
   normalizedSnippetAutoUploadInterval,
@@ -382,6 +385,7 @@ import {
   shouldConfirmEditorSettingsDialogClose,
   type EditorSettingsDraft,
   type EditorSettingsDraftKey,
+  type EditorSettingsImportPatch,
 } from "@/lib/settings/editorSettingsDraft";
 import { applyEditorSettingsDraftToRefs, type EditorSettingsDraftRefMap } from "@/lib/settings/applyEditorSettingsDraft";
 import { pickTransferableDesktopSettings, serializeSettingsTransfer, sortTransferCategories, transferCategoryForKey, type SettingsTransferCategoryId, type SettingsTransferExtras, type TransferableDesktopSettings, type TransferableDesktopSettingsKey } from "@/lib/settings/settingsTransfer";
@@ -402,19 +406,7 @@ import {
   normalizeAiConversationFontFamilyInput,
   normalizeAiConversationFontSize,
 } from "@/lib/ai/aiTypography";
-import {
-  SETTINGS_SEARCH_DEFINITIONS,
-  TOOLBAR_VISIBILITY_ITEMS,
-  createShortcutSettingsSearchDefinitions,
-  resolveSettingsCategory,
-  resolveSettingsSearchEntries,
-  searchSettings,
-  toolbarVisibilityItemLabel,
-  visibleToolbarVisibilityItems,
-  type SettingsCategory,
-  type SettingsSearchEntry,
-  type ToolbarVisibilityItem,
-} from "@/lib/settings/settingsSearch";
+import { SETTINGS_SEARCH_DEFINITIONS, TOOLBAR_VISIBILITY_ITEMS, createShortcutSettingsSearchDefinitions, resolveSettingsCategory, resolveSettingsSearchEntries, searchSettings, visibleToolbarVisibilityItems, type SettingsCategory, type SettingsSearchEntry } from "@/lib/settings/settingsSearch";
 import { findSettingsSearchHighlightTarget } from "@/lib/settings/settingsSearchHighlight";
 import { LOCALE_OPTIONS } from "@/lib/app/localeOptions";
 import LocaleFlag from "@/components/icons/LocaleFlag.vue";
@@ -860,6 +852,7 @@ const editWelcomePageMode = ref<WelcomePageMode>(settingsStore.editorSettings.we
 const editAppLayout = ref(settingsStore.editorSettings.appLayout);
 const editWebLogoPosition = ref<WebLogoPosition>(settingsStore.editorSettings.webLogoPosition);
 const editTabLayout = ref(settingsStore.editorSettings.tabLayout);
+const editCrossWindowTabDragPreviewEnabled = ref(settingsStore.editorSettings.crossWindowTabDragPreviewEnabled);
 const editTabPlacement = ref<TabPlacement>(settingsStore.editorSettings.tabPlacement);
 const editColorizeConnectionTabs = ref(settingsStore.editorSettings.colorizeConnectionTabs);
 const editColorizeConnectionTabsScope = ref<ConnectionTabColorScope>(settingsStore.editorSettings.colorizeConnectionTabsScope);
@@ -1030,6 +1023,7 @@ watch(editingShortcutId, () => modifierDoubleTapRecorder.reset(), { flush: "sync
 const editSidebarActivation = ref(settingsStore.editorSettings.sidebarActivation);
 const editSidebarColumnDoubleClickAction = ref(settingsStore.editorSettings.sidebarColumnDoubleClickAction);
 const editSidebarObjectDisplay = ref(settingsStore.editorSettings.sidebarObjectDisplay);
+const editSidebarSimpleHideIndexes = ref(settingsStore.editorSettings.sidebarSimpleHideIndexes);
 const sidebarObjectDisplayHelp = ref<"grouped" | "simple" | null>(null);
 const dataTabReuseModeHelp = ref<DataTabReuseMode | null>(null);
 const editRoutineSourceOpenMode = ref(settingsStore.editorSettings.routineSourceOpenMode);
@@ -1119,11 +1113,14 @@ const editQueryExportKeysetOptimizationEnabled = ref(settingsStore.editorSetting
 const editUpdateDownloadSource = ref<UpdateDownloadSource>(settingsStore.editorSettings.updateDownloadSource);
 const editUpdateChannel = ref<UpdateChannel>(settingsStore.editorSettings.updateChannel);
 const editToolbarItems = ref({ ...settingsStore.editorSettings.toolbarItems });
+const editToolbarItemOrder = ref([...settingsStore.editorSettings.toolbarItemOrder]);
+const toolbarGroups = Object.keys(TOOLBAR_ITEM_GROUPS) as ToolbarItemGroup[];
+function toolbarGroupItems(group: ToolbarItemGroup) {
+  const keys = new Set<ToolbarItemKey>(TOOLBAR_ITEM_GROUPS[group]);
+  return toolbarVisibilityItems.value.filter((item) => keys.has(item.key));
+}
 // Desktop-only toolbar buttons (always-on-top) can never render in the Web build, so their switches stay out of the Web settings dialog.
 const toolbarVisibilityItems = computed(() => visibleToolbarVisibilityItems(TOOLBAR_VISIBILITY_ITEMS, isWeb));
-function getToolbarVisibilityItemLabel(item: ToolbarVisibilityItem): string {
-  return toolbarVisibilityItemLabel(item, t);
-}
 const systemFonts = ref<string[]>([]);
 const systemFontsLoading = ref(false);
 const systemFontsLoaded = ref(false);
@@ -1391,6 +1388,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     appLayout: editAppLayout.value,
     webLogoPosition: editWebLogoPosition.value,
     tabLayout: editTabLayout.value,
+    crossWindowTabDragPreviewEnabled: editCrossWindowTabDragPreviewEnabled.value,
     tabPlacement: editTabPlacement.value,
     colorizeConnectionTabs: editColorizeConnectionTabs.value,
     colorizeConnectionTabsScope: editColorizeConnectionTabsScope.value,
@@ -1452,6 +1450,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     sidebarActivation: editSidebarActivation.value,
     sidebarColumnDoubleClickAction: editSidebarColumnDoubleClickAction.value,
     sidebarObjectDisplay: editSidebarObjectDisplay.value,
+    sidebarSimpleHideIndexes: editSidebarSimpleHideIndexes.value,
     routineSourceOpenMode: editRoutineSourceOpenMode.value,
     sidebarTableSearchEnabled: editSidebarTableSearchEnabled.value,
     sidebarSearchOpenedDatabasesOnly: editSidebarSearchOpenedDatabasesOnly.value,
@@ -1516,6 +1515,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     updateDownloadSource: editUpdateDownloadSource.value,
     updateChannel: editUpdateChannel.value,
     toolbarItems: { ...editToolbarItems.value },
+    toolbarItemOrder: [...editToolbarItemOrder.value],
     snippets: editSnippets.value,
     snippetTriggerKey: editSnippetTriggerKey.value,
     snippetSuggestions: editSnippetSuggestions.value,
@@ -2250,6 +2250,7 @@ function syncEditorSettingsDraftFromStore() {
   editAppLayout.value = settingsStore.editorSettings.appLayout;
   editWebLogoPosition.value = settingsStore.editorSettings.webLogoPosition;
   editTabLayout.value = settingsStore.editorSettings.tabLayout;
+  editCrossWindowTabDragPreviewEnabled.value = settingsStore.editorSettings.crossWindowTabDragPreviewEnabled;
   editTabPlacement.value = settingsStore.editorSettings.tabPlacement;
   editColorizeConnectionTabs.value = settingsStore.editorSettings.colorizeConnectionTabs;
   editColorizeConnectionTabsScope.value = settingsStore.editorSettings.colorizeConnectionTabsScope;
@@ -2312,6 +2313,7 @@ function syncEditorSettingsDraftFromStore() {
   editSidebarActivation.value = settingsStore.editorSettings.sidebarActivation;
   editSidebarColumnDoubleClickAction.value = settingsStore.editorSettings.sidebarColumnDoubleClickAction;
   editSidebarObjectDisplay.value = settingsStore.editorSettings.sidebarObjectDisplay;
+  editSidebarSimpleHideIndexes.value = settingsStore.editorSettings.sidebarSimpleHideIndexes;
   editRoutineSourceOpenMode.value = settingsStore.editorSettings.routineSourceOpenMode;
   editSidebarTableSearchEnabled.value = settingsStore.editorSettings.sidebarTableSearchEnabled;
   editSidebarSearchOpenedDatabasesOnly.value = settingsStore.editorSettings.sidebarSearchOpenedDatabasesOnly;
@@ -2375,6 +2377,7 @@ function syncEditorSettingsDraftFromStore() {
   editUpdateDownloadSource.value = settingsStore.editorSettings.updateDownloadSource;
   editUpdateChannel.value = settingsStore.editorSettings.updateChannel;
   editToolbarItems.value = { ...settingsStore.editorSettings.toolbarItems };
+  editToolbarItemOrder.value = [...settingsStore.editorSettings.toolbarItemOrder];
   editSnippets.value = settingsStore.editorSettings.snippets.map(editableSnippet);
   editSnippetTriggerKey.value = settingsStore.editorSettings.snippetTriggerKey;
   editSnippetSuggestions.value = settingsStore.editorSettings.snippetSuggestions;
@@ -2443,6 +2446,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   appLayout: editAppLayout,
   webLogoPosition: editWebLogoPosition,
   tabLayout: editTabLayout,
+  crossWindowTabDragPreviewEnabled: editCrossWindowTabDragPreviewEnabled,
   tabPlacement: editTabPlacement,
   colorizeConnectionTabs: editColorizeConnectionTabs,
   colorizeConnectionTabsScope: editColorizeConnectionTabsScope,
@@ -2502,6 +2506,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   sidebarActivation: editSidebarActivation,
   sidebarColumnDoubleClickAction: editSidebarColumnDoubleClickAction,
   sidebarObjectDisplay: editSidebarObjectDisplay,
+  sidebarSimpleHideIndexes: editSidebarSimpleHideIndexes,
   routineSourceOpenMode: editRoutineSourceOpenMode,
   sidebarTableSearchEnabled: editSidebarTableSearchEnabled,
   sidebarSearchOpenedDatabasesOnly: editSidebarSearchOpenedDatabasesOnly,
@@ -2566,6 +2571,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   updateDownloadSource: editUpdateDownloadSource,
   updateChannel: editUpdateChannel,
   toolbarItems: editToolbarItems,
+  toolbarItemOrder: editToolbarItemOrder,
   snippets: editSnippets,
   snippetTriggerKey: editSnippetTriggerKey,
   snippetSuggestions: editSnippetSuggestions,
@@ -2598,6 +2604,7 @@ function applyEditorSettingsKeysToRefs(draft: EditorSettingsDraft, keys: readonl
     excludedCompletionItems: (value) => (value as string[]).join("\n"),
     redisKeyTemplates: (value) => normalizeRedisKeyTemplates(value as string[]).join("\n"),
     toolbarItems: (value) => ({ ...(value as EditorSettings["toolbarItems"]) }),
+    toolbarItemOrder: (value) => [...(value as EditorSettings["toolbarItemOrder"])],
     snippets: (value) => (value as SqlSnippet[]).map(editableSnippet),
     sqlShortcuts: (value) => mergeDefaultSqlShortcuts((value as SqlShortcutAction[]).map(editableSqlShortcut)),
     sqlVariableSyntaxOverrides: (value) => normalizeSqlVariableSyntaxOverrides(value as EditorSettings["sqlVariableSyntaxOverrides"]),
@@ -3092,6 +3099,8 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editSqlFormatter.value = normalizeSqlFormatterSettings(DEFAULT_EDITOR_SETTINGS.sqlFormatter);
     sqlFormatterConfigValid.value = true;
   } else if (tab === "appearance") {
+    editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
+    editToolbarItemOrder.value = [...DEFAULT_EDITOR_SETTINGS.toolbarItemOrder];
     editTableFontFamily.value = DEFAULT_EDITOR_SETTINGS.tableFontFamily;
     editUiFontFamily.value = DEFAULT_EDITOR_SETTINGS.uiFontFamily;
     editUiScale.value = DEFAULT_EDITOR_SETTINGS.uiScale;
@@ -3103,6 +3112,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editAppLayout.value = DEFAULT_EDITOR_SETTINGS.appLayout;
     editWebLogoPosition.value = DEFAULT_EDITOR_SETTINGS.webLogoPosition;
     editTabLayout.value = DEFAULT_EDITOR_SETTINGS.tabLayout;
+    editCrossWindowTabDragPreviewEnabled.value = DEFAULT_EDITOR_SETTINGS.crossWindowTabDragPreviewEnabled;
     editTabPlacement.value = DEFAULT_EDITOR_SETTINGS.tabPlacement;
     editColorizeConnectionTabs.value = DEFAULT_EDITOR_SETTINGS.colorizeConnectionTabs;
     editColorizeConnectionTabsScope.value = DEFAULT_EDITOR_SETTINGS.colorizeConnectionTabsScope;
@@ -3123,6 +3133,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editSidebarActivation.value = DEFAULT_EDITOR_SETTINGS.sidebarActivation;
     editSidebarColumnDoubleClickAction.value = DEFAULT_EDITOR_SETTINGS.sidebarColumnDoubleClickAction;
     editSidebarObjectDisplay.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectDisplay;
+    editSidebarSimpleHideIndexes.value = DEFAULT_EDITOR_SETTINGS.sidebarSimpleHideIndexes;
     editRoutineSourceOpenMode.value = DEFAULT_EDITOR_SETTINGS.routineSourceOpenMode;
     editSidebarTableSearchEnabled.value = DEFAULT_EDITOR_SETTINGS.sidebarTableSearchEnabled;
     editSidebarSearchOpenedDatabasesOnly.value = DEFAULT_EDITOR_SETTINGS.sidebarSearchOpenedDatabasesOnly;
@@ -3160,7 +3171,6 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editSidebarHiddenTablePrefixes.value = DEFAULT_EDITOR_SETTINGS.sidebarHiddenTablePrefixes.join("\n");
     editSidebarCopyTableNameSeparator.value = DEFAULT_EDITOR_SETTINGS.sidebarCopyTableNameSeparator;
     editSidebarCopyTableNameIncludeSchema.value = DEFAULT_EDITOR_SETTINGS.sidebarCopyTableNameIncludeSchema;
-    editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
   } else if (tab === "data") {
     historyRetention.reset();
     mcpHistoryRetention.reset();
@@ -3367,6 +3377,7 @@ function resetAllDefaults() {
   editSidebarActivation.value = DEFAULT_EDITOR_SETTINGS.sidebarActivation;
   editSidebarColumnDoubleClickAction.value = DEFAULT_EDITOR_SETTINGS.sidebarColumnDoubleClickAction;
   editSidebarObjectDisplay.value = DEFAULT_EDITOR_SETTINGS.sidebarObjectDisplay;
+  editSidebarSimpleHideIndexes.value = DEFAULT_EDITOR_SETTINGS.sidebarSimpleHideIndexes;
   editRoutineSourceOpenMode.value = DEFAULT_EDITOR_SETTINGS.routineSourceOpenMode;
   editSidebarTableSearchEnabled.value = DEFAULT_EDITOR_SETTINGS.sidebarTableSearchEnabled;
   editSidebarSearchOpenedDatabasesOnly.value = DEFAULT_EDITOR_SETTINGS.sidebarSearchOpenedDatabasesOnly;
@@ -3429,6 +3440,7 @@ function resetAllDefaults() {
   editUpdateDownloadSource.value = DEFAULT_EDITOR_SETTINGS.updateDownloadSource;
   editUpdateChannel.value = DEFAULT_EDITOR_SETTINGS.updateChannel;
   editToolbarItems.value = { ...DEFAULT_EDITOR_SETTINGS.toolbarItems };
+  editToolbarItemOrder.value = [...DEFAULT_EDITOR_SETTINGS.toolbarItemOrder];
   editSnippets.value = DEFAULT_SQL_SNIPPETS.map((s) => ({ ...s }));
   editSnippetTriggerKey.value = DEFAULT_EDITOR_SETTINGS.snippetTriggerKey;
   editSnippetSuggestions.value = DEFAULT_EDITOR_SETTINGS.snippetSuggestions;
@@ -4442,6 +4454,7 @@ function buildSettingsExportPayload(): string {
       // real tray/close preferences on import.
       desktopSettings: isWeb ? undefined : pickTransferableDesktopSettings(settingsStore.desktopSettings),
     },
+    isWeb ? { omitToolbarItemKeys: ["alwaysOnTop"] } : {},
   );
 }
 
@@ -4467,8 +4480,14 @@ async function buildAppliedExportPayload(): Promise<string | null> {
 // table-column template row that has no field name yet — keep their exact
 // draft state. The base snapshot is untouched so everything stays unapplied
 // until the user clicks Apply (or discards via the close flow).
-function applyImportedEditorSettings(imported: Partial<EditorSettings>) {
+function applyImportedEditorSettings(imported: EditorSettingsImportPatch) {
   const patch = editorSettingsDraftPatchFromSettings(imported);
+  if (imported.toolbarItems !== undefined) {
+    patch.toolbarItems = { ...editToolbarItems.value, ...imported.toolbarItems };
+  }
+  if (imported.toolbarItemOrder !== undefined) {
+    patch.toolbarItemOrder = mergeToolbarItemOrder(editToolbarItemOrder.value, imported.toolbarItemOrder);
+  }
   applyEditorSettingsKeysToRefs(patch as EditorSettingsDraft, Object.keys(patch) as EditorSettingsDraftKey[]);
   hasImportedSettingsPendingApply.value = true;
 }
@@ -4501,7 +4520,7 @@ function applyImportedExtras(extras: SettingsTransferExtras) {
 
 // Categories whose draft values differ from the saved base AND are covered by
 // the imported file — these draft changes will be replaced by the import.
-function getDraftConflictCategories(imported: Partial<EditorSettings>, extras?: SettingsTransferExtras): SettingsTransferCategoryId[] {
+function getDraftConflictCategories(imported: EditorSettingsImportPatch, extras?: SettingsTransferExtras): SettingsTransferCategoryId[] {
   const changedKeys = new Set(Object.keys(editorSettingsPatchFromDraft(currentEditorSettingsDraft(), editEditorSettingsBase.value)));
   const conflicts = new Set<SettingsTransferCategoryId>();
   for (const key of Object.keys(imported)) {
@@ -4994,7 +5013,7 @@ watch(mcpManagementTab, (tab) => {
   if (tab === "permissions") void loadMcpPluginScopeContext();
   if (tab !== "capabilities") return;
   void ensureMcpToolCatalog();
-  if (!isWeb && mcpPluginViews.value === null) void loadMcpPluginViews();
+  if (mcpPluginViews.value === null) void loadMcpPluginViews();
 });
 
 const mcpCoverageConnections = computed(() => mcpSelectableConnections.value.map((connection) => ({ id: connection.id, name: connection.name, dbType: connection.db_type })));
@@ -6361,6 +6380,11 @@ async function chooseLocalBackupImport() {
   });
 }
 
+async function applySyncedDesktopSettings(settings: DesktopSettings) {
+  await settingsStore.updateDesktopSettings(settings);
+  if (settings.app_theme_mode) setThemeMode(settings.app_theme_mode, { persist: false });
+}
+
 async function confirmSyncSelection(selection: SyncSelection) {
   if (syncMethodTab.value === "local") {
     await nextTick();
@@ -6376,7 +6400,7 @@ async function confirmSyncSelection(selection: SyncSelection) {
 
       const result = await localBackupImport(localBackupPath.value, selection.includeSecrets ? localBackupSecretsPassphrase.value : undefined, selection.includeSecrets, selection);
       if (result.editorSettings && typeof result.editorSettings === "object") settingsStore.updateEditorSettings(result.editorSettings as any);
-      await settingsStore.updateDesktopSettings(result.desktopSettings);
+      await applySyncedDesktopSettings(result.desktopSettings);
       await connectionStore.initFromDisk();
       await savedSqlStore.reloadFromStorage();
       await tunnelProfileStore.refresh();
@@ -6409,7 +6433,7 @@ async function confirmSyncSelection(selection: SyncSelection) {
       const result = await snippetSyncDownload(currentSnippetConfig(), snippetPassphrase.value, selection.includeSecrets, selection.includeSecrets ? snippetSecretsPassphrase.value : undefined, selection);
       persistSnippetRemoteContentHash(result.summary.snippetId, result.summary.remoteContentHash);
       if (result.editorSettings && typeof result.editorSettings === "object") settingsStore.updateEditorSettings(result.editorSettings as any);
-      await settingsStore.updateDesktopSettings(result.desktopSettings);
+      await applySyncedDesktopSettings(result.desktopSettings);
       await connectionStore.initFromDisk();
       await savedSqlStore.reloadFromStorage();
       await tunnelProfileStore.refresh();
@@ -6441,7 +6465,7 @@ async function confirmSyncSelection(selection: SyncSelection) {
     const config = currentWebDavConfig();
     const result = await webdavSyncDownload(config, selection.includeSecrets ? webdavSecretsPassphrase.value || undefined : undefined, selection.includeSecrets, selection);
     if (result.editorSettings && typeof result.editorSettings === "object") settingsStore.updateEditorSettings(result.editorSettings as any);
-    await settingsStore.updateDesktopSettings(result.desktopSettings);
+    await applySyncedDesktopSettings(result.desktopSettings);
     await connectionStore.initFromDisk();
     await savedSqlStore.reloadFromStorage();
     await tunnelProfileStore.refresh();
@@ -9819,6 +9843,14 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div class="min-w-0 space-y-1">
+                  <Label for="cross-window-tab-drag-preview">{{ t("settings.crossWindowTabDragPreview") }}</Label>
+                  <p class="text-xs text-muted-foreground">{{ t("settings.crossWindowTabDragPreviewDescription") }}</p>
+                </div>
+                <Switch id="cross-window-tab-drag-preview" v-model="editCrossWindowTabDragPreviewEnabled" />
+              </div>
+
               <div class="settings-item rounded-md border bg-muted/20 px-3 py-2">
                 <div :class="editColorizeConnectionTabs ? 'grid gap-4 md:grid-cols-2' : ''">
                   <div class="flex min-w-0 items-start justify-between gap-4">
@@ -10105,10 +10137,18 @@ onUnmounted(() => {
                   </div>
                   <Switch id="exclusive-right-sidebar-panels" v-model="editToolbarItems.exclusiveRightSidebarPanels" />
                 </div>
-                <div class="grid grid-cols-3 gap-2 mt-2">
-                  <div v-for="item in toolbarVisibilityItems" :key="item.key" class="flex items-center gap-2">
-                    <Switch :id="`toolbar-${item.key}`" :model-value="(editToolbarItems as any)[item.key]" @update:model-value="(v: boolean) => ((editToolbarItems as any)[item.key] = v)" />
-                    <Label :for="`toolbar-${item.key}`" class="text-sm cursor-pointer">{{ getToolbarVisibilityItemLabel(item) }}</Label>
+                <p class="mt-2 text-xs text-muted-foreground">{{ t("settings.toolbarOrderHint") }}</p>
+                <div class="mt-2 grid gap-3 sm:grid-cols-2">
+                  <div v-for="group in toolbarGroups" :key="group" class="min-w-0 space-y-1.5">
+                    <h4 class="text-xs font-medium">{{ t(`settings.toolbarGroup_${group}`) }}</h4>
+                    <ToolbarSettingsList
+                      :group="group"
+                      :items="toolbarGroupItems(group)"
+                      :order="toolbarGroupOrder(editToolbarItemOrder, group)"
+                      :visibility="editToolbarItems"
+                      @toggle="(key: ToolbarItemKey, visible: boolean) => (editToolbarItems[key] = visible)"
+                      @reorder="(keys: ToolbarItemKey[]) => (editToolbarItemOrder = replaceToolbarItemOrder(editToolbarItemOrder, keys))"
+                    />
                   </div>
                 </div>
               </div>
@@ -10264,6 +10304,10 @@ onUnmounted(() => {
                     </div>
                   </Button>
                 </div>
+              </div>
+              <div v-if="editSidebarObjectDisplay === 'simple'" class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <Label for="sidebar-simple-hide-indexes">{{ t("settings.sidebarSimpleHideIndexes") }}</Label>
+                <Switch id="sidebar-simple-hide-indexes" v-model="editSidebarSimpleHideIndexes" />
               </div>
               <div class="space-y-2">
                 <div class="flex items-center gap-2">
@@ -13986,7 +14030,6 @@ LIMIT 100;</pre>
                     :plugins-loading="mcpPluginViewsLoading"
                     :plugins-error="mcpPluginViewsError"
                     :pending-plugin-ids="[...mcpPluginSavingIds]"
-                    :show-plugins="!isWeb"
                     :save-plugin="persistMcpPluginGrant"
                     @set:toolset="onMcpToolsetAllowedChange"
                     @set:tool="onMcpToolAllowedChange"
@@ -13995,7 +14038,7 @@ LIMIT 100;</pre>
                     @refresh:plugins="loadMcpPluginViews"
                   >
                     <template #plugin-warning>
-                      <div v-if="!isWeb && mcpPluginToolsBlockedByAllowlist" class="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200" data-mcp-plugin-allowlist-blocked>
+                      <div v-if="mcpPluginToolsBlockedByAllowlist" class="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-200" data-mcp-plugin-allowlist-blocked>
                         <AlertTriangle class="size-3.5 shrink-0" />
                         <div class="min-w-0 flex-1 space-y-1">
                           <p>{{ t("settings.mcpPluginAllowlistBlocked") }}</p>

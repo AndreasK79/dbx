@@ -62,7 +62,7 @@ import {
   type PendingComponentUpdatePlan,
 } from "@/lib/updates/componentUpdateOrchestration";
 import { isUpdatePreviewMockEnabled } from "@/lib/updates/updatePreviewMock";
-import { useExportTracker } from "@/composables/useExportTracker";
+import { restoreExportTasksFromStorage, useExportTracker } from "@/composables/useExportTracker";
 import { useFileDrop } from "@/composables/useFileDrop";
 import { useSqlFilePicker } from "@/composables/useSqlFilePicker";
 import { usePanelResize } from "@/composables/usePanelResize";
@@ -197,8 +197,8 @@ import { createTabSwitcherKeyboardController } from "@/lib/tabs/tabSwitcherKeybo
 import { createDoubleShiftGestureDetector } from "@/lib/keyboard/doubleShiftGesture";
 import { formatShortcutDisplay } from "@/lib/editor/shortcutDisplay";
 import { isShortcutEditingKeydown, isShortcutEditingTarget } from "@/lib/editor/shortcutRecorder";
+import { connectionIsDorisFamilyCatalogCapable, supportsSqlFileExecution } from "@/lib/database/databaseCapabilities";
 import { registerCopyActiveResultShortcut } from "@/lib/editor/queryActiveResultShortcut";
-import { supportsSqlFileExecution } from "@/lib/database/databaseCapabilities";
 import { classifyAiSqlExecution } from "@/lib/ai/aiSqlExecutionPolicy";
 import { aiSqlActionFeedback, type AiSqlActionOutcome, type AiSqlActionReport } from "@/lib/ai/aiSqlActionFeedback";
 import type { SqlExecutionOutcome } from "@/lib/sql/sqlExecutionOutcome";
@@ -223,6 +223,11 @@ import { subscribeSavedSqlLibraryChanges } from "@/lib/savedSql/savedSqlLibraryE
 import { savedSqlDefaultTargetForWrite } from "@/lib/savedSql/savedSqlExecutionTarget";
 import { countActiveUpdateBlockingTasks } from "@/lib/app/appUpdateTaskGuard";
 import { initSavedSqlEditorPositions } from "@/lib/app/savedSqlEditorPosition";
+import { consumeDetachedTabTransfer, markTabWindowTransferAccepted, tabWindowTransferEntries } from "@/lib/tabs/tabWindowTransfer";
+import { TAB_WINDOW_TRANSFER, useTabWindowTransfer } from "@/composables/useTabWindowTransfer";
+import { restoreWorkspaceWindows } from "@/lib/app/workspaceWindows";
+import { useWindowSettingsSync } from "@/composables/useWindowSettingsSync";
+import { useWindowConnectionSync } from "@/composables/useWindowConnectionSync";
 import { dismissOpenModalSurface } from "@/lib/ui/modalSurface";
 import { hasTreeNodeDatabaseContext } from "@/lib/sidebar/treeNodeContext";
 import { objectBrowserTablesToAiTreeNodes } from "@/lib/ai/objectBrowserToAiTargets";
@@ -299,8 +304,12 @@ const { t, locale: appLocale } = useI18n();
 const startupProps = defineProps<{ startupAuthentication?: StartupAuthentication }>();
 const connectionStore = useConnectionStore();
 const queryStore = useQueryStore();
+const tabWindowTransfer = useTabWindowTransfer({ canCloseEmptyWindow: () => !settingsPageTabOpen.value && !pluginCenterTabOpen.value && !driverStoreTabOpen.value });
+provide(TAB_WINDOW_TRANSFER, tabWindowTransfer);
 const navigationStore = useNavigationStore();
 const settingsStore = useSettingsStore();
+useWindowSettingsSync();
+useWindowConnectionSync();
 const { active: appBackgroundActive, backgroundObjectUrl: appBackgroundObjectUrl, backgroundImageStyle: appBackgroundImageStyle } = useBackgroundImage(settingsStore);
 const editorFontFamilyStyle = useEditorFontFamilyStyle();
 const { uiFontFamilyPreview } = useUiFontFamilyPreview();
@@ -1437,7 +1446,15 @@ const { setupTauriListeners, cleanupTauriListeners } = useTauriEvents({
   openPluginInstallDeepLink,
   refreshPluginWorkbenches,
 });
-const { showCloseActionPrompt, chooseQuit, chooseMinimize, cancelCloseActionPrompt, performCloseAction, setupCloseActionPromptListener, cleanupCloseActionPromptListener } = useCloseActionPrompt({ requestClose: requestAppClose });
+const { showCloseActionPrompt, isQuitPrepared, cancelAppQuit, chooseQuit, chooseMinimize, cancelCloseActionPrompt, performCloseAction, setupCloseActionPromptListener, cleanupCloseActionPromptListener } = useCloseActionPrompt({
+  requestClose: requestAppClose,
+  onQuitCancelled: () => {
+    if (pendingAppCloseAction.value === "quit") {
+      queryStore.cancelClosePendingTab();
+      resetPendingAppClose();
+    }
+  },
+});
 useVisibilityChange();
 useWebDavAutoUpload();
 useSnippetAutoUpload();
@@ -2498,7 +2515,12 @@ function closePendingSavedTab() {
   pendingPrevActiveTabId.value = null;
   const shouldCloseTab = pendingSaveShouldCloseTab.value;
   pendingSaveShouldCloseTab.value = true;
-  if (shouldCloseTab) queryStore.closeTab(closeId, { force: true });
+  if (shouldCloseTab) {
+    queryStore.closeTab(closeId, { force: true });
+    return;
+  }
+  // 关闭工作区时，标签会保留到保存完成；保存后继续完成挂起的窗口关闭。
+  completePendingTabSave(closeId);
 }
 
 function cancelPendingSaveAndClose() {
@@ -2512,6 +2534,11 @@ function cancelPendingSaveAndClose() {
 }
 
 function cancelPendingAppClose() {
+  if (pendingAppCloseAction.value === "quit" || isQuitPrepared.value) cancelAppQuit();
+  resetPendingAppClose();
+}
+
+function resetPendingAppClose() {
   pendingAppCloseAction.value = null;
   pendingCloseActionChoice.value = false;
   showAiRunsClosePrompt.value = false;
@@ -2544,19 +2571,28 @@ async function finishPendingAppClose(action: AppCloseAction) {
   }
   pendingAppCloseAction.value = null;
   pendingSaveShouldCloseTab.value = true;
+  if (action === "quit") isQuitPrepared.value = true;
   const disposeRuntimeBeforeClose = () => (action === "quit" ? disposeAllSqlServerActivityTraces().catch(() => undefined) : Promise.resolve());
-  if (queryStore.requiresAppCloseDraftPersist) {
+  if (isDesktop || queryStore.requiresAppCloseDraftPersist) {
     await finishAppCloseWithRequiredPersist({
       persist: () => queryStore.flushPendingPersist(),
       beforeClose: disposeRuntimeBeforeClose,
-      close: () => performCloseAction(action),
-      onPersistError: (error) =>
+      close: async () => {
+        try {
+          await performCloseAction(action);
+        } catch (error) {
+          toast(String(error), 8000);
+        }
+      },
+      onPersistError: (error) => {
+        if (action === "quit") cancelAppQuit();
         toast(
           t("settings.appCloseDraftPersistFailed", {
             message: error instanceof Error ? error.message : String(error),
           }),
           8000,
-        ),
+        );
+      },
     });
     return;
   }
@@ -2595,20 +2631,24 @@ function handleWebBeforeUnload(event: BeforeUnloadEvent) {
 function continuePendingAppCloseAfterSave() {
   const action = pendingAppCloseAction.value;
   if (!action) return;
-  if (queryStore.hasDirtyTabs) {
+  if (queryStore.hasUnsavedWindowTabs) {
     pendingSaveShouldCloseTab.value = false;
-    if (queryStore.requestAppCloseConfirmation()) return;
+    if (queryStore.requestWindowCloseConfirmation()) return;
   }
   finishPendingAppClose(action);
 }
 
 function requestAppClose(action: AppCloseAction, options: AppCloseRequestOptions = {}) {
-  if (isUpdatePreparationActive()) return;
+  if (pendingAppCloseAction.value || isQuitPrepared.value || isUpdatePreparationActive()) return;
+  if (isDesktop && !isDetachedWindowContext && !queryStore.isOpenTabsLoaded) {
+    if (action === "quit") cancelAppQuit();
+    return;
+  }
   pendingCloseActionChoice.value = !!options.requireCloseActionChoice;
-  if (queryStore.hasDirtyTabs) {
+  if (queryStore.hasUnsavedWindowTabs) {
     pendingAppCloseAction.value = action;
     pendingSaveShouldCloseTab.value = false;
-    if (queryStore.requestAppCloseConfirmation()) return;
+    if (queryStore.requestWindowCloseConfirmation()) return;
   }
   finishPendingAppClose(action);
 }
@@ -4274,6 +4314,7 @@ async function handleQuickOpenSelect(item: any) {
     await connectionStore.ensureConnected(item.connectionId);
   } catch (error) {
     console.error("Failed to connect:", error);
+    toast(t("connection.connectFailed", { message: translateBackendError(t, error) }), 5000);
     return;
   }
 
@@ -4332,6 +4373,19 @@ async function handleQuickOpenSelect(item: any) {
       }
     }
 
+    if (item.catalog && connectionIsDorisFamilyCatalogCapable(connectionStore.getConfig(item.connectionId))) {
+      const findCatalogDatabase = (nodes: TreeNode[]): TreeNode | undefined => {
+        for (const node of nodes) {
+          if (node.type === "database" && node.connectionId === item.connectionId && node.catalog === item.catalog && node.database === item.database) return node;
+          const match = node.children && findCatalogDatabase(node.children);
+          if (match) return match;
+        }
+      };
+      const catalogDatabase = findCatalogDatabase(connectionStore.treeNodes);
+      if (catalogDatabase && !catalogDatabase.isExpanded) await connectionStore.loadDorisCatalogTables(catalogDatabase);
+      return;
+    }
+
     // Expand database node
     // Tree node ID for database is `${connectionId}:${database_name}`
     const dbNodeId = `${item.connectionId}:${item.database}`;
@@ -4349,19 +4403,38 @@ async function handleQuickOpenSelect(item: any) {
     }
     return;
   } else if (item.type === "schema") {
+    // External Doris/StarRocks catalogs have database → table trees, without schema nodes.
     const dbNode = findTreeNodeById(connectionStore.treeNodes, `${item.connectionId}:${item.database}`);
     if (dbNode && !dbNode.isExpanded) await connectionStore.loadSchemas(item.connectionId, item.database);
     const schemaNode = findTreeNodeById(connectionStore.treeNodes, `${item.connectionId}:${item.database}:${item.schema}`);
     if (schemaNode && !schemaNode.isExpanded) await connectionStore.loadTables(item.connectionId, item.database, item.schema);
     return;
   } else if (item.type === "table" || item.type === "view" || item.type === "materialized_view") {
-    // Open the table/view in a data tab
-    await openTableTarget({
+    const tableTarget = {
       connectionId: item.connectionId,
+      catalog: item.catalog,
       database: item.database,
       schema: item.schema,
       tableName: item.objectName || item.tableName,
       tableType: item.type === "view" ? "VIEW" : item.type === "materialized_view" ? "MATERIALIZED_VIEW" : "TABLE",
+    };
+    if (item.searchScope === "structure") {
+      await openDatabaseSearchTarget({ ...tableTarget, searchScope: "structure" });
+      return;
+    }
+    // Open the table/view in a data tab
+    await openTableTarget(tableTarget);
+  } else if (item.type === "column") {
+    // Structure hits carry their owning table, so Enter can focus the exact field.
+    await openDatabaseSearchTarget({
+      connectionId: item.connectionId,
+      catalog: item.catalog,
+      database: item.database,
+      schema: item.schema,
+      tableName: item.tableName,
+      tableType: item.tableType || "TABLE",
+      columnName: item.columnName || item.label,
+      searchScope: "structure",
     });
   } else if (item.type === "procedure" || item.type === "function" || item.type === "trigger" || item.type === "event" || item.type === "sequence" || item.type === "package" || item.type === "package-body" || item.type === "type" || item.type === "type-body") {
     // Open the object source in a source tab
@@ -4850,6 +4923,7 @@ function refreshPluginWorkbenches(pluginId: string): void {
 }
 
 async function closeActiveSurface() {
+  if (isQuitPrepared.value) return;
   // Cmd+W (and the native macOS "Close Tab" menu item) must not reach the surface behind
   // an open modal dialog. While a dialog owns the window the keystroke dismisses that
   // dialog instead, exactly like Esc, so the shortcut never goes dead on the user.
@@ -4863,6 +4937,9 @@ async function closeActiveSurface() {
   } else if (queryStore.activeTabId) {
     if (await queryStore.clearQueryResults(queryStore.activeTabId)) return;
     queryStore.closeTab(queryStore.activeTabId);
+  } else if (isDesktop && queryStore.tabs.length === 0) {
+    if (isDetachedWindowContext) await requestDetachedReturn("close");
+    else await api.requestAppClose();
   }
 }
 // App-scoped `:dbx` actions. Editor-scoped ones are handled (and stopped) in
@@ -4895,6 +4972,10 @@ function handleVimDbxAppAction(event: Event) {
 }
 
 async function handleKeydown(e: KeyboardEvent) {
+  if (isQuitPrepared.value) {
+    e.preventDefault();
+    return;
+  }
   if (e.defaultPrevented) return;
 
   // Every isXxxShortcut below normalizes what it is given; handing it an already
@@ -5275,6 +5356,7 @@ async function handleWebLogout() {
 async function initApp() {
   const t0 = performance.now();
   console.log("[STARTUP] initApp begin");
+  const detachedTransfer = await consumeDetachedTabTransfer();
   const savedSqlInitialization = Promise.all([initSavedSqlEditorPositions(), savedSqlStore.initFromStorage()])
     .then(() => {
       console.log(`[STARTUP]   savedSqlStore.initFromStorage: ${(performance.now() - t0).toFixed(0)}ms`);
@@ -5307,7 +5389,16 @@ async function initApp() {
     }
     markStartupPhase("connections-ready");
     console.log(`[STARTUP]   connectionStore.initFromDisk: ${(performance.now() - t0).toFixed(0)}ms`);
-    await queryStore.initOpenTabs({ validConnectionIds: connectionStore.connections.map((connection) => connection.id) });
+    await queryStore.initOpenTabs({ validConnectionIds: connectionStore.connections.map((connection) => connection.id), skipRestore: !!detachedTransfer });
+    if (detachedTransfer && queryStore.importTransferredTabs(tabWindowTransferEntries(detachedTransfer), detachedTransfer.activeTabId)) {
+      await queryStore.flushPendingPersist();
+      await markTabWindowTransferAccepted(detachedTransfer.transferId);
+    }
+    if (isDesktop) {
+      await queryStore.flushPendingPersist();
+      await restoreWorkspaceWindows();
+    }
+    void restoreExportTasksFromStorage();
     markStartupPhase("tabs-restored");
     console.log(`[STARTUP]   queryStore.initOpenTabs: ${(performance.now() - t0).toFixed(0)}ms`);
   };
@@ -5504,6 +5595,7 @@ onMounted(async () => {
         toast(error?.message || String(error), 5000);
         void finishDetachedWindowClose();
       });
+    setupCloseActionPromptListener();
     return;
   }
   requestAnimationFrame(() => {
@@ -5663,11 +5755,19 @@ onUnmounted(() => {
            webview 缩放是重排式的，最小尺寸必须除以实际倍率换算成 CSS 像素
            （见 appShellMinSizeStyleForScale）——固定 CSS 下限在约 165% 以上缩放
            时会超出视口，把应用底部（如设置页脚按钮）挤出窗口导致无法点击。 -->
-      <div data-app-shell class="h-screen w-screen max-w-full flex flex-col bg-background text-foreground overflow-hidden" :class="{ 'dbx-desktop-window-frame': drawDesktopWindowFrame }" :style="[appUiFontFamilyStyle, appShellMinSizeStyle]">
+      <div
+        data-app-shell
+        :inert="isQuitPrepared"
+        class="h-screen w-screen max-w-full flex flex-col bg-background text-foreground overflow-hidden"
+        :class="{ 'dbx-desktop-window-frame': drawDesktopWindowFrame, 'pointer-events-none': isQuitPrepared }"
+        :style="[appUiFontFamilyStyle, appShellMinSizeStyle]"
+      >
         <AppToolbar
           v-if="!isDetachedWindowContext"
           :is-dark="isDark"
           :theme-mode="themeMode"
+          :workspace-window-label="tabWindowTransfer.currentWindowLabel.value"
+          :workspace-window-targets="tabWindowTransfer.otherTabWindows.value"
           :show-sidebar-expand="!sidebarOpen && !isZenMode"
           :show-ai-panel="showAiPanel"
           :active-ai-run-count="activeAiRunCount"
@@ -5715,6 +5815,9 @@ onUnmounted(() => {
           @open-data-compare="dialogs.showDataCompareDialog.value = true"
           @open-backups="openSettings('backups')"
           @open-mcp-settings="openSettings('mcp')"
+          @focus-workspace-window="tabWindowTransfer.focusWorkspaceWindow"
+          @refresh-workspace-windows="tabWindowTransfer.refreshOtherTabWindows"
+          @consolidate-workspace-windows="tabWindowTransfer.consolidateWorkspaceWindows"
           @logout="handleWebLogout"
         />
 
@@ -5747,7 +5850,6 @@ onUnmounted(() => {
           >
             <div class="h-full flex min-h-0 min-w-0 flex-col">
               <AppTabBar
-                v-if="!isDetachedWindowContext"
                 ref="appTabBarRef"
                 :driver-store-open="driverStoreTabOpen"
                 :driver-store-active="driverStoreActive"
@@ -5833,7 +5935,7 @@ onUnmounted(() => {
                 />
               </AppTabBar>
               <DetachedTabHeader
-                v-else-if="activeTab"
+                v-if="isDetachedWindowContext && activeTab"
                 :title="activeTab.title"
                 :dirty="queryStore.isTabDirty(activeTab)"
                 :show-ai-panel="showAiPanel"

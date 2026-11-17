@@ -11,6 +11,7 @@ import FirebirdObjectManager from "@/components/objects/FirebirdObjectManager.vu
 import { useDatabaseBrowserMutation } from "@/lib/database/databaseBrowserActions";
 import DdlStorageToggle from "@/components/objects/DdlStorageToggle.vue";
 import { scrollbarGutterWidth } from "@/lib/dataGrid/dataGridScrollGutter";
+import { useTableInfoHeaderLayout } from "@/composables/useTableInfoHeaderLayout";
 
 import { computed, createApp, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, shallowRef, watch, type Component } from "vue";
 import { RecycleScroller } from "vue-virtual-scroller";
@@ -36,6 +37,7 @@ import {
   Eraser,
   Eye,
   FileCode,
+  FilePlus2,
   FileText,
   Info,
   GripVertical,
@@ -66,7 +68,6 @@ import {
   Table,
   Table2,
   TableProperties,
-  TerminalSquare,
   Trash2,
   WrapText,
   X,
@@ -131,6 +132,7 @@ import {
   buildEmptyTableSql,
   buildTruncateTableSql,
   buildVacuumTableSql,
+  kingbaseDuplicateStructureTransaction,
   supportsDropTableCascade,
   supportsTruncateTableCascade,
   tableAdminSqlOptionsForRow,
@@ -412,6 +414,8 @@ const eventEditorKey = computed(() =>
   }),
 );
 // Table info panel state
+const { tableInfoHeaderRef, tableInfoActionLabelsCompact, observeTableInfoHeader, disconnectTableInfoHeader } = useTableInfoHeaderLayout();
+void tableInfoHeaderRef;
 const tableInfoTab = ref<TableInfoTab>("ddl");
 const tableOverviewStats = ref<ObjectStatistics | null>(null);
 const tableOverviewComment = ref<string | null>(null);
@@ -454,6 +458,20 @@ const selectedTableInfoColumns = ref<string[]>([]);
 watch(tableInfoSearchQuery, () => {
   selectedTableInfoColumns.value = [];
 });
+
+watch(
+  () => [sidePanelMode.value === "table-info", tableInfoTab.value, sidePanelRow.value?.name],
+  async ([shown]) => {
+    if (!shown) {
+      disconnectTableInfoHeader();
+      return;
+    }
+    await nextTick();
+    observeTableInfoHeader();
+  },
+  { immediate: true, flush: "post" },
+);
+
 const tableInfoDdlPreRef = ref<HTMLPreElement | null>(null);
 const tableInfoDdlMatchCount = ref(0);
 const tableInfoDdlMatchIndex = ref(0);
@@ -4498,24 +4516,31 @@ function requestCopyAsNewTable(row: ObjectBrowserRow) {
 }
 
 function captureTableCopyContext() {
+  const databaseType = effectiveDatabaseType.value;
   return {
     connection: { ...props.connection },
     database: props.database,
     catalog: props.catalog,
     schema: selectedSchema.value,
-    databaseType: effectiveDatabaseType.value,
-    identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connection.id),
+    databaseType,
+    identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connection.id, databaseType === "kingbase" ? props.database : undefined),
   };
 }
 
 type TableCopyContext = ReturnType<typeof captureTableCopyContext>;
+
+async function ensureTableCopyIdentifierQuote(context: TableCopyContext) {
+  if (context.databaseType === "kingbase") {
+    context.identifierQuote = await connectionStore.ensureConnectionIdentifierQuote(context.connection.id, context.database);
+  }
+}
 
 function reloadTableCopyContext(context: TableCopyContext) {
   if (props.connection.id === context.connection.id && props.database === context.database && props.catalog === context.catalog && selectedSchema.value === context.schema) return reload();
   return Promise.resolve();
 }
 
-async function buildDuplicateStructurePlan(context: TableCopyContext, sourceName: string, targetName: string, schema: string | undefined, tableComment?: string | null, sourceColumns?: ColumnInfo[]) {
+async function buildDuplicateStructurePlan(context: TableCopyContext, sourceName: string, targetName: string, schema: string | undefined, tableComment?: string | null, copyData = false) {
   return buildSharedDuplicateTableStructurePlan({
     connectionId: context.connection.id,
     database: context.database,
@@ -4525,13 +4550,26 @@ async function buildDuplicateStructurePlan(context: TableCopyContext, sourceName
     sourceName,
     targetName,
     tableComment,
-    sourceColumns,
+    copyData,
     identifierQuote: context.identifierQuote,
   });
 }
 
+function duplicateStructureSuccessMessage(name: string, plan: DuplicateTableStructurePlan) {
+  const success = t("contextMenu.duplicateStructureSuccess", { name });
+  return plan.commentMetadataIncomplete ? `${success}\n${t("contextMenu.duplicateStructureCommentsUnavailable")}` : success;
+}
+
 function executeDuplicateStructurePlan(context: TableCopyContext, plan: DuplicateTableStructurePlan, schema: string | undefined) {
   if (plan.oceanbaseClone) return executeOceanbaseTableClone(plan.oceanbaseClone, (sql) => api.executeQuery(context.connection.id, context.database, sql, plan.oceanbaseClone!.targetSchema));
+  const executeTransaction = kingbaseDuplicateStructureTransaction(plan, {
+    connectionId: context.connection.id,
+    database: context.database,
+    databaseType: context.databaseType,
+    schema,
+    catalog: context.catalog,
+  });
+  if (executeTransaction) return executeTransaction();
   return plan.executeAsScript ? api.executeScript(context.connection.id, context.database, plan.sql, schema) : api.executeQuery(context.connection.id, context.database, plan.sql, schema);
 }
 
@@ -4547,11 +4585,12 @@ async function confirmDuplicateStructureImpl() {
   showDuplicateDialog.value = false;
   try {
     const schema = row.schema || context.schema;
+    await ensureTableCopyIdentifierQuote(context);
     const plan = await buildDuplicateStructurePlan(context, row.name, newName, schema, row.comment);
     if (!(await cloneDialog.request([{ plan, scope: [context.connection.id, context.database, context.catalog || ""] }]))) return;
     const executed = await executeObjectBrowserSqlWithProductionGuard(plan.sql, () => executeDuplicateStructurePlan(context, plan, schema), context);
     if (!executed) return;
-    toast(t("contextMenu.duplicateStructureSuccess", { name: newName }));
+    toast(duplicateStructureSuccessMessage(newName, plan), plan.commentMetadataIncomplete ? 5000 : 2000);
     await reloadTableCopyContext(context);
     await connectionStore.refreshObjectListTreeNode(context.connection.id, context.database, schema);
   } catch (e: any) {
@@ -4914,6 +4953,7 @@ async function confirmPasteTableImpl() {
   const mode = pasteTableMode.value;
   const copyData = pasteTableModeCopiesData(mode) && pasteTableDataCopySupported.value;
   showPasteDialog.value = false;
+  await ensureTableCopyIdentifierQuote(context);
   if (context.databaseType === "mysql") {
     const copies = entries.map((entry) => ({ ...entry, connection: context.connection, database: context.database, catalog: context.catalog, schema: entry.schema || context.schema, identifierQuote: context.identifierQuote }));
     const completed = await useTableCopyTaskStore().run(copies, mode);
@@ -4931,6 +4971,7 @@ async function confirmPasteTableImpl() {
   let firstPasteError: unknown;
   let pasteCancelled = false;
   let hasMutatedTable = false;
+  let commentMetadataIncomplete = false;
   const preparedClones = new Map<(typeof entries)[number], DuplicateTableStructurePlan>();
   if (context.databaseType === "oceanbase-oracle" && mode !== "data-only") {
     try {
@@ -4953,7 +4994,7 @@ async function confirmPasteTableImpl() {
     try {
       let sourceColumns: ColumnInfo[] | undefined;
       if (mode === "structure-and-data" || mode === "structure-only") {
-        const plan = preparedClones.get(entry) || (await buildDuplicateStructurePlan(context, entry.sourceName, targetName, schema, entry.tableComment, sourceColumns));
+        const plan = preparedClones.get(entry) || (await buildDuplicateStructurePlan(context, entry.sourceName, targetName, schema, entry.tableComment, copyData));
         sourceColumns = plan.sourceColumns;
         if (plan.oceanbaseClone) {
           targetName = plan.oceanbaseClone.targetName;
@@ -4965,6 +5006,7 @@ async function confirmPasteTableImpl() {
           break;
         }
         hasMutatedTable = true;
+        commentMetadataIncomplete ||= !!plan.commentMetadataIncomplete;
         completedClone = plan.oceanbaseClone;
       }
       if (copyData) {
@@ -5022,7 +5064,8 @@ async function confirmPasteTableImpl() {
       try {
         await reloadTableCopyContext(context);
         await connectionStore.refreshObjectListTreeNode(context.connection.id, context.database, context.schema);
-        toast(t("contextMenu.pasteTableCancelledAfterPartial"), 5000);
+        const warning = commentMetadataIncomplete ? `\n${t("contextMenu.duplicateStructureCommentsUnavailable")}` : "";
+        toast(`${t("contextMenu.pasteTableCancelledAfterPartial")}${warning}`, 5000);
       } catch (e: any) {
         toast(t("contextMenu.pasteTableRefreshFailed", { message: translateBackendError(t, e) }), 5000);
       }
@@ -5034,9 +5077,11 @@ async function confirmPasteTableImpl() {
     if (shouldConsumeTableClipboard && connectionStore.treeClipboard === clipboardAtPasteStart) {
       connectionStore.treeClipboard = null;
     }
-    toast(t("contextMenu.batchPasteSuccess", { count: successCount }), 3000);
+    const success = t("contextMenu.batchPasteSuccess", { count: successCount });
+    toast(commentMetadataIncomplete ? `${success}\n${t("contextMenu.duplicateStructureCommentsUnavailable")}` : success, commentMetadataIncomplete ? 5000 : 3000);
   } else {
-    toast(`${t("contextMenu.batchPastePartialFail", { success: pasteFeedback.successCount, failed: pasteFeedback.failedCount })}\n${t("contextMenu.tableOperationFailed", { message: translateBackendError(t, pasteFeedback.firstError) })}`, 5000);
+    const warning = commentMetadataIncomplete ? `\n${t("contextMenu.duplicateStructureCommentsUnavailable")}` : "";
+    toast(`${t("contextMenu.batchPastePartialFail", { success: pasteFeedback.successCount, failed: pasteFeedback.failedCount })}\n${t("contextMenu.tableOperationFailed", { message: translateBackendError(t, pasteFeedback.firstError) })}${warning}`, 5000);
   }
   await reloadTableCopyContext(context);
   await connectionStore.refreshObjectListTreeNode(context.connection.id, context.database, context.schema);
@@ -6281,7 +6326,7 @@ function getTableMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
   if (isVictoriaMetrics.value) {
     return [
       { sidebarActionId: "contextMenu.viewData", label: t("contextMenu.viewData"), action: () => openViewData(item), icon: Table2 },
-      { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: TerminalSquare },
+      { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: FilePlus2, shortcut: settingsStore.editorSettings.shortcuts.newQuery },
       ...(supportsAiAssistantContext(effectiveDatabaseType.value) ? [addToAiMenuItem(item)] : []),
       { label: "", separator: true },
       exportDataSubmenu(item),
@@ -6329,7 +6374,7 @@ function getTableMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
     },
     ...(canOpenStructureEditor.value ? [{ sidebarActionId: "contextMenu.editStructure", label: t("contextMenu.editStructure"), action: () => openStructureEditor(item), icon: PencilRuler }] : []),
     ...(canRename(item) ? [{ sidebarActionId: "contextMenu.renameObject", label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }] : []),
-    { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: TerminalSquare },
+    { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: FilePlus2, shortcut: settingsStore.editorSettings.shortcuts.newQuery },
     ...(supportsAiAssistantContext(effectiveDatabaseType.value) ? [addToAiMenuItem(item)] : []),
     ...(canOpenDiagram.value ? [{ sidebarActionId: "diagram.open", label: t("diagram.open"), action: () => openDiagram(item), icon: Network }] : []),
     ...(canOpenTableImport.value ? [{ sidebarActionId: "contextMenu.importData", label: t("contextMenu.importData"), action: () => openTableImport(item), icon: Download }] : []),
@@ -6373,7 +6418,7 @@ function getViewMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
       icon: ScrollText,
     },
     ...(canRename(item) ? [{ sidebarActionId: "contextMenu.renameObject", label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }] : []),
-    { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: TerminalSquare },
+    { sidebarActionId: "contextMenu.newQuery", label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: FilePlus2, shortcut: settingsStore.editorSettings.shortcuts.newQuery },
     ...(canOpenDiagram.value ? [{ sidebarActionId: "diagram.open", label: t("diagram.open"), action: () => openDiagram(item), icon: Network }] : []),
     { label: "", separator: true },
     exportDataSubmenu(item),
@@ -7239,9 +7284,9 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
         <div class="absolute left-0 top-0 bottom-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize hover:bg-primary/30" @mousedown.prevent="onSidePanelResizeStart" />
         <!-- Table info mode -->
         <template v-if="sidePanelMode === 'table-info'">
-          <div class="flex items-center gap-2 px-3 py-1.5 border-b shrink-0 bg-muted/20 h-9">
-            <TableProperties class="w-3.5 h-3.5 text-muted-foreground" />
-            <span class="text-xs font-medium flex-1 min-w-0 truncate">{{ sidePanelRow?.name }}</span>
+          <div ref="tableInfoHeaderRef" class="table-info-header flex min-w-0 items-center gap-2 px-3 py-1.5 border-b shrink-0 bg-muted/20 h-9 overflow-hidden" :class="{ 'table-info-header--compact': tableInfoActionLabelsCompact }">
+            <TableProperties class="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+            <span class="table-info-title min-w-0 flex-1 truncate text-xs font-medium">{{ sidePanelRow?.name }}</span>
             <Button
               v-if="sidePanelRow && effectiveDatabaseType !== 'nebula' && (sidePanelRow.type === 'TABLE' || sidePanelRow.type === 'VIEW' || sidePanelRow.type === 'MATERIALIZED_VIEW')"
               variant="ghost"
@@ -7251,7 +7296,7 @@ function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
               :aria-label="t('contextMenu.newQuery')"
               @click="openNewQuery(sidePanelRow, true)"
             >
-              <TerminalSquare class="w-3 h-3" />
+              <FilePlus2 class="w-3 h-3" />
               <span class="table-info-action-label">{{ t("contextMenu.newQuery") }}</span>
             </Button>
             <div v-if="tableInfoTab === 'ddl' && tableMetadataCapabilities.ddl" class="table-info-actions flex min-w-0 shrink-0 items-center gap-1">
@@ -8081,10 +8126,6 @@ html.dbx-legacy-webview.dark .object-browser-scroller:hover::-webkit-scrollbar-t
   outline: 1px solid var(--ddl-current-search-border);
 }
 
-.object-browser-side-panel {
-  container-type: inline-size;
-}
-
 .event-editor-layout > :first-child {
   display: none;
 }
@@ -8114,16 +8155,14 @@ html.dbx-legacy-webview.dark .object-browser-scroller:hover::-webkit-scrollbar-t
     opacity 120ms ease;
 }
 
-@container (max-width: 360px) {
-  .table-info-action-button {
-    width: 1.5rem;
-    max-width: 1.5rem;
-    padding-inline: 0;
-  }
+.table-info-header--compact .table-info-action-button {
+  width: 1.5rem;
+  max-width: 1.5rem;
+  padding-inline: 0;
+}
 
-  .table-info-action-label {
-    max-width: 0;
-    opacity: 0;
-  }
+.table-info-header--compact .table-info-action-label {
+  max-width: 0;
+  opacity: 0;
 }
 </style>

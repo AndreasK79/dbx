@@ -7,7 +7,7 @@ import { buildTableSelectSql, requiresEagerTableMetadataForDataOpen } from "@/li
 import { resolveTableDefaultSort, applyTableDefaultSortResult } from "@/lib/table/tableDefaultSort";
 import { tableDataLargeValuePreviewOptions } from "@/lib/dataGrid/dataGridLargeValues";
 import { foreignKeyDrillTableTargetFromTab, pushForeignKeyDrillBack } from "@/lib/dataGrid/foreignKeyDrillBack";
-import { editableRowIdentifierColumns, physicalTablePrimaryKeys, postgresTupleLocatorUnsupportedEngine, shouldIncludeSyntheticRowId } from "@/lib/table/tableEditing";
+import { editableRowIdentifierColumns, isViewTableType, physicalTablePrimaryKeys, postgresTupleLocatorUnsupportedEngine, shouldIncludeSyntheticRowId } from "@/lib/table/tableEditing";
 import { markRowIdLocatorUnsupported, rowIdLocatorUnsupported, shouldKeepRowIdLocatorDisabled, shouldRetryWithoutRowIdLocator } from "@/lib/table/tableRowIdSupport";
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { uuid } from "@/lib/common/utils";
@@ -68,7 +68,6 @@ async function openTableTarget(target: NavigationTarget, options: NavigationOpen
   const connectionStore = useConnectionStore();
   const queryStore = useQueryStore();
   const settingsStore = useSettingsStore();
-  const pageLimit = tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize);
 
   if (options.isCurrent?.() === false) return;
 
@@ -80,6 +79,7 @@ async function openTableTarget(target: NavigationTarget, options: NavigationOpen
     return;
   }
   const tableSchema = connectionObjectTreeNodeSchema(config, target.database, target.schema);
+  const pageLimit = tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize, { connectionId: target.connectionId, database: target.database, catalog: target.catalog, schema: tableSchema, tableName: target.tableName });
   const tabTitle = target.catalog ? `${target.catalog}.${tableSchema || target.database}.${target.tableName}` : tableSchema ? `${tableSchema}.${target.tableName}` : target.tableName;
   if (config?.db_type === "qdrant" || config?.db_type === "milvus" || config?.db_type === "weaviate" || config?.db_type === "chromadb") {
     await connectionStore.ensureConnected(target.connectionId);
@@ -600,7 +600,8 @@ export function useNavigationTargets(dialogs: { showFieldLineageDialog: { value:
   async function openDatabaseSearchTarget(target: NavigationTarget) {
     dialogs.showDatabaseSearchDialog.value = false;
     if (target.searchScope === "structure" && target.tableName) {
-      const tableType = (target.tableType || "").toUpperCase() === "VIEW" ? "view" : "table";
+      const normalizedTableType = target.tableType?.trim().toUpperCase().replaceAll(" ", "_");
+      const tableType = normalizedTableType === "MATERIALIZED_VIEW" ? "materialized_view" : isViewTableType(normalizedTableType) ? "view" : "table";
       queryStore.openTableStructure(target.connectionId, target.database, target.schema, target.tableName, "columns", target.columnName ? { kind: "column", name: target.columnName } : undefined, target.catalog, tableType);
       return;
     }

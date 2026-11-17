@@ -60,6 +60,8 @@ export type ShortcutActionId =
   | "deleteCurrentRow"
   | "focusWhere"
   | "goToColumn"
+  | "selectNextGridColumn"
+  | "selectPreviousGridColumn"
   | "goToFirstPage"
   | "goToPreviousPage"
   | "goToNextPage"
@@ -548,6 +550,18 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "goToColumn",
     labelKey: "settings.shortcutGoToColumn",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "selectNextGridColumn",
+    labelKey: "settings.shortcutSelectNextGridColumn",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "selectPreviousGridColumn",
+    labelKey: "settings.shortcutSelectPreviousGridColumn",
     scope: "grid",
     defaultShortcut: "",
   },

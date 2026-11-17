@@ -454,6 +454,8 @@ pub enum CompletionAssistantCandidateKind {
     Table,
     #[serde(alias = "VIEW")]
     View,
+    #[serde(alias = "MATERIALIZED_VIEW")]
+    MaterializedView,
     #[serde(alias = "PROCEDURE")]
     Procedure,
     #[serde(alias = "FUNCTION")]
@@ -2125,6 +2127,7 @@ mod tests {
             ("SCHEMA", CompletionAssistantCandidateKind::Schema),
             ("TABLE", CompletionAssistantCandidateKind::Table),
             ("VIEW", CompletionAssistantCandidateKind::View),
+            ("MATERIALIZED_VIEW", CompletionAssistantCandidateKind::MaterializedView),
             ("PROCEDURE", CompletionAssistantCandidateKind::Procedure),
             ("FUNCTION", CompletionAssistantCandidateKind::Function),
             ("COLUMN", CompletionAssistantCandidateKind::Column),

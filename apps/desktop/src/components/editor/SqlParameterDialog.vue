@@ -9,7 +9,7 @@ import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import TruncatedTextTooltip from "@/components/ui/TruncatedTextTooltip.vue";
 import { clearSqlParameterHistory, loadSqlParameterHistory, rememberSqlParameterValues } from "@/lib/sql/sqlParameterHistory";
-import { substituteSqlParameters, type SqlParameterDescriptor, type SqlParameterInput, type SqlParameterSyntax, type SqlParameterValueKind } from "@/lib/sql/sqlParameters";
+import { extractSqlParameterDescriptors, hasQuotedBracedSqlParameters, substituteSqlParameters, type SqlParameterDescriptor, type SqlParameterInput, type SqlParameterSyntax, type SqlParameterValueKind } from "@/lib/sql/sqlParameters";
 import { useDialogEditorFocusRestore } from "@/composables/useDialogEditorFocusRestore";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
 import { useToast } from "@/composables/useToast";
@@ -37,6 +37,7 @@ const values = ref<Record<string, SqlParameterInput>>({});
 const formRef = ref<HTMLFormElement | null>(null);
 const histories = ref<Record<string, SqlParameterInput[]>>({});
 const activeHistoryName = ref("");
+const preserveQuotedBracedParameters = ref(false);
 let closeHistoryTimer: ReturnType<typeof setTimeout> | undefined;
 
 const { onCloseAutoFocus: onSqlParameterDialogCloseAutoFocus } = useDialogEditorFocusRestore(open);
@@ -57,7 +58,11 @@ function syntaxLabel(parameter: SqlParameterDescriptor): string {
   return parameter.collection ? "<foreach>" : syntaxLabels[parameter.syntax];
 }
 
-const resolvedSql = computed(() => substituteSqlParameters(props.sql, values.value, { databaseType: props.databaseType, enabledSyntaxes: props.enabledSyntaxes }));
+const baseParameterOptions = computed(() => ({ databaseType: props.databaseType, enabledSyntaxes: props.enabledSyntaxes }));
+const showPreserveQuotedParameters = computed(() => hasQuotedBracedSqlParameters(props.sql, baseParameterOptions.value));
+const parameterOptions = computed(() => ({ ...baseParameterOptions.value, preserveQuotedBracedParameters: preserveQuotedBracedParameters.value }));
+const activeParameters = computed(() => (preserveQuotedBracedParameters.value ? extractSqlParameterDescriptors(props.sql, parameterOptions.value) : props.parameters));
+const resolvedSql = computed(() => substituteSqlParameters(props.sql, values.value, parameterOptions.value));
 const highlightedSql = computed(() => highlight(resolvedSql.value));
 
 watch(
@@ -85,7 +90,7 @@ function updateKind(name: string, kind: SqlParameterValueKind) {
 
 function setAllParametersToRaw() {
   const next = { ...values.value };
-  for (const parameter of props.parameters) {
+  for (const parameter of activeParameters.value) {
     const current = next[parameter.key] ?? { kind: "string", value: "" };
     next[parameter.key] = { ...current, kind: "raw" };
   }
@@ -94,7 +99,7 @@ function setAllParametersToRaw() {
 
 function clearParameterValues() {
   const next = { ...values.value };
-  for (const parameter of props.parameters) {
+  for (const parameter of activeParameters.value) {
     const current = next[parameter.key] ?? { kind: "string", value: "" };
     next[parameter.key] = { ...current, value: "" };
   }
@@ -146,7 +151,8 @@ function selectHistoryEntry(name: string, entry: SqlParameterInput) {
 }
 
 function execute() {
-  histories.value = { ...histories.value, ...rememberSqlParameterValues(values.value) };
+  const usedValues = Object.fromEntries(activeParameters.value.flatMap(({ key }) => (values.value[key] ? [[key, values.value[key]]] : [])));
+  histories.value = { ...histories.value, ...rememberSqlParameterValues(usedValues) };
   open.value = false;
   emit("execute", resolvedSql.value);
 }
@@ -192,13 +198,13 @@ async function copyResolvedSql() {
         <div class="grid max-h-[calc(86vh-8rem)] gap-4 overflow-y-auto pr-1">
           <div class="flex flex-wrap items-center gap-2">
             <p class="min-w-0 flex-1 text-sm text-muted-foreground">{{ t("sqlParameters.description") }}</p>
-            <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-values" @click="clearParameterValues">
+            <Button type="button" size="sm" variant="outline" class="shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-clear-values" @click="clearParameterValues">
               {{ t("sqlParameters.clearValues") }}
             </Button>
-            <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-history" @click="clearParameterHistory">
+            <Button type="button" size="sm" variant="outline" class="shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-clear-history" @click="clearParameterHistory">
               {{ t("sqlParameters.clearHistory") }}
             </Button>
-            <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" data-testid="sql-parameters-use-raw-all" @click="setAllParametersToRaw">
+            <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-use-raw-all" @click="setAllParametersToRaw">
               {{ t("sqlParameters.useRawForAll") }}
             </Button>
           </div>

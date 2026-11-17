@@ -1,3 +1,4 @@
+import { DEFAULT_TOOLBAR_ITEM_ORDER, normalizeToolbarItemOrder, type ToolbarItemKey } from "@/lib/settings/toolbarCustomization";
 import { SIDEBAR_HOVER_DELAY_DEFAULT, normalizeSidebarHoverDelay } from "@/lib/sidebar/sidebarHoverSettings";
 import { DEFAULT_OBJECT_BROWSER_COMPACT_WIDTH, normalizeObjectBrowserCompactWidth, type ObjectBrowserCompactWidth } from "@/lib/table/objectBrowserCompactWidth";
 import { normalizeModelTemplates, type ModelTemplate } from "@/lib/model/modelTemplates";
@@ -11,6 +12,7 @@ import { DEFAULT_DATA_GRID_FONT_FAMILY, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FON
 import { emitAlwaysOnTopToolbarVisibilityChanged } from "@/lib/app/windowAlwaysOnTop";
 import { defaultBackgroundImageSettings, normalizeBackgroundImageSettings, type BackgroundImageSettings } from "@/lib/app/appBackgroundImage";
 import * as api from "@/lib/backend/api";
+import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { setDebugLoggingEnabled } from "@/lib/backend/debugLog";
 import { safeLocalStorageGet, safeLocalStorageRemove } from "@/lib/backend/safeStorage";
 import { type ColumnFormatterConfig, type CustomColumnFormatterConfig, normalizeColumnFormatter, normalizeCustomColumnFormatter, normalizeGlobalDateTimePattern } from "@/lib/dataGrid/columnFormatter";
@@ -1067,6 +1069,7 @@ export interface EditorSettings {
   welcomePageModeDefaultVersion: number;
   compactTabTitle: boolean;
   compactTabTitleDefaultVersion: number;
+  crossWindowTabDragPreviewEnabled: boolean;
   /** 重名标签页的区分方式：序号或连接名。见 {@link DuplicateTabTitleMode}。 */
   duplicateTabTitleMode: DuplicateTabTitleMode;
   tabLayout: TabLayoutMode;
@@ -1213,6 +1216,7 @@ export interface EditorSettings {
   sidebarConnectionSortMode: ConnectionListSortMode;
   sidebarSearchMatchMode: "fuzzy" | "contains" | "exact";
   sidebarObjectDisplay: "grouped" | "simple";
+  sidebarSimpleHideIndexes: boolean;
   routineSourceOpenMode: "query-tab" | "dialog";
   sidebarTableSearchEnabled: boolean;
   sidebarTableSearchLocal: boolean;
@@ -1306,6 +1310,7 @@ export interface EditorSettings {
   /** Plugin ids the user granted `script-src 'unsafe-eval'` in the workbench sandbox. */
   pluginGraphicsEngineIds: string[];
   toolbarItems: ToolbarItems;
+  toolbarItemOrder: ToolbarItemKey[];
   objectBrowserShowCheckbox: boolean;
   objectBrowserViewMode: "list" | "grid" | "compact";
   objectBrowserCompactWidth: ObjectBrowserCompactWidth;
@@ -1330,6 +1335,15 @@ export interface EditorSettings {
 }
 
 export interface ToolbarItems {
+  newConnection: boolean;
+  newQuery: boolean;
+  openSql: boolean;
+  databaseBackups: boolean;
+  mcpSettings: boolean;
+  exportProgress: boolean;
+  settings: boolean;
+  logout: boolean;
+
   immediateSync: boolean;
   dataTransfer: boolean;
   driverManager: boolean;
@@ -1352,6 +1366,15 @@ export interface ToolbarItems {
 }
 
 export const DEFAULT_TOOLBAR_ITEMS: ToolbarItems = {
+  newConnection: true,
+  newQuery: true,
+  openSql: true,
+  databaseBackups: true,
+  mcpSettings: true,
+  exportProgress: true,
+  settings: true,
+  logout: true,
+
   immediateSync: false,
   dataTransfer: true,
   driverManager: true,
@@ -1494,6 +1517,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   welcomePageModeDefaultVersion: WELCOME_PAGE_DEFAULT_VERSION,
   compactTabTitle: true,
   compactTabTitleDefaultVersion: COMPACT_TAB_TITLE_DEFAULT_VERSION,
+  crossWindowTabDragPreviewEnabled: true,
   duplicateTabTitleMode: "ordinal",
   tabLayout: "scroll",
   tabPlacement: "top",
@@ -1608,6 +1632,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   sidebarConnectionSortMode: "manual",
   sidebarSearchMatchMode: "fuzzy",
   sidebarObjectDisplay: "grouped",
+  sidebarSimpleHideIndexes: false,
   routineSourceOpenMode: "query-tab",
   sidebarTableSearchEnabled: false,
   sidebarTableSearchLocal: true,
@@ -1686,6 +1711,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   pluginShortcuts: normalizePluginShortcutSettings(undefined),
   pluginGraphicsEngineIds: [],
   toolbarItems: { ...DEFAULT_TOOLBAR_ITEMS },
+  toolbarItemOrder: [...DEFAULT_TOOLBAR_ITEM_ORDER],
   objectBrowserShowCheckbox: false,
   objectBrowserViewMode: "list",
   objectBrowserCompactWidth: DEFAULT_OBJECT_BROWSER_COMPACT_WIDTH,
@@ -2068,6 +2094,14 @@ function normalizeToolbarItems(items: Partial<ToolbarItems> | undefined): Toolba
   const defaults = DEFAULT_TOOLBAR_ITEMS;
   if (!items || typeof items !== "object") return { ...defaults };
   return {
+    newConnection: items.newConnection ?? defaults.newConnection,
+    newQuery: items.newQuery ?? defaults.newQuery,
+    openSql: items.openSql ?? defaults.openSql,
+    databaseBackups: items.databaseBackups ?? defaults.databaseBackups,
+    mcpSettings: items.mcpSettings ?? defaults.mcpSettings,
+    exportProgress: items.exportProgress ?? defaults.exportProgress,
+    settings: items.settings ?? defaults.settings,
+    logout: items.logout ?? defaults.logout,
     immediateSync: items.immediateSync ?? defaults.immediateSync,
     dataTransfer: items.dataTransfer ?? defaults.dataTransfer,
     driverManager: items.driverManager ?? defaults.driverManager,
@@ -2244,6 +2278,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     welcomePageModeDefaultVersion,
     compactTabTitle: hasCurrentCompactTabTitleDefault ? settings.compactTabTitle === true : DEFAULT_EDITOR_SETTINGS.compactTabTitle,
     compactTabTitleDefaultVersion,
+    crossWindowTabDragPreviewEnabled: typeof settings.crossWindowTabDragPreviewEnabled === "boolean" ? settings.crossWindowTabDragPreviewEnabled : DEFAULT_EDITOR_SETTINGS.crossWindowTabDragPreviewEnabled,
     tabLayout: normalizeTabLayout(settings.tabLayout),
     tabPlacement: normalizeTabPlacement(settings.tabPlacement),
     colorizeConnectionTabs: typeof settings.colorizeConnectionTabs === "boolean" ? settings.colorizeConnectionTabs : DEFAULT_EDITOR_SETTINGS.colorizeConnectionTabs,
@@ -2357,6 +2392,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     sidebarConnectionSortMode: normalizeConnectionListSortMode(settings.sidebarConnectionSortMode),
     sidebarSearchMatchMode: settings.sidebarSearchMatchMode === "contains" || settings.sidebarSearchMatchMode === "exact" ? settings.sidebarSearchMatchMode : "fuzzy",
     sidebarObjectDisplay: settings.sidebarObjectDisplay === "simple" || settings.sidebarObjectDisplay === "grouped" ? settings.sidebarObjectDisplay : DEFAULT_EDITOR_SETTINGS.sidebarObjectDisplay,
+    sidebarSimpleHideIndexes: settings.sidebarSimpleHideIndexes === true,
     routineSourceOpenMode: settings.routineSourceOpenMode === "query-tab" || settings.routineSourceOpenMode === "dialog" ? settings.routineSourceOpenMode : DEFAULT_EDITOR_SETTINGS.routineSourceOpenMode,
     sidebarTableSearchEnabled: typeof settings.sidebarTableSearchEnabled === "boolean" ? settings.sidebarTableSearchEnabled : DEFAULT_EDITOR_SETTINGS.sidebarTableSearchEnabled,
     sidebarTableSearchLocal: typeof settings.sidebarTableSearchLocal === "boolean" ? settings.sidebarTableSearchLocal : DEFAULT_EDITOR_SETTINGS.sidebarTableSearchLocal,
@@ -2491,6 +2527,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     pluginShortcuts: normalizePluginShortcutSettings(settings.pluginShortcuts),
     pluginGraphicsEngineIds: normalizePluginGraphicsEngineIds(settings.pluginGraphicsEngineIds),
     toolbarItems: normalizeToolbarItems(settings.toolbarItems),
+    toolbarItemOrder: normalizeToolbarItemOrder(settings.toolbarItemOrder),
     objectBrowserShowCheckbox: typeof settings.objectBrowserShowCheckbox === "boolean" ? settings.objectBrowserShowCheckbox : DEFAULT_EDITOR_SETTINGS.objectBrowserShowCheckbox,
     objectBrowserCompactWidth: normalizeObjectBrowserCompactWidth(settings.objectBrowserCompactWidth),
     objectBrowserViewMode: settings.objectBrowserViewMode === "grid" || settings.objectBrowserViewMode === "compact" ? settings.objectBrowserViewMode : DEFAULT_EDITOR_SETTINGS.objectBrowserViewMode,
@@ -2561,6 +2598,17 @@ function editorSettingsPatchSnapshot(settings: Partial<EditorSettings>): Partial
   return JSON.parse(JSON.stringify(settings)) as Partial<EditorSettings>;
 }
 
+async function emitSharedSettingsChanged(event: "dbx:editor-settings-changed" | "dbx:desktop-settings-changed", snapshot: EditorSettings | DesktopSettings): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit(event, snapshot);
+  } catch (error) {
+    // A notification cannot undo a durable settings write.
+    console.warn("[DBX][settings:notify]", error);
+  }
+}
+
 /** Keep only well-formed, non-empty template id lists keyed by db_type. */
 function normalizeTemplateIdsByDbType(value?: Record<string, string[]>): Record<string, string[]> {
   if (!value) return {};
@@ -2615,6 +2663,7 @@ export const useSettingsStore = defineStore("settings", () => {
   let editorSettingsOperationQueue: Promise<void> | null = null;
   let editorSettingsPatchRevision = 0;
   const editorSettingsFieldRevisions = new Map<keyof EditorSettings, number>();
+  const pendingSharedSettingsFields = new Map<keyof EditorSettings, number>();
   const customColumnFormatterDeleteVersions = new Map<string, number>();
   let pendingAiChatSelection: AiChatSelectionState | null = null;
   let aiChatSelectionSaveRunning = false;
@@ -2655,7 +2704,17 @@ export const useSettingsStore = defineStore("settings", () => {
 
   async function persistCurrentEditorSettings(): Promise<void> {
     const snapshot = editorSettingsSnapshot(editorSettings.value);
-    await api.saveEditorSettings(snapshot);
+    const fields = new Map(pendingSharedSettingsFields);
+    const patch = Object.fromEntries([...fields.keys()].map((key) => [key, snapshot[key]]));
+    const saved = isTauriRuntime() && fields.size ? await api.saveEditorSettings(snapshot, patch) : await api.saveEditorSettings(snapshot);
+    for (const [key, revision] of fields) {
+      if (pendingSharedSettingsFields.get(key) === revision) pendingSharedSettingsFields.delete(key);
+    }
+    // Older development binaries return no canonical value. Keep their open
+    // windows synchronized while the updated native host is being built.
+    if (isTauriRuntime() && saved == null) {
+      await emitSharedSettingsChanged("dbx:editor-settings-changed", snapshot);
+    }
     const visible = snapshot.toolbarItems.alwaysOnTop;
     if (visible !== persistedAlwaysOnTopToolbarVisibility) {
       persistedAlwaysOnTopToolbarVisibility = visible;
@@ -2674,7 +2733,10 @@ export const useSettingsStore = defineStore("settings", () => {
   function markEditorSettingsPatch(partial: Partial<EditorSettings>): number {
     const revision = ++editorSettingsPatchRevision;
     for (const key of Object.keys(partial) as (keyof EditorSettings)[]) {
-      if (partial[key] !== undefined) editorSettingsFieldRevisions.set(key, revision);
+      if (partial[key] !== undefined) {
+        editorSettingsFieldRevisions.set(key, revision);
+        pendingSharedSettingsFields.set(key, revision);
+      }
     }
     return revision;
   }
@@ -2786,6 +2848,21 @@ export const useSettingsStore = defineStore("settings", () => {
     isDesktopSettingsLoaded.value = true;
   }
 
+  function applySharedEditorSettings(raw: Partial<EditorSettings>) {
+    const next = normalizeEditorSettings(raw);
+    for (const key of pendingSharedSettingsFields.keys()) {
+      (next as unknown as Record<string, unknown>)[key] = editorSettings.value[key];
+    }
+    editorSettings.value = next;
+    persistedAlwaysOnTopToolbarVisibility = next.toolbarItems.alwaysOnTop;
+  }
+
+  function applySharedDesktopSettings(raw: DesktopSettings) {
+    desktopSettings.value = normalizeDesktopSettings(raw);
+    setDebugLoggingEnabled(desktopSettings.value.debug_logging_enabled);
+    configureMetadataRuntimeCache(desktopSettings.value.metadata_cache_max_memory_mb);
+  }
+
   async function updateDesktopSettings(partial: Partial<DesktopSettings>) {
     const previous = desktopSettings.value;
     const next = {
@@ -2797,6 +2874,7 @@ export const useSettingsStore = defineStore("settings", () => {
     configureMetadataRuntimeCache(desktopSettings.value.metadata_cache_max_memory_mb);
     try {
       await api.saveDesktopSettings(desktopSettings.value);
+      await emitSharedSettingsChanged("dbx:desktop-settings-changed", desktopSettings.value);
     } catch (error) {
       desktopSettings.value = previous;
       setDebugLoggingEnabled(previous.debug_logging_enabled);
@@ -3229,6 +3307,7 @@ export const useSettingsStore = defineStore("settings", () => {
       // later default change must not overwrite it (see normalizeEditorSettings).
       editorSettings.value.compactTabTitleDefaultVersion = COMPACT_TAB_TITLE_DEFAULT_VERSION;
     }
+    if (partial.crossWindowTabDragPreviewEnabled !== undefined) editorSettings.value.crossWindowTabDragPreviewEnabled = partial.crossWindowTabDragPreviewEnabled === true;
     if (partial.tabLayout !== undefined) editorSettings.value.tabLayout = normalizeTabLayout(partial.tabLayout);
     if (partial.tabPlacement !== undefined) editorSettings.value.tabPlacement = normalizeTabPlacement(partial.tabPlacement);
     if (partial.colorizeConnectionTabs !== undefined) editorSettings.value.colorizeConnectionTabs = partial.colorizeConnectionTabs === true;
@@ -3350,6 +3429,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.sidebarConnectionSortMode !== undefined) editorSettings.value.sidebarConnectionSortMode = normalizeConnectionListSortMode(partial.sidebarConnectionSortMode);
     if (partial.sidebarSearchMatchMode !== undefined) editorSettings.value.sidebarSearchMatchMode = partial.sidebarSearchMatchMode === "contains" || partial.sidebarSearchMatchMode === "exact" ? partial.sidebarSearchMatchMode : "fuzzy";
     if (partial.sidebarObjectDisplay !== undefined) editorSettings.value.sidebarObjectDisplay = partial.sidebarObjectDisplay;
+    if (partial.sidebarSimpleHideIndexes !== undefined) editorSettings.value.sidebarSimpleHideIndexes = partial.sidebarSimpleHideIndexes === true;
     if (partial.routineSourceOpenMode !== undefined) editorSettings.value.routineSourceOpenMode = partial.routineSourceOpenMode;
     if (partial.sidebarTableSearchEnabled !== undefined) editorSettings.value.sidebarTableSearchEnabled = partial.sidebarTableSearchEnabled;
     if (partial.sidebarTableSearchLocal !== undefined) editorSettings.value.sidebarTableSearchLocal = partial.sidebarTableSearchLocal;
@@ -3440,6 +3520,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.pluginShortcuts !== undefined) editorSettings.value.pluginShortcuts = normalizePluginShortcutSettings(partial.pluginShortcuts);
     if (partial.pluginGraphicsEngineIds !== undefined) editorSettings.value.pluginGraphicsEngineIds = normalizePluginGraphicsEngineIds(partial.pluginGraphicsEngineIds);
     if (partial.toolbarItems !== undefined) editorSettings.value.toolbarItems = normalizeToolbarItems(partial.toolbarItems);
+    if (partial.toolbarItemOrder !== undefined) editorSettings.value.toolbarItemOrder = normalizeToolbarItemOrder(partial.toolbarItemOrder);
     if (partial.objectBrowserShowCheckbox !== undefined) editorSettings.value.objectBrowserShowCheckbox = partial.objectBrowserShowCheckbox === true;
     if (partial.objectBrowserCompactWidth !== undefined) editorSettings.value.objectBrowserCompactWidth = normalizeObjectBrowserCompactWidth(partial.objectBrowserCompactWidth);
     if (partial.objectBrowserViewMode !== undefined) editorSettings.value.objectBrowserViewMode = partial.objectBrowserViewMode === "grid" || partial.objectBrowserViewMode === "compact" ? partial.objectBrowserViewMode : "list";
@@ -3693,6 +3774,8 @@ export const useSettingsStore = defineStore("settings", () => {
     desktopSettings,
     mcpGlobalPolicy,
     initEditorSettings,
+    applySharedEditorSettings,
+    applySharedDesktopSettings,
     syncAlwaysOnTopToolbarVisibility,
     updateEditorSettings,
     updateEditorSettingsAndPersist,

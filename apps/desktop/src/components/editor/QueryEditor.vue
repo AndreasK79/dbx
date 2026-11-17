@@ -134,6 +134,7 @@ import { focusEditorView } from "@/lib/editor/queryEditorFocus";
 import { createSqlUnknownObjectHighlights, refreshSqlUnknownObjectHighlights } from "@/lib/editor/codemirrorSqlUnknownObjectHighlights";
 import { shouldParseQueryEditorSyntax, shouldUseQueryEditorLargeDocumentMode, shouldUseQueryEditorLargeDocumentModeForSize } from "@/lib/editor/queryEditorLargeDocument";
 import { startsQueryEditorRectangularSelection } from "@/lib/editor/queryEditorPointerSelection";
+import { createQueryEditorMultiCursorMouseSelection } from "@/lib/editor/queryEditorMultiCursorMouseSelection";
 import { LARGE_PASTE_HISTORY_USER_EVENT, normalizeQueryEditorPasteText, recoverableNativePasteSuffix, shouldRecoverLargeTauriPaste } from "@/lib/editor/queryEditorLargePaste";
 
 import { keepQueryEditorPasteCaretOnLastContentLine } from "@/lib/editor/queryEditorClipboardPaste";
@@ -839,6 +840,11 @@ function focusErrorPosition(offset: number) {
     effects: [codeMirrorRuntime.editorViewModule.EditorView.scrollIntoView(errorPos, { y: "center" })],
   });
   currentView.focus();
+}
+
+function focusPackageMember(offset: number) {
+  documentState.cancelEditorViewportRestore();
+  focusErrorPosition(offset);
 }
 
 function insertLineBelow(currentView: EditorViewType): boolean {
@@ -2350,6 +2356,7 @@ const codeMirrorLifecycle = useQueryEditorCodeMirror({
         dropCursor(),
         props.readOnly ? [] : scrollPastEnd(),
         EditorView.dragMovesSelection.of((event) => !event.ctrlKey && !event.metaKey),
+        Prec.highest(EditorView.mouseSelectionStyle.of(createQueryEditorMultiCursorMouseSelection)),
         Prec.highest(
           EditorView.mouseSelectionStyle.of((currentView, event) =>
             createQueryEditorStringMouseSelection(currentView, event, {
@@ -2877,6 +2884,17 @@ watch([() => props.clientSessionId, () => props.completionContextVersion], () =>
 });
 
 watch(
+  [() => props.connectionId, () => props.database, () => props.schema, () => props.catalog, () => props.clientSessionId, () => props.completionContextVersion, () => !!props.connectionId && connectionStore.connectedIds.has(props.connectionId)],
+  () => {
+    const { sqlSignatureComp, buildSqlSignatureExtension } = codeMirrorRuntime;
+    if (view.value && sqlSignatureComp && buildSqlSignatureExtension) {
+      view.value.dispatch({ effects: sqlSignatureComp.reconfigure(buildSqlSignatureExtension()) });
+    }
+  },
+  { flush: "post" },
+);
+
+watch(
   [() => props.tabId, () => props.databaseType, () => props.dialect, () => props.syntaxDialect, sqlSyntaxDialect, () => props.mongoQueryLanguage, sqlDriverProfile, () => kingbaseConfig.value?.database_info?.compatibilityMode, () => JSON.stringify(sqlStatementParameterOptions())],
   () => {
     completion.invalidateRequests();
@@ -3294,6 +3312,7 @@ defineExpose({
   pasteClipboardAsSqlInCondition,
   focusStatementRange,
   focusErrorPosition,
+  focusPackageMember,
   previewStatementRange,
   refreshCompletionCache,
   toggleFold,
@@ -3305,7 +3324,7 @@ defineExpose({
 
 <template>
   <div
-    class="h-full w-full overflow-hidden relative"
+    class="relative flex h-full w-full flex-col overflow-hidden"
     :data-large-document-mode="largeDocumentMode || undefined"
     @wheel="recordExecutionViewportInteraction"
     @pointerdown="recordExecutionViewportInteraction"
@@ -3315,26 +3334,28 @@ defineExpose({
     @gesturechange="onEditorGestureChange"
     @gestureend="onEditorGestureEnd"
   >
-    <QueryEditorContextMenu :get-state="getContextMenuState" :actions="contextMenuActions" @close="contextMenuOpen = false" v-slot="{ onContextMenu }">
-      <div
-        ref="editorRef"
-        data-query-editor-root
-        class="h-full w-full overflow-hidden"
-        @contextmenu="
-          (e: MouseEvent) => {
-            if (view) {
-              syncContextMenuStateAtEvent(view, e);
-              dismissHoverTooltip();
+    <EditorSearchPanel ref="searchPanelRef" :view="view" docked @open="gotoLinePanelRef?.closeGotoLine()" />
+    <div class="relative min-h-0 w-full flex-1 overflow-hidden">
+      <QueryEditorContextMenu :get-state="getContextMenuState" :actions="contextMenuActions" @close="contextMenuOpen = false" v-slot="{ onContextMenu }">
+        <div
+          ref="editorRef"
+          data-query-editor-root
+          class="h-full w-full overflow-hidden"
+          @contextmenu="
+            (e: MouseEvent) => {
+              if (view) {
+                syncContextMenuStateAtEvent(view, e);
+                dismissHoverTooltip();
+              }
+              onContextMenu(e);
+              contextMenuOpen = true;
             }
-            onContextMenu(e);
-            contextMenuOpen = true;
-          }
-        "
-      />
-    </QueryEditorContextMenu>
-    <div v-show="queryEditorDropCaret" data-query-editor-drop-caret class="pointer-events-none absolute z-20 w-0.5 rounded-full bg-primary/70" :style="queryEditorDropCaretStyle" />
-    <EditorSearchPanel ref="searchPanelRef" :view="view" @open="gotoLinePanelRef?.closeGotoLine()" />
-    <EditorGotoLinePanel ref="gotoLinePanelRef" :view="view" @open="searchPanelRef?.closeSearch()" />
+          "
+        />
+      </QueryEditorContextMenu>
+      <div v-show="queryEditorDropCaret" data-query-editor-drop-caret class="pointer-events-none absolute z-20 w-0.5 rounded-full bg-primary/70" :style="queryEditorDropCaretStyle" />
+      <EditorGotoLinePanel ref="gotoLinePanelRef" :view="view" @open="searchPanelRef?.closeSearch()" />
+    </div>
     <SqlExecutionTargetPicker v-if="pickerVisible" :candidates="pickerCandidates" :active-index="pickerActiveIndex" :anchor="pickerAnchor" @update:active-index="onPickerActiveIndexChange" @confirm="onPickerConfirm" @cancel="closePicker" />
     <DelimitedListDialog v-model:open="delimitedListOpen" :selected-text="delimitedListSelectedText" @confirm="applyDelimitedListResult" />
     <TableStructurePeekDialog

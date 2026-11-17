@@ -2816,7 +2816,7 @@ export async function loadEditorSettings(): Promise<unknown | null> {
   return loadBrowserAppState("editor_settings");
 }
 
-export async function saveEditorSettings(settings: unknown): Promise<void> {
+export async function saveEditorSettings(settings: unknown, _patch?: unknown): Promise<void> {
   await saveBrowserAppState("editor_settings", settings);
 }
 
@@ -2893,7 +2893,11 @@ export async function saveTransferTaskLibrary(library: unknown): Promise<void> {
   await saveBrowserAppState("transfer_task_library", library);
 }
 
-export async function completeAppClose(_action: "quit" | "hide"): Promise<void> {
+export async function completeAppClose(_action: "quit" | "hide", _quitRequestId?: string): Promise<void> {
+  return undefined;
+}
+
+export async function completeWindowClose(): Promise<void> {
   return undefined;
 }
 
@@ -3333,6 +3337,8 @@ export interface SqlFileEntry {
   path: string;
   is_dir: boolean;
   children: SqlFileEntry[];
+  /** Last filesystem modification time in Unix milliseconds. */
+  modified_at?: number;
 }
 
 export async function listSqlFilesInFolder(_folderPath: string, _fileFilter?: string, _includeEmptyDirectories?: boolean): Promise<SqlFileEntry[]> {
@@ -3378,6 +3384,8 @@ export interface GlobalSearchRequest {
   respectIgnoreRules?: boolean;
   /** Max traversal depth (`WalkBuilder` semantics: root = 0, its entries = 1). */
   maxDepth?: number;
+  /** Client generated identifier used to cancel an in-flight scan. */
+  searchId?: string;
 }
 
 export interface GlobalSearchMatch {
@@ -3389,7 +3397,21 @@ export interface GlobalSearchMatch {
   lineText: string;
 }
 
-export async function globalSearch(_request: GlobalSearchRequest): Promise<GlobalSearchMatch[]> {
+export interface GlobalSearchError {
+  path: string;
+  message: string;
+}
+
+export interface GlobalSearchResponse {
+  matches: GlobalSearchMatch[];
+  errors: GlobalSearchError[];
+}
+
+export async function globalSearch(_request: GlobalSearchRequest): Promise<GlobalSearchResponse> {
+  throw new Error("Global content search is only available in the desktop app");
+}
+
+export async function cancelGlobalSearch(_searchId: string): Promise<void> {
   throw new Error("Global content search is only available in the desktop app");
 }
 

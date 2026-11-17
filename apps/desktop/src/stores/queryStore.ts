@@ -55,7 +55,9 @@ import {
   type EditableQuerySource,
 } from "@/lib/sql/sqlAnalysis";
 import { buildQueryWithHiddenPrimaryKeys, hiddenResultColumnIndexes, type HiddenPrimaryKeyProjection } from "@/lib/sql/editableQueryHiddenKeys";
-import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY, planOpenTabSqlSpill, restoreOpenTabsPayload, restoreOpenTabsState, serializeOpenTabs, type OpenTabsStatePayload } from "@/lib/app/openTabsPersistence";
+import { isDetachedTabWindow } from "@/lib/tabs/tabWindowTransfer";
+import { loadWorkspaceWindow, saveWorkspaceWindow, listWorkspaceWindows } from "@/lib/app/workspaceWindows";
+import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY, planOpenTabSqlSpill, restoreOpenTabsPayload, restoreOpenTabsState, serializeOpenTabs, type OpenTabsStatePayload, type SavedOpenTab } from "@/lib/app/openTabsPersistence";
 import { writeOpenTabSqlRecovery } from "@/lib/app/openTabsRecovery";
 import {
   evaluateMongoAggregateSafety,
@@ -91,7 +93,7 @@ import { formatRedisConsoleValue } from "@/lib/redis/redisValuePresentation";
 import { usesAgentCursorForQuery, usesAgentCursorForTableData } from "@/lib/database/databaseDriverManifest";
 import { connectionIsDorisFamilyCatalogCapable, defaultAutoCommitForDbType, supportsClearableQuerySchema, supportsTransaction, usesOracleStickyTransactionState, usesProvenReadOnlyStickyTransactionState } from "@/lib/database/databaseFeatureSupport";
 import { canInsertTableRows, canUseKeylessRowPredicate, DBX_ROWID_COLUMN, isViewTableType, postgresTupleLocatorUnsupportedEngine, shouldIncludeSyntheticRowId, usesSyntheticRowIdKey } from "@/lib/table/tableEditing";
-import { markRowIdLocatorUnsupported, rowIdLocatorUnsupported, shouldKeepRowIdLocatorDisabled, shouldRetryWithoutRowIdLocator } from "@/lib/table/tableRowIdSupport";
+import { isPostgresTupleLocatorRejection, markRowIdLocatorUnsupported, rowIdLocatorUnsupported, shouldKeepRowIdLocatorDisabled, shouldRetryWithoutRowIdLocator } from "@/lib/table/tableRowIdSupport";
 import { TABLE_DATA_EXPORT_PAGE_SIZE } from "@/lib/table/tableDataExport";
 import { repairRestoredDataTabTableIdentity, tableMetaForDataTab } from "@/lib/table/tableDataTabMeta";
 import { isDataTabMetadataLifecycleStale } from "@/lib/sidebar/dataTabOpenPolicy";
@@ -1104,7 +1106,7 @@ let contentRevealSeq = 0;
 let gridRevealColumnSeq = 0;
 
 async function saveTabs(tabs: QueryTab[], activeTabId: string | null, workspace?: EditorWorkspacePersistState): Promise<void> {
-  if (isDetachedWindow()) return Promise.resolve();
+  if (isDetachedWindow()) return;
   const { savedTabs, spills } = planOpenTabSqlSpill(tabs);
   if (spills.length > 0) {
     // Oversized SQL bodies must not be inlined into the session snapshot, or the
@@ -1131,7 +1133,12 @@ async function saveTabs(tabs: QueryTab[], activeTabId: string | null, workspace?
         }
       : {}),
   };
-  saveTabsQueue = saveTabsQueue.catch(() => undefined).then(() => api.saveOpenTabsState(payload));
+  saveTabsQueue = saveTabsQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (isTauriRuntime()) await saveWorkspaceWindow(payload);
+      if (!isTauriRuntime() || !isDetachedTabWindow()) await api.saveOpenTabsState(payload);
+    });
   return saveTabsQueue;
 }
 
@@ -1149,9 +1156,9 @@ function clearLegacySavedTabs() {
 
 function restoreSavedTabsFromPayload(
   payload: { tabs?: unknown; activeTabId?: unknown; groups?: unknown; focusedGroupId?: unknown; orientation?: unknown; sizes?: unknown } | null | undefined,
-  options: { validConnectionIds?: Iterable<string> } = {},
+  options: { validConnectionIds?: Iterable<string>; restoreWorkspace?: boolean } = {},
 ): { tabs: QueryTab[]; activeTabId: string | null; workspace?: unknown } {
-  const restoreMode = safeLocalStorageGet(UPDATE_RESTORE_KEY) === "1" ? "all" : useSettingsStore().editorSettings.openTabsRestoreMode;
+  const restoreMode = options.restoreWorkspace || safeLocalStorageGet(UPDATE_RESTORE_KEY) === "1" ? "all" : useSettingsStore().editorSettings.openTabsRestoreMode;
   const restored = restoreOpenTabsPayload(payload, {
     filter: restoreMode === "none" ? "recovery" : restoreMode === "pinned" ? "pinned" : "all",
     validConnectionIds: options.validConnectionIds,
@@ -2898,6 +2905,60 @@ export const useQueryStore = defineStore("query", () => {
     activeTabHistory.value = activeTabId.value ? [activeTabId.value] : [];
   }
 
+  function importTransferredTab(savedTab: SavedOpenTab, liveTab?: QueryTab): string | null {
+    if (tabs.value.some((tab) => tab.id === savedTab.id)) return null;
+    const restored = restoreOpenTabsPayload({ tabs: [savedTab], activeTabId: savedTab.id });
+    const tab = restored.tabs[0];
+    if (!tab) return null;
+
+    // Window transfer should preserve the current editor/result state instead of
+    // reducing the tab to the restart-safe persisted representation.
+    if (liveTab?.id === tab.id) {
+      Object.assign(tab, liveTab);
+      tab.isExecuting = false;
+      tab.isCancelling = false;
+      tab.queryExecutionStartedAt = undefined;
+      tab.executionId = undefined;
+      tab.isExplaining = false;
+      tab.explainExecutionId = undefined;
+    }
+
+    const connection = useConnectionStore().getConfig(tab.connectionId);
+    if (tab.mode === "query" && tab.autoCommit === undefined) {
+      tab.autoCommit = defaultAutoCommitForDbType(connection?.db_type);
+    } else if (tab.mode === "data" && connection) {
+      tab.schema = connectionObjectTreeNodeSchema(connection, tab.database, tab.schema);
+    }
+
+    registerOpenTab(tab);
+    tabs.value = orderPinnedFirst(tabs.value, (item) => !!item.pinned);
+    return tab.id;
+  }
+
+  function detachTabForTransfer(id: string): SavedOpenTab | null {
+    const index = tabs.value.findIndex((tab) => tab.id === id);
+    if (index < 0) return null;
+    const tab = tabs.value[index];
+    const savedTab = serializeOpenTabs([tab])[0] ?? null;
+    tabs.value.splice(index, 1);
+    removeTabsFromGroups(new Set([id]));
+    activeTabHistory.value = activeTabHistory.value.filter((historyId) => historyId !== id);
+    if (activeTabId.value === id) {
+      syncActiveTabFromFocusedGroup();
+    }
+    return savedTab;
+  }
+
+  function importTransferredTabs(entries: readonly { tab: SavedOpenTab; liveTab?: QueryTab }[], activeId?: string): boolean {
+    // Validate the entire group before registering any of its tabs.
+    if (!entries.length || entries.some(({ tab }) => !tabs.value.some((current) => current.id === tab.id) && !restoreOpenTabsPayload({ tabs: [tab], activeTabId: tab.id }).tabs.length)) return false;
+    for (const entry of entries) {
+      importTransferredTab(entry.tab, entry.liveTab);
+    }
+    activateTab(entries.some((entry) => entry.tab.id === activeId) ? activeId! : entries[0].tab.id);
+    return entries.every((entry) => tabs.value.some((tab) => tab.id === entry.tab.id));
+  }
+
   async function recoverDetachedTabsToMain(options: { validConnectionIds?: Iterable<string> } = {}) {
     if (!isTauriRuntime() || useSettingsStore().editorSettings.openTabsRestoreMode === "none") return;
     const validConnectionIds = options.validConnectionIds ? new Set(options.validConnectionIds) : undefined;
@@ -2921,7 +2982,14 @@ export const useQueryStore = defineStore("query", () => {
       const liveKeys = tabs.value.flatMap((tab) => [tab.resultCacheKey, ...(tab.resultRuns?.map((run) => run.resultCacheKey) ?? [])]).filter((key): key is string => !!key);
       void pruneTabResultSnapshots(liveKeys).catch((error) => console.warn("[DBX][result-cache:maintenance:error]", error));
     };
-    if (typeof requestIdleCallback !== "undefined") requestIdleCallback(maintain, { timeout: 5000 });
+    if (isTauriRuntime()) {
+      void listWorkspaceWindows()
+        .then((windows) => {
+          // A single-window sweep cannot discard another workspace's result cache.
+          if (!windows.some((window) => window.windowLabel !== "main")) maintain();
+        })
+        .catch(() => {});
+    } else if (typeof requestIdleCallback !== "undefined") requestIdleCallback(maintain, { timeout: 5000 });
     else if (typeof window !== "undefined") window.setTimeout(maintain, 0);
     else setTimeout(maintain, 0);
   }
@@ -2941,22 +3009,28 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  async function initOpenTabs(options: { validConnectionIds?: Iterable<string> } = {}) {
+  async function initOpenTabs(options: { validConnectionIds?: Iterable<string>; skipRestore?: boolean } = {}) {
     if (isDetachedWindow()) return;
     if (isOpenTabsLoaded.value) return;
-    const saved = await api.loadOpenTabsState().catch(() => null);
+    if (options.skipRestore) {
+      isOpenTabsLoaded.value = true;
+      return;
+    }
+    const ownSaved = isTauriRuntime() ? await loadWorkspaceWindow() : null;
+    const saved = ownSaved ?? (isDetachedTabWindow() ? null : await api.loadOpenTabsState().catch(() => null));
     if (saved?.tabs && Array.isArray(saved.tabs)) {
-      const restored = restoreSavedTabsFromPayload(saved, options);
+      const restoreWorkspace = !!ownSaved && isDetachedTabWindow();
+      const restored = restoreSavedTabsFromPayload(saved, { ...options, restoreWorkspace });
       applyRestoredOpenTabs(restored);
       notifyTruncatedRestoredTabs(restored.tabs);
-      if (safeLocalStorageGet(UPDATE_RESTORE_KEY) !== "1" && useSettingsStore().editorSettings.openTabsRestoreMode === "none") {
+      if (!restoreWorkspace && safeLocalStorageGet(UPDATE_RESTORE_KEY) !== "1" && useSettingsStore().editorSettings.openTabsRestoreMode === "none") {
         // Restore is explicitly disabled, so stale saved payloads should not
         // reappear if the user later changes the setting.
         clearLegacySavedTabs();
         await saveTabs(tabs.value, activeTabId.value, { groups: groups.value, focusedGroupId: focusedGroupId.value, orientation: orientation.value, sizes: sizes.value }).catch(() => undefined);
       }
       await recoverDetachedTabsToMain(options);
-      await saveTabs(tabs.value, activeTabId.value).catch(() => undefined);
+      await saveTabs(tabs.value, activeTabId.value, { groups: groups.value, focusedGroupId: focusedGroupId.value, orientation: orientation.value, sizes: sizes.value }).catch(() => undefined);
       safeLocalStorageRemove(UPDATE_RESTORE_KEY);
       isOpenTabsLoaded.value = true;
       scheduleResultCacheMaintenance();
@@ -2987,7 +3061,7 @@ export const useQueryStore = defineStore("query", () => {
       }
     }
     await recoverDetachedTabsToMain(options);
-    await saveTabs(tabs.value, activeTabId.value).catch(() => undefined);
+    await saveTabs(tabs.value, activeTabId.value, { groups: groups.value, focusedGroupId: focusedGroupId.value, orientation: orientation.value, sizes: sizes.value }).catch(() => undefined);
     isOpenTabsLoaded.value = true;
     scheduleResultCacheMaintenance();
   }
@@ -3066,6 +3140,7 @@ export const useQueryStore = defineStore("query", () => {
     [_persistSnapshot, activeTabId, groups, focusedGroupId, orientation, sizes],
     () => {
       if (storePersistGeneration !== persistGeneration) return;
+      if (isTauriRuntime() && !isOpenTabsLoaded.value) return;
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
         if (isDetachedWindow()) {
@@ -4837,7 +4912,7 @@ export const useQueryStore = defineStore("query", () => {
     tab.structureInitialTabRequestId = (tab.structureInitialTabRequestId ?? 0) + 1;
   }
 
-  function openTableStructure(connectionId: string, database: string, schema?: string, tableName?: string, initialTab?: TableInfoTab, initialTarget?: TableStructureEditorTarget, catalog?: string, tableType?: "table" | "view", exactIdentity = false) {
+  function openTableStructure(connectionId: string, database: string, schema?: string, tableName?: string, initialTab?: TableInfoTab, initialTarget?: TableStructureEditorTarget, catalog?: string, tableType?: "table" | "view" | "materialized_view", exactIdentity = false) {
     const resolvedTableName = tableName || "";
     if (resolvedTableName) {
       const existing = tabs.value.find(
@@ -4973,6 +5048,7 @@ export const useQueryStore = defineStore("query", () => {
   const dirtyTabIds = computed(() => new Set(dirtyTabIdsKey.value ? dirtyTabIdsKey.value.split("\n") : []));
   const shouldConfirmUnsavedSqlClose = computed(() => useSettingsStore().editorSettings.confirmUnsavedSqlClose);
   const keepUnsavedTabsDraftsOnAppClose = computed(() => useSettingsStore().editorSettings.appCloseUnsavedTabsMode === "keep-drafts");
+  const isConfirmingWindowClose = ref(false);
   const requiresAppCloseDraftPersist = computed(
     () => tabs.value.some((tab) => tab.isDefaultQuery || (tab.typeManagementDraft && tab.typeManagementDraft.state !== "complete")) || (shouldConfirmUnsavedSqlClose.value && keepUnsavedTabsDraftsOnAppClose.value && tabs.value.some((tab) => tab.mode === "query" && isTabDirty(tab))),
   );
@@ -4984,8 +5060,24 @@ export const useQueryStore = defineStore("query", () => {
     return !keepUnsavedTabsDraftsOnAppClose.value || tab.mode !== "query";
   }
 
+  function shouldConfirmTabOnWindowClose(tab: QueryTab): boolean {
+    if (isTabDirty(tab)) return true;
+    // A scratch query with SQL but no saved-SQL/file backing is still unsaved,
+    // even if another flow has already refreshed its in-memory SQL baseline.
+    return tab.mode === "query" && !tab.savedSqlId && !tab.externalSqlPath && !!tab.sql.trim();
+  }
+
+  function isTabUnsavedForWindowClose(tab: QueryTab): boolean {
+    return shouldConfirmTabOnWindowClose(tab);
+  }
+
+  const hasUnsavedWindowTabs = computed(() => tabs.value.some((tab) => shouldConfirmTabOnWindowClose(tab)));
+
   const closeConfirmDirtyTabIds = computed(() => {
-    if (isConfirmingAppClose.value) return tabs.value.filter((tab) => shouldConfirmTabOnAppClose(tab)).map((tab) => tab.id);
+    if (isConfirmingAppClose.value) {
+      const shouldConfirm = isConfirmingWindowClose.value ? shouldConfirmTabOnWindowClose : shouldConfirmTabOnAppClose;
+      return tabs.value.filter((tab) => shouldConfirm(tab)).map((tab) => tab.id);
+    }
     if (pendingBatchCloseTabIds.value) {
       return pendingBatchCloseTabIds.value
         .map((id) => tabs.value.find((tab) => tab.id === id))
@@ -5154,6 +5246,17 @@ export const useQueryStore = defineStore("query", () => {
     tab.sql = "";
     tab.originalSql = "";
     return true;
+  }
+
+  function discardScratchTabForWindowClose(id: string) {
+    const tab = tabs.value.find((item) => item.id === id);
+    // Unlike app close, a detached workspace is destroyed after confirmation.
+    // Its unbacked scratch SQL must be cleared too; restoring its original SQL
+    // would make it look unsaved again and reopen the same confirmation loop.
+    if (tab?.mode === "query" && !tab.savedSqlId && !tab.externalSqlPath && !tab.objectSource) {
+      tab.sql = "";
+      tab.originalSql = "";
+    }
   }
 
   function finishPendingBatchClose() {
@@ -5439,12 +5542,17 @@ export const useQueryStore = defineStore("query", () => {
   function forceClosePendingTab() {
     const id = pendingCloseTabId.value;
     const confirmingAppClose = isConfirmingAppClose.value;
+    const confirmingWindowClose = isConfirmingWindowClose.value;
     pendingCloseTabId.value = null;
     showCloseConfirm.value = false;
     closeConfirmContext.value = "tab";
     if (confirmingAppClose) {
-      if (id) discardTabChanges(id);
+      if (id) {
+        discardTabChanges(id);
+        if (confirmingWindowClose) discardScratchTabForWindowClose(id);
+      }
       isConfirmingAppClose.value = false;
+      isConfirmingWindowClose.value = false;
       return;
     }
     if (id) closeTab(id, { force: true });
@@ -5457,6 +5565,7 @@ export const useQueryStore = defineStore("query", () => {
     const finalActiveTabId = pendingBatchCloseFinalActiveTabId.value;
     const onBatchComplete = pendingBatchCloseComplete;
     const confirmingAppClose = isConfirmingAppClose.value;
+    const confirmingWindowClose = isConfirmingWindowClose.value;
 
     pendingCloseTabId.value = null;
     showCloseConfirm.value = false;
@@ -5464,9 +5573,13 @@ export const useQueryStore = defineStore("query", () => {
     pendingBatchCloseFinalActiveTabId.value = undefined;
     pendingBatchCloseComplete = null;
     isConfirmingAppClose.value = false;
+    isConfirmingWindowClose.value = false;
     closeConfirmContext.value = "tab";
 
-    for (const id of dirtyIds) discardTabChanges(id);
+    for (const id of dirtyIds) {
+      discardTabChanges(id);
+      if (confirmingWindowClose) discardScratchTabForWindowClose(id);
+    }
     if (confirmingAppClose) return;
 
     const idsToClose = batchIds ?? (pendingId ? [pendingId] : []);
@@ -5484,6 +5597,7 @@ export const useQueryStore = defineStore("query", () => {
     pendingBatchCloseFinalActiveTabId.value = undefined;
     pendingBatchCloseComplete = null;
     isConfirmingAppClose.value = false;
+    isConfirmingWindowClose.value = false;
     closeConfirmContext.value = "tab";
   }
 
@@ -5492,6 +5606,7 @@ export const useQueryStore = defineStore("query", () => {
     pendingCloseTabId.value = null;
     showCloseConfirm.value = false;
     isConfirmingAppClose.value = false;
+    isConfirmingWindowClose.value = false;
     closeConfirmContext.value = "tab";
     if (id) return id;
     return null;
@@ -5524,6 +5639,7 @@ export const useQueryStore = defineStore("query", () => {
     pendingBatchCloseFinalActiveTabId.value = undefined;
     pendingBatchCloseComplete = null;
     isConfirmingAppClose.value = false;
+    isConfirmingWindowClose.value = false;
     closeConfirmContext.value = "tab";
 
     if (confirmingAppClose) return "app" as const;
@@ -5643,9 +5759,19 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function requestAppCloseConfirmation() {
+    isConfirmingWindowClose.value = false;
     const dirtyTab = tabs.value.find((tab) => shouldConfirmTabOnAppClose(tab));
     if (!dirtyTab) return false;
     isConfirmingAppClose.value = true;
+    showDirtyTabCloseConfirm(dirtyTab, "app");
+    return true;
+  }
+
+  function requestWindowCloseConfirmation() {
+    const dirtyTab = tabs.value.find((tab) => shouldConfirmTabOnWindowClose(tab));
+    if (!dirtyTab) return false;
+    isConfirmingAppClose.value = true;
+    isConfirmingWindowClose.value = true;
     showDirtyTabCloseConfirm(dirtyTab, "app");
     return true;
   }
@@ -7460,7 +7586,9 @@ export const useQueryStore = defineStore("query", () => {
    * hidden PostgreSQL locator projection was rejected by the server (#12647).
    * Keyed by executionId: only the still-current execution may consume it.
    */
-  const pendingQueryLocatorRetries = new Map<string, { connectionId: string; originalSql: string; publicationOptions?: Parameters<typeof executeTabSql>[2] }>();
+  const pendingQueryLocatorRetries = new Map<string, { connectionId: string; originalSql: string; tableKey: string }>();
+  // External tables can reject system columns on a server whose regular tables support them.
+  const queryTablesWithoutTupleLocator = new Set<string>();
 
   /**
    * Registers the original SQL behind a locator-bearing query rewrite so the
@@ -7468,9 +7596,9 @@ export const useQueryStore = defineStore("query", () => {
    * rewrite (#12647). Keyed by executionId; consumed or dropped when that
    * execution finishes.
    */
-  function registerEditableQueryLocatorRetry(tab: QueryTab, originalSql: string) {
+  function registerEditableQueryLocatorRetry(tab: QueryTab, originalSql: string, tableKey: string) {
     if (!tab.executionId) return;
-    pendingQueryLocatorRetries.set(tab.executionId, { connectionId: tab.connectionId!, originalSql });
+    pendingQueryLocatorRetries.set(tab.executionId, { connectionId: tab.connectionId!, originalSql, tableKey });
   }
 
   /**
@@ -7480,8 +7608,11 @@ export const useQueryStore = defineStore("query", () => {
    * ordinary query execution, so its own publication path stays untouched.
    */
   function scheduleQueryLocatorRetry(tab: QueryTab, originalSql: string, options: Parameters<typeof executeTabSql>[2]) {
+    const epoch = manualTransactionTargetEpoch(tab);
+    const cancelRequestCount = tab.cancelRequestCount;
     setTimeout(() => {
-      if (tabs.value.includes(tab) || findExecutionTab(tab.id) === tab) void executeTabSql(tab.id, originalSql, { ...options, resultBaseSql: originalSql }).catch(() => undefined);
+      if (tab.executionId || tab.cancelRequestCount !== cancelRequestCount || manualTransactionTargetEpoch(tab) !== epoch || findExecutionTab(tab.id) !== tab) return;
+      void executeTabSql(tab.id, originalSql, { ...options, resultBaseSql: originalSql }).catch(() => undefined);
     }, 0);
   }
 
@@ -7954,7 +8085,9 @@ export const useQueryStore = defineStore("query", () => {
       if (loaded.tableMeta.columns.length === 0) return unchanged;
       if (loaded.tableMeta.tableType?.toUpperCase().includes("VIEW")) return unchanged;
       const primaryKeys = loaded.tableMeta.primaryKeys;
-      const postgresCtidRowId = databaseType === "postgres" && primaryKeys.length === 0 && !postgresTupleLocatorUnsupportedEngine(conn) && !rowIdLocatorUnsupported(tab.connectionId);
+      const { connectionId, database, schema, catalog, tableName } = target.request;
+      const tableKey = JSON.stringify([connectionId, database, schema || "public", catalog, tableName]);
+      const postgresCtidRowId = databaseType === "postgres" && primaryKeys.length === 0 && !postgresTupleLocatorUnsupportedEngine(conn) && !rowIdLocatorUnsupported(tab.connectionId) && !queryTablesWithoutTupleLocator.has(tableKey);
       const syntheticRowId = postgresCtidRowId || ((databaseType === "oracle" || databaseType === "oceanbase-oracle" || databaseType === "xugu") && usesSyntheticRowIdKey(databaseType, primaryKeys, loaded.tableMeta.tableType));
       // Base tables without a natural identifier use the same physical row locator
       // as table-data tabs (Oracle, OceanBase Oracle, Xugu, and PostgreSQL). Confirm
@@ -7970,7 +8103,7 @@ export const useQueryStore = defineStore("query", () => {
         // original SQL now: when this execution lands as an error result, the publication
         // path replays it once and marks the connection, and the next execution skips the
         // locator up front (rowIdLocatorUnsupported above).
-        registerEditableQueryLocatorRetry(tab, sql);
+        registerEditableQueryLocatorRetry(tab, sql, tableKey);
       }
       return preparation;
     } catch (error) {
@@ -10352,6 +10485,24 @@ export const useQueryStore = defineStore("query", () => {
       // Sync connection state if the error indicates a lost connection
       useConnectionStore().recordConnectionLostError(executionConnectionId ?? tab.connectionId, e);
       if (findExecutionTab(id) !== tab || tab.executionId !== executionId || manualTransactionTargetEpoch(tab) !== executionTargetEpoch) return false;
+      // The backend throws single-statement errors rather than returning an error result.
+      // Retry only an explicit rejection of a locator DBX added to this auto-commit SELECT.
+      const pendingLocatorRetry = pendingQueryLocatorRetries.get(executionId);
+      if (
+        executionDispatched &&
+        !tab.isCancelling &&
+        (tab.cancelRequestCount ?? 0) === cancelRequestCountAtStart &&
+        tab.autoCommit !== false &&
+        !tab.autoCommitOpenTransaction &&
+        pendingLocatorRetry?.connectionId === executionConnectionId &&
+        pendingLocatorRetry?.originalSql.trim() === queryBaseSql.trim() &&
+        isPostgresTupleLocatorRejection(normalizeBackendError(e)?.detail ?? String(e?.message ?? e))
+      ) {
+        queryTablesWithoutTupleLocator.add(pendingLocatorRetry.tableKey);
+        queryExecutionLog("info", "query-locator-retry:original-sql", { traceId, elapsed: elapsed() });
+        scheduleQueryLocatorRetry(tab, pendingLocatorRetry.originalSql, options);
+        return false;
+      }
       if (String(e?.message ?? e).includes("MYSQL_CLIENT_SESSION_LOST")) clearAutoCommitOpenTransaction(tab);
       // Handle manual transaction auto-rollback (idle timeout only for the banner;
       // other statement failures still clear the session without the 5-minute notice).
@@ -12226,6 +12377,8 @@ export const useQueryStore = defineStore("query", () => {
     closeConfirmContext,
     closeConfirmDirtyTabIds,
     hasDirtyTabs,
+    hasUnsavedWindowTabs,
+    isTabUnsavedForWindowClose,
     dirtyTabIds,
     requiresAppCloseDraftPersist,
     isConfirmingAppClose,
@@ -12253,6 +12406,9 @@ export const useQueryStore = defineStore("query", () => {
     forceCloseAllPendingTabs,
     cancelClosePendingTab,
     flushPendingPersist,
+    importTransferredTab,
+    importTransferredTabs,
+    detachTabForTransfer,
     persistTypeManagementDraft,
     saveAndClosePendingTab,
     suspendCloseConfirm,
@@ -12271,6 +12427,7 @@ export const useQueryStore = defineStore("query", () => {
     markExternalSqlFolderMissingForPath,
     discardTabChanges,
     requestAppCloseConfirmation,
+    requestWindowCloseConfirmation,
     closeOtherTabs,
     closeOtherTabsInGroup,
     closeAllTabsInGroup,

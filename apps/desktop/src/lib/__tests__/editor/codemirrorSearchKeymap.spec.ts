@@ -28,7 +28,9 @@ describe("searchKeymapWithoutShortcutConflicts", () => {
   it("keeps the other search bindings intact", () => {
     const filtered = searchKeymapWithoutShortcutConflicts(searchKeymap);
     const keys = filtered.map((binding) => binding.key);
-    expect(keys).toContain("Mod-f");
+    // #14623: Mod-f is stripped too — the configurable Find binding must not
+    // be shadowed by the built-in openSearchPanel.
+    expect(keys).not.toContain("Mod-f");
     expect(keys).toContain("Mod-g");
     expect(keys).toContain("Mod-Alt-g");
     expect(keys).toContain("Mod-Shift-l");
@@ -126,5 +128,17 @@ describe("searchKeymapWithoutShortcutConflicts", () => {
       expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "F3" }), "editor")).toBe(true);
       view.destroy();
     });
+  });
+});
+
+describe("searchKeymapWithoutModD strips Mod-f (#14623)", () => {
+  it("removes the built-in Mod-f openSearchPanel binding", () => {
+    const filtered = searchKeymapWithoutModD(searchKeymap);
+    expect(filtered.some((binding) => binding.key === "Mod-f")).toBe(false);
+  });
+
+  it("keeps unrelated bindings", () => {
+    const filtered = searchKeymapWithoutModD(searchKeymap);
+    expect(filtered.some((binding) => binding.key === "Mod-g")).toBe(true);
   });
 });

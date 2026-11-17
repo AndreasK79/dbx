@@ -20,22 +20,29 @@ import type { EditorView, KeyBinding } from "@codemirror/view";
  *   App.vue 的全局 handleKeydown 执行用户配置的动作。
  */
 export function searchKeymapWithoutShortcutConflicts(searchKeymap: readonly KeyBinding[], isSearchPanelOpen: (view: EditorView) => boolean = (view) => searchPanelOpen(view.state)): KeyBinding[] {
-  return searchKeymap
-    .filter((binding) => binding.key !== "Mod-d")
-    .map((binding) =>
-      // The stock binding carries preventDefault: true, which marks the key
-      // handled (and default-prevented) even when run returns false — that
-      // would swallow the F3 meant for whatever global action the user
-      // remapped onto it. With it dropped, a true return from findNext still
-      // prevents the default (handled keydowns are always prevented); a false
-      // return now really lets the event bubble to App.vue.
-      //
-      // The stock searchPanelOpen(state) predicate only tests whether a panel
-      // exists in CodeMirror's search state — DBX's custom search panel hides
-      // itself without ever dispatching the close effect, so the stock check
-      // turns permanently true after the first search in a tab and F3 would
-      // reopen the panel forever. The query editor therefore passes
-      // EditorSearchPanel's live visibility (searchVisible) instead.
-      binding.key === "F3" ? { ...binding, run: (view: EditorView) => (isSearchPanelOpen(view) ? findNext(view) : false), preventDefault: false } : binding,
-    );
+  return (
+    searchKeymap
+      // #14623/#14636: the stock `Mod-d` and `Mod-f` bindings shadow
+      // user-configurable actions (addNextSelectionOccurrence, Find) — clearing
+      // Find leaves the editor opening its search panel and swallowing the key,
+      // so both are stripped and App.vue's global handler routes them per user
+      // configuration.
+      .filter((binding) => binding.key !== "Mod-d" && binding.key !== "Mod-f")
+      .map((binding) =>
+        // The stock binding carries preventDefault: true, which marks the key
+        // handled (and default-prevented) even when run returns false — that
+        // would swallow the F3 meant for whatever global action the user
+        // remapped onto it. With it dropped, a true return from findNext still
+        // prevents the default (handled keydowns are always prevented); a false
+        // return now really lets the event bubble to App.vue.
+        //
+        // The stock searchPanelOpen(state) predicate only tests whether a panel
+        // exists in CodeMirror's search state — DBX's custom search panel hides
+        // itself without ever dispatching the close effect, so the stock check
+        // turns permanently true after the first search in a tab and F3 would
+        // reopen the panel forever. The query editor therefore passes
+        // EditorSearchPanel's live visibility (searchVisible) instead.
+        binding.key === "F3" ? { ...binding, run: (view: EditorView) => (isSearchPanelOpen(view) ? findNext(view) : false), preventDefault: false } : binding,
+      )
+  );
 }
