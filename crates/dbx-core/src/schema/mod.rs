@@ -13440,6 +13440,7 @@ pub async fn get_oracle_type_management_snapshot_with_objects_core(
                         schema: Some(object_owner.clone()),
                         name: object_name.clone(),
                         source: source.clone(),
+                        identifier_quote: None,
                     },
                 )
                 .ok()
@@ -13636,6 +13637,7 @@ pub fn build_oracle_type_management_sql(
             schema: Some(owner.clone()),
             name: name.clone(),
             source,
+            identifier_quote: None,
         };
         let (sql, fingerprint) = if object_type == db::ObjectSourceKind::Trigger {
             dbx_sql::object_source_sql::build_oracle_type_management_trigger_source(
@@ -13677,6 +13679,7 @@ pub fn build_oracle_type_management_sql(
                 schema: Some(input.owner.clone()),
                 name: input.name.clone(),
                 source,
+                identifier_quote: None,
             })?;
             let quoted = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
             return Ok(db::OracleTypeManagementSqlResult {
