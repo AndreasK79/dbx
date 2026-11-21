@@ -424,6 +424,10 @@ export function configureQueryEditorSqlExtensions(options: QueryEditorSqlExtensi
       codeMirrorRuntime.snippetMenu?.extensions ?? [],
       autocompletion({
         activateOnTyping: true,
+        // DBeaver-style auto-activation delay: typing bursts do not pop the list
+        // until the pause elapses (#15340). CodeMirror treats this as the gap
+        // between the last keystroke and activation.
+        activateOnTypingDelay: Math.max(0, Number.isFinite(settingsStore.editorSettings.completionAutoActivationDelayMs) ? settingsStore.editorSettings.completionAutoActivationDelayMs : 500),
         defaultKeymap: false,
         selectOnOpen: settingsStore.editorSettings.selectFirstCompletionOnOpen,
         compareCompletions: (a, b) => compareSqlCompletions(a, b, settingsStore.editorSettings.sortCompletionColumnsAlphabetically),

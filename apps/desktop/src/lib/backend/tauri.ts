@@ -6969,6 +6969,8 @@ export interface QueryResultExportRequest {
   timeoutSecs?: number;
   keysetOptimizationEnabled: boolean;
   clientSessionId?: string;
+  /** MySQL source session, borrowed while streaming without transferring ownership. */
+  sourceClientSessionId?: string;
   /** Open manual transaction to read through, so the export sees its uncommitted changes. */
   txnSessionId?: string;
   executionId?: string;

@@ -86,7 +86,7 @@ EditorToolbar.vue, EditorGroup.vue, QueryEditorSurface.vue, ContentArea.vue, que
 Rebindable ("Commit transaction"). Acts on the active editor group's tab and only consumes the keys when that tab actually holds an open transaction (manual mode, or an auto-commit tab that kept an explicit BEGIN).
 shortcutRegistry.ts, keyboardShortcuts.ts, EditorGroup.vue, SqlEditorWorkspace.vue, App.vue, en.ts, zh-CN.ts, __tests__/shortcutRegistry.spec.ts, __tests__/keyboardShortcuts.spec.ts
 
-23. $0 final cursor position in snippets
+23. $0 final cursor position in snippets — UPSTREAMED (merged upstream as 46355b3f9 in v0.6.72)
 $0/${0} mark where the cursor lands once the tabstops are done (VS Code style): they're renumbered to one past the highest tabstop — CodeMirror's final field — so Tab walks the fields and ends there; multiple $0 become one multi-caret field. Only zero is translated: bare $1/$2 stay PostgreSQL bind parameters, and \$0 stays literal.
 sqlCompletion.ts, __tests__/sqlCompletion.snippet.spec.ts
 
