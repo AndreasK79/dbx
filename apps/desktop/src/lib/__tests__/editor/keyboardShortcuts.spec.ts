@@ -10,6 +10,7 @@ import {
   shouldBlockCaretBrowsing,
   isConvertNamingStyleShortcut,
   isCommitTransactionShortcut,
+  copyResultColumnIndexFromShortcut,
   isEditCellShortcut,
   isEditSidebarTableStructureShortcut,
   isEditTableStructureShortcut,
@@ -351,7 +352,7 @@ describe("keyboard shortcut matching", () => {
     const shortcuts = { commitTransaction: "Shift+Mod+C" } as const;
 
     expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true }, shortcuts)).toBe(true);
-    expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true })).toBe(false);
     expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true }, shortcuts)).toBe(false);
     expect(isCommitTransactionShortcut({ key: "C", shiftKey: true }, shortcuts)).toBe(false);
     expect(isCommitTransactionShortcut({ key: "C", ctrlKey: true, shiftKey: true }, { commitTransaction: "" })).toBe(false);
@@ -360,9 +361,9 @@ describe("keyboard shortcut matching", () => {
 });
 
 describe("copyResultColumnIndexFromShortcut", () => {
-  it("maps Alt+1..Alt+5 to result columns 1..5", () => {
+  it("leaves every result-column action unassigned until configured", () => {
     for (const digit of [1, 2, 3, 4, 5]) {
-      expect(copyResultColumnIndexFromShortcut({ key: String(digit), altKey: true })).toBe(digit);
+      expect(copyResultColumnIndexFromShortcut({ key: String(digit), altKey: true })).toBeNull();
     }
   });
 

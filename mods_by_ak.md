@@ -82,7 +82,7 @@ doubleShiftGesture.ts, useDatabaseObjectSearch.ts, DatabaseObjectSearchDialog.vu
 Enter or click in a Ctrl+Alt+D-opened selector hands focus to the query editor (deferred one frame past the popover's own focus restore). Click-opened dropdowns behave as before; dismissing the shortcut-opened dropdown with Escape or an outside click cancels the hand-off. (Originally rode the fork's F3 shortcut, #18; rewired onto openDatabasePicker when #18 was removed.)
 EditorToolbar.vue, EditorGroup.vue, QueryEditorSurface.vue, ContentArea.vue, querySurfaces.ts, QueryEditor.vue, __tests__/EditorToolbar.databaseSelectFocus.spec.ts
 
-22. Ctrl+Shift+C commits the transaction
+22. Ctrl+Shift+C commits the transaction — UPSTREAMED (merged upstream as 2a4ca2025, opt-in default)
 Rebindable ("Commit transaction"). Acts on the active editor group's tab and only consumes the keys when that tab actually holds an open transaction (manual mode, or an auto-commit tab that kept an explicit BEGIN).
 shortcutRegistry.ts, keyboardShortcuts.ts, EditorGroup.vue, SqlEditorWorkspace.vue, App.vue, en.ts, zh-CN.ts, __tests__/shortcutRegistry.spec.ts, __tests__/keyboardShortcuts.spec.ts
 
@@ -114,7 +114,7 @@ sqlCompletion.ts (exact-match pass), __tests__/sql/sqlCompletion.snippet.spec.ts
 Enter triggers the primary action per state (Download in Background → Restart & Update → Restart; Update Now on component tabs), with every branch re-checking the button's disabled conditions — inert while downloading/installing/gated, key repeats ignored, Cancel never fires. Enter on tab buttons, links, and the source dropdown keeps its native behavior; the primary buttons are the only type="submit" controls.
 UpdateDialog.vue, UpdateDialog.spec.ts
 
-30. Alt+1..5 copies a value from the first row of the current result
+30. Alt+1..5 copies a value from the first row of the current result — UPSTREAMED (merged upstream as 9397dbdcd, opt-in default)
 Alt+N copies the first-row value of column N from the active tab's current result (rebindable), only consuming the keys when there is something to copy. The value comes from the projected active result run, null copies as empty string, and the toast names the column with a 60-char preview.
 queryResultFirstValue.ts, shortcutRegistry.ts, keyboardShortcuts.ts, EditorGroup.vue, SqlEditorWorkspace.vue, App.vue, en.ts, zh-CN.ts, __tests__/queryResultFirstValue.spec.ts, __tests__/editor/shortcutRegistry.spec.ts, __tests__/editor/keyboardShortcuts.spec.ts
 

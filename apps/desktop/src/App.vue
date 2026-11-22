@@ -5140,22 +5140,20 @@ async function handleKeydown(e: KeyboardEvent) {
     contentAreaRef.value?.refreshData();
     return;
   }
-  // Ctrl+Shift+C (default) commits the active tab's transaction — the toolbar
-  // commit button as a shortcut. commitTransaction reports unhandled when no
-  // transaction is open, leaving the keys free for anything more specific.
-  if (isCommitTransactionShortcut(e, shortcuts) && contentAreaRef.value?.commitTransaction()) {
-    e.preventDefault();
-    e.stopPropagation();
-    return;
-  }
-  // Alt+1..5 (default) copies the active tab's first result row, column N.
-  // copyResultColumn reports unhandled when the result has no such column, so
-  // the keys stay free for anything more specific bound to them.
-  const copyResultColumn = copyResultColumnIndexFromShortcut(e, shortcuts);
-  if (copyResultColumn !== null && contentAreaRef.value?.copyResultColumn(copyResultColumn)) {
-    e.preventDefault();
-    e.stopPropagation();
-    return;
+  if (!showSettingsPage.value && !showPluginCenter.value && !showDriverStore.value) {
+    const target = e.target instanceof Element ? e.target : null;
+    const canUseShortcut = !target?.closest('[role="dialog"], [role="alertdialog"], input, textarea, [contenteditable="true"]:not(.cm-content)');
+    if (!e.repeat && canUseShortcut && isCommitTransactionShortcut(e, shortcuts) && contentAreaRef.value?.commitTransaction()) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    const copyResultColumn = copyResultColumnIndexFromShortcut(e, shortcuts);
+    if (copyResultColumn !== null && !target?.closest('[role="dialog"], [role="alertdialog"], input, textarea') && contentAreaRef.value?.copyResultColumn(copyResultColumn)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
   }
   if (isToggleResultsPaneShortcut(e, shortcuts) && contentAreaRef.value?.toggleResultsPane()) {
     e.preventDefault();

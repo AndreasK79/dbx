@@ -32,6 +32,7 @@ import {
   ShieldCheck,
   Code2,
   Copy,
+  ClipboardPaste,
   Loader2,
   X,
   Undo2,
@@ -5037,6 +5038,7 @@ const {
   availableInsertRows,
   appendPastedRowsToNewRow,
   appendPastedRowsToNewRowInBatches,
+  appendPastedRowsAsNewRows,
   appendPastedRowsAsNewRowsInBatches,
   cloneRow: cloneEditorRow,
   showDeleteRowConfirm,
@@ -10919,6 +10921,22 @@ async function pasteClipboardIntoSelection() {
   await pasteTextIntoGrid(text);
 }
 
+async function pasteClipboardTextIntoCell(rowId: number, columnIndex: number) {
+  const operation = dataGridResultLifecycle.beginOperation();
+  const lifecycle = gridClipboardLifecycle;
+  const version = pendingChangesVersion.value;
+  const isCurrent = () => gridClipboardActive && lifecycle === gridClipboardLifecycle && dataGridResultLifecycle.isCurrent(operation) && pendingChangesVersion.value === version;
+  try {
+    const text = await readTextFromClipboard();
+    if (!isCurrent() || isSaving.value || rowPreparationController || !canEditCellItem(getRowItem(rowId), columnIndex)) return;
+    if (!text || !clipboardWithinGridCapacity(text)) return;
+    applyCellValue(rowId, columnIndex, text, { preserveEmptyString: true });
+    toast(t("grid.pasted"));
+  } catch (error) {
+    if (isCurrent()) toast(t("grid.pasteCellTextFailed", { message: error instanceof Error ? error.message : String(error) }), 5000);
+  }
+}
+
 interface PasteAsNewRowsContext {
   operation: ReturnType<typeof dataGridResultLifecycle.beginOperation>;
   lifecycle: number;
@@ -11110,10 +11128,10 @@ function applyParsedGridPaste(rows: readonly (readonly (string | null)[])[], col
   }
   const cellTarget = blankSelectionBatchAppendPasteTarget(rows.length);
   if (cellTarget) return appendParsedRowsToBlankTarget(cellTarget.rowId, rows, cellTarget.columnIndexes, columnNames, preparation);
-  return pasteRowsIntoSelection(rows);
+  return pasteRowsIntoSelection(rows, preparation);
 }
 
-function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): boolean {
+function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[], preparation?: DataGridRowPreparationOptions): boolean | Promise<boolean> {
   const allowDraftSelectionValue = selectedRangeTargetsOnlyDraftRow();
 
   if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0], { preserveEmptyString: true })) {
@@ -11126,10 +11144,38 @@ function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): 
   const recordIndexes = isTransposeMode.value ? transposeScopeRecordIndexes.value : null;
   const startPosition = recordIndexes ? recordIndexes.indexOf(start.rowIndex) : start.rowIndex;
   if (startPosition < 0) return false;
+
+  // Split the clipboard into the part that overwrites existing cells and the
+  // part that overflows past the end of the result. Previously the overflow
+  // was silently dropped by planDataGridPaste (issue #15263).
+  const rowSlots = Math.max(0, (recordIndexes?.length ?? displayRowCount.value) - startPosition);
+  const overwriteRows = rows.slice(0, rowSlots);
+  const overflowRows = rows.slice(rowSlots);
+
+  // Only append overflow rows for a plain cell paste onto already-saved rows.
+  // Transpose scope, column selections, draft/new rows and read-only columns
+  // keep their established bounded-overwrite behaviour.
+  const startItem = displayItemAt(start.rowIndex);
+  const insertColumnIndexes = visibleColumnIndexes.value.slice(start.colIndex);
+  const canOverflow =
+    overflowRows.length > 0 &&
+    !recordIndexes &&
+    !hasColumnSelection.value &&
+    !!startItem &&
+    !startItem.isNew &&
+    !startItem.isDraft &&
+    !startItem.isDeleted &&
+    canInsertRows.value &&
+    overflowRows.length <= availableInsertRows.value &&
+    insertColumnIndexes.length > 0 &&
+    insertColumnIndexes.every((col) => canEditColumn(col));
+
   let applied = false;
-  beginBatch();
+  // When an append will follow, capture one undo snapshot up front so the
+  // overwrite and the appended rows undo together as a single change.
+  beginBatch({ captureUndo: canOverflow });
   try {
-    for (const cell of planDataGridPaste(rows, (recordIndexes?.length ?? displayRowCount.value) - startPosition, visibleColumns.value.length - start.colIndex)) {
+    for (const cell of planDataGridPaste(overwriteRows, rowSlots, visibleColumns.value.length - start.colIndex)) {
       const rowIndex = recordIndexes ? recordIndexes[startPosition + cell.rowOffset] : start.rowIndex + cell.rowOffset;
       const item = displayItemAt(rowIndex);
       if (!item) continue;
@@ -11141,8 +11187,36 @@ function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): 
   } finally {
     commitBatch();
   }
-  if (applied) toast(t("grid.pasted"));
-  return applied;
+
+  const finish = (inserted: boolean) => {
+    if (overflowRows.length > 0 && !inserted) {
+      // Insert was not available; make the dropped rows explicit instead of
+      // silently losing them, even though the in-bounds cells were overwritten.
+      toast(t("grid.pasteRowsTruncated", { applied: overwriteRows.length, dropped: overflowRows.length }), 5000);
+    } else if (applied || inserted) {
+      toast(t("grid.pasted"));
+    }
+    return applied || inserted;
+  };
+
+  if (!canOverflow) return finish(false);
+
+  // Append the overflow as new rows, reusing the existing batch-aware
+  // preparation (capacity checks, generated-column clearing, NULL fidelity)
+  // while skipping its own undo snapshot — beginBatch already captured one.
+  if (preparation) {
+    // The overwrite segment's commitBatch() advanced pendingChangesVersion, so
+    // the caller's isCurrent() (captured before the paste) would now report
+    // stale. Rebuild a preparation that keeps cancellation/progress but relies
+    // on the composable's fresh isCurrent() for state consistency.
+    const appendPreparation: DataGridRowPreparationOptions = {
+      signal: preparation.signal,
+      onProgress: preparation.onProgress,
+      isCurrent: () => !preparation.signal?.aborted && gridClipboardActive,
+    };
+    return appendPastedRowsAsNewRowsInBatches(overflowRows, insertColumnIndexes, undefined, appendPreparation, { skipUndoSnapshot: true }).then((result) => finish(result.ok));
+  }
+  return finish(appendPastedRowsAsNewRows(overflowRows, insertColumnIndexes, undefined, { skipUndoSnapshot: true }).ok);
 }
 
 function onGridPaste(event: ClipboardEvent) {
@@ -15819,6 +15893,7 @@ function exportSubmenu(): ContextMenuItem {
 
 const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
   const row = contextRowItem.value;
+  const cellColumn = contextCell.value?.col ?? -1;
   const rowLabels = rowActionLabels();
   const rowIdsForDelete = isMultiRow.value ? affectedRowIds() : row ? [row.id] : [];
   const deletableContextRowIds = deletableRowIds(rowIdsForDelete);
@@ -16001,6 +16076,15 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
       downloadItem: binaryDownloadSubmenu(contextCellDetail.value),
       foreignKeyItem: contextForeignKeyMenuItem(),
       copySubmenu: copySubmenu(),
+      pasteCellItem:
+        !contextHeaderColumn.value && row && cellColumn >= 0 && canEditCellItem(row, cellColumn)
+          ? {
+              label: t("grid.pasteCellText"),
+              icon: ClipboardPaste,
+              action: () => void pasteClipboardTextIntoCell(row.id, cellColumn),
+              disabled: isSaving.value || !!rowPreparationProgress.value,
+            }
+          : null,
       clearSelectionItem: {
         label: t("grid.clearSelection"),
         action: clearCellSelection,
@@ -18767,10 +18851,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
   --data-grid-row-number-deleted-bg: rgb(255, 244, 244);
   --data-grid-row-number-active-bg: rgb(219, 234, 254);
   --data-grid-row-number-selected-bg: rgb(191, 219, 254);
-  --data-grid-scrollbar-thumb: color-mix(in oklch, var(--foreground) 30%, transparent);
-  --data-grid-scrollbar-thumb-hover: color-mix(in oklch, var(--foreground) 48%, transparent);
-  --data-grid-scrollbar-track: transparent;
-  --data-grid-vertical-scrollbar-width: 10px;
+  --data-grid-vertical-scrollbar-width: var(--dbx-workspace-scrollbar-size);
   background-color: var(--data-grid-background);
 }
 
@@ -18802,9 +18883,6 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
   --data-grid-row-number-deleted-bg: rgb(55, 31, 32);
   --data-grid-row-number-active-bg: rgb(27, 46, 70);
   --data-grid-row-number-selected-bg: rgb(30, 64, 96);
-  --data-grid-scrollbar-thumb: rgb(82, 82, 91);
-  --data-grid-scrollbar-thumb-hover: rgb(113, 113, 122);
-  --data-grid-scrollbar-track: rgb(24, 24, 27);
   background-color: var(--data-grid-background);
 }
 
@@ -19120,7 +19198,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
   inset-inline: calc(var(--row-num-w) + 8px) 4px;
   bottom: 0;
   z-index: 30;
-  height: 10px;
+  height: var(--dbx-workspace-scrollbar-size);
   cursor: pointer;
   touch-action: none;
   background-color: var(--data-grid-background);
@@ -19131,34 +19209,29 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
   background-color: var(--data-grid-background) !important;
 }
 
-.data-grid-horizontal-scrollbar::before {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  top: 4px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--data-grid-scrollbar-track);
-}
-
 .data-grid-horizontal-scrollbar__thumb {
   position: absolute;
-  top: 3px;
-  height: 4px;
+  inset-block: 0;
   min-width: 24px;
+  border-block: var(--dbx-workspace-scrollbar-inset) solid transparent;
+}
+
+.data-grid-horizontal-scrollbar__thumb,
+.data-grid-vertical-scrollbar__thumb {
   border-radius: 999px;
-  background: var(--data-grid-scrollbar-thumb);
+  background: var(--dbx-workspace-scrollbar-thumb);
+  background-clip: padding-box;
   transition:
-    height 120ms ease,
-    background-color 120ms ease,
-    top 120ms ease;
+    border-width 120ms ease,
+    background-color 120ms ease;
 }
 
 .data-grid-horizontal-scrollbar:hover .data-grid-horizontal-scrollbar__thumb,
-.data-grid-horizontal-scrollbar--dragging .data-grid-horizontal-scrollbar__thumb {
-  top: 2px;
-  height: 6px;
-  background: var(--data-grid-scrollbar-thumb-hover);
+.data-grid-horizontal-scrollbar--dragging .data-grid-horizontal-scrollbar__thumb,
+.data-grid-vertical-scrollbar:hover .data-grid-vertical-scrollbar__thumb,
+.data-grid-vertical-scrollbar--dragging .data-grid-vertical-scrollbar__thumb {
+  border-width: 0;
+  background-color: var(--dbx-workspace-scrollbar-thumb-active);
 }
 
 .data-grid-detail-resize-handle--bottom {
@@ -19173,7 +19246,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
   width: 42px;
   height: 2px;
   border-radius: 999px;
-  background: var(--data-grid-scrollbar-thumb-hover);
+  background: var(--dbx-workspace-scrollbar-thumb-active);
   opacity: 0;
   pointer-events: none;
   transform: translate(-50%, -50%);
@@ -19211,22 +19284,9 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
 
 .data-grid-vertical-scrollbar__thumb {
   position: absolute;
-  inset-inline-start: 3px;
-  width: 4px;
+  inset-inline: 0;
   min-height: 24px;
-  border-radius: 999px;
-  background: var(--data-grid-scrollbar-thumb);
-  transition:
-    background-color 120ms ease,
-    inset-inline-start 120ms ease,
-    width 120ms ease;
-}
-
-.data-grid-vertical-scrollbar:hover .data-grid-vertical-scrollbar__thumb,
-.data-grid-vertical-scrollbar.data-grid-vertical-scrollbar--dragging .data-grid-vertical-scrollbar__thumb {
-  inset-inline-start: 1px;
-  width: 8px;
-  background: var(--data-grid-scrollbar-thumb-hover);
+  border-inline: var(--dbx-workspace-scrollbar-inset) solid transparent;
 }
 
 .canvas-grid-surface {
