@@ -189,6 +189,7 @@ const databaseSelectOpenedViaShortcut = ref(false);
 const toolbarTier = ref<EditorToolbarTier>(0);
 
 defineExpose({
+  commitFromToolbar,
   openConnectionPicker: () => connectionPickerRef.value?.openDropdown() ?? false,
   // Ctrl+Alt+D (settings.shortcutOpenDatabasePicker): open the database
   // selector's dropdown programmatically, arming the focus hand-off above.
@@ -674,13 +675,6 @@ const connectionPickerRef = ref<InstanceType<typeof ConnectionTreeSelect> | null
 const connectionPickerOpen = ref(false);
 const databasePickerRef = ref<InstanceType<typeof SearchableSelect> | null>(null);
 const schemaPickerRef = ref<InstanceType<typeof SearchableSelect> | null>(null);
-
-defineExpose({
-  commitFromToolbar,
-  openConnectionPicker: () => connectionPickerRef.value?.openDropdown() ?? false,
-  openDatabasePicker: () => databasePickerRef.value?.openDropdown() ?? false,
-  openSchemaPicker: () => schemaPickerRef.value?.openDropdown() ?? false,
-});
 </script>
 
 <template>
