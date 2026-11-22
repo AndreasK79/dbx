@@ -2803,10 +2803,6 @@ export default {
       drag: "Drag to move",
       empty: "No columns",
     },
-    snippetQuickAdd: {
-      prefixUnique: "Prefix must be unique.",
-      saved: 'Snippet "{label}" added',
-    },
     bookmarks: {
       workspaceTitle: "Bookmarks",
       workspaceSearch: "Search files, SQL text or line numbers",

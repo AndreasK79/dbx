@@ -2733,10 +2733,6 @@ export default withEnglishFallback({
       drag: "拖动面板",
       empty: "暂无字段",
     },
-    snippetQuickAdd: {
-      prefixUnique: "触发键必须唯一。",
-      saved: "已添加片段 {label}",
-    },
     bookmarks: {
       workspaceTitle: "书签",
       workspaceSearch: "搜索文件名、SQL 内容或行号",
