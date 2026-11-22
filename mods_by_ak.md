@@ -90,7 +90,7 @@ shortcutRegistry.ts, keyboardShortcuts.ts, EditorGroup.vue, SqlEditorWorkspace.v
 $0/${0} mark where the cursor lands once the tabstops are done (VS Code style): they're renumbered to one past the highest tabstop — CodeMirror's final field — so Tab walks the fields and ends there; multiple $0 become one multi-caret field. Only zero is translated: bare $1/$2 stay PostgreSQL bind parameters, and \$0 stays literal.
 sqlCompletion.ts, __tests__/sqlCompletion.snippet.spec.ts
 
-24. Add-snippet dialog from the editor's right-click menu
+24. Add-snippet dialog from the editor's right-click menu — UPSTREAMED (merged upstream as 5f5ec9c1d)
 "Add snippet" in the editor's context menu opens a small dialog (label, prefix, SQL body); with a selection the body comes prefilled with it. Saves immediately (prefix must be non-empty and unique — duplicates flagged live), Enter confirms, Escape cancels, and it works in read-only editors since saving a snippet never touches editor content.
 SnippetQuickAddDialog.vue, QueryEditor.vue, en.ts, zh-CN.ts, __tests__/SnippetQuickAddDialog.spec.ts, __tests__/QueryEditor.snippetQuickAdd.spec.ts
 

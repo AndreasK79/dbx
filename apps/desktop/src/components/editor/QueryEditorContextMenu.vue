@@ -35,6 +35,7 @@ import {
   Trash2,
   UnfoldVertical,
   WandSparkles,
+  ListPlus,
 } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { canFormatSqlForDatabaseType } from "@/lib/sql/sqlFormatter";
@@ -399,6 +400,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
       shortcut: shortcuts.convertSelectionToDelimited,
     },
     {
+      sidebarActionId: "editor.contextMenu.addSnippet",
       // Saves editor content as a snippet (settings persist immediately); the
       // selection, if any, only prefills the body — no editor text is touched,
       // so it stays available in read-only editors too.

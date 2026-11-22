@@ -63,6 +63,10 @@ const FEATURE_MESSAGES: FeatureMessages[] = [
     keys: under("ai", ["copilotAccount", "copilotSignIn", "copilotSignInHint", "copilotPolling", "copilotSecondsLeft", "copilotOpenVerification", "copilotCancelSignIn", "copilotSignedInAs", "copilotSignedIn", "copilotSignOut", "copilotExpired", "copilotDenied", "copilotTryAgain"]),
     locales: ["en", "zh-CN"],
   },
+  {
+    feature: "plugin update blocked by the host engine requirement",
+    keys: under("pluginPlatform", ["marketplaceStatus.requires-newer-dbx", "marketplaceStatus.incompatible", "requiresNewerDbx", "requiresNewerDbxWithRequirement", "pluginVersionIncompatible", "updateBlockedByNewerDbx", "upgradeDbx"]),
+  },
   { feature: "editor find whole word (#13287)", keys: ["editor.search.wholeWord"], translated: true },
   { feature: "quick open", keys: ["quickOpen.*", "settings.shortcutGlobalSearch"] },
   {
