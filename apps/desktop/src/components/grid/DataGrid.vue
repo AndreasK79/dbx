@@ -8053,7 +8053,7 @@ watch(columnDetailDialogOpen, (open) => {
 // The "referenced row" tab is offered for foreign-key cells; defined before the tab list because a watcher reads that list during setup.
 const foreignKeyRowPreviewAvailable = computed(() => {
   const cell = detailCell.value;
-  return !!cell && canvasCellForeignKey(cell.rowIndex, cell.col) !== null;
+  return !!cell && cellForeignKeyAssociation(cell.col) !== null;
 });
 
 const activeCellDetailTabs = computed(() => {

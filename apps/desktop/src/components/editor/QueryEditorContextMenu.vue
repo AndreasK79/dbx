@@ -35,7 +35,6 @@ import {
   Trash2,
   UnfoldVertical,
   WandSparkles,
-  ListPlus,
 } from "@lucide/vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { canFormatSqlForDatabaseType } from "@/lib/sql/sqlFormatter";
