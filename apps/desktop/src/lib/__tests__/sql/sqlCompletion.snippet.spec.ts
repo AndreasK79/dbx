@@ -679,7 +679,10 @@ describe("snippets that only match loosely (#15292)", () => {
     const items = buildSnippetItemsForTest("qw", [{ id: "han-3", label: "企微活码", prefix: "企微活码", body: "SELECT 3;" }], undefined, "mysql");
 
     expect(items).toHaveLength(1);
-    expect(items[0]!.boost).toBeGreaterThan(4000);
+    // Fork ranking (mods 28/44): a prefix/pinyin-prefix matched snippet keeps
+    // its +400 base boost above the match score, staying above plain keywords
+    // but below identifier tiers — upstream's flat 4000 lives behind our tier.
+    expect(items[0]!.boost).toBeGreaterThan(2000);
   });
 
   it("still ranks a snippet whose prefix starts with the typed letters ahead of keywords", () => {
