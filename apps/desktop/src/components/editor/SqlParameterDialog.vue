@@ -35,7 +35,6 @@ const emit = defineEmits<{
 }>();
 
 const values = ref<Record<string, SqlParameterInput>>({});
-const formRef = ref<HTMLFormElement | null>(null);
 const histories = ref<Record<string, SqlParameterInput[]>>({});
 const activeHistoryName = ref("");
 const preserveQuotedBracedParameters = ref(false);
@@ -166,17 +165,6 @@ function execute() {
   histories.value = { ...histories.value, ...rememberSqlParameterValues(usedValues) };
   open.value = false;
   emit("execute", resolvedSql.value);
-}
-
-// 打开对话框时把焦点放到第一个参数值输入框：reka 默认聚焦第一个可聚焦
-// 元素——头部的“清除值”按钮——紧接的 Enter 会误触它清空参数值。
-function focusFirstParameterInputOnOpen(event: Event) {
-  event.preventDefault();
-  const input = formRef.value?.querySelector<HTMLInputElement>("input[data-form-type='other']");
-  if (input) {
-    input.focus();
-    input.select();
-  }
 }
 
 async function copyResolvedSql() {
