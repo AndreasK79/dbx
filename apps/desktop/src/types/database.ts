@@ -2321,6 +2321,7 @@ export interface ConnectionGroup {
   id: string;
   name: string;
   collapsed: boolean;
+  color?: string;
 }
 
 export type SidebarOrderEntry = { type: "group"; id: string; children?: SidebarOrderEntry[]; connectionIds?: string[] } | { type: "connection"; id: string };
@@ -2344,6 +2345,8 @@ export interface TreeNode {
   id: string;
   label: string;
   type: TreeNodeType;
+  /** Color of a sidebar connection group or the color inherited by a connection row. */
+  sidebarColor?: string;
   /** Additional values matched by sidebar search without rendering them. */
   searchAliases?: string[];
   children?: TreeNode[];

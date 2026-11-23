@@ -150,6 +150,7 @@ import {
   isCloseOtherTabsShortcut,
   isCloseTabShortcut,
   isReopenClosedTabShortcut,
+  isOpenRecentTablesShortcut,
   isCloseWindowShortcut,
   isCommitTransactionShortcut,
   isDisconnectAllActiveConnectionsShortcut,
@@ -265,6 +266,7 @@ import type { PluginAiRecommendationHostUpdate } from "@/lib/plugins/pluginHostB
 const AiAssistant = defineAsyncComponent(() => import("@/components/editor/AiAssistant.vue"));
 const PluginWorkbenchTab = defineAsyncComponent(() => import("@/components/plugins/PluginWorkbenchTab.vue"));
 const QueryHistory = defineAsyncComponent(() => import("@/components/editor/QueryHistory.vue"));
+const RecentClosedTabsDialog = defineAsyncComponent(() => import("@/components/tabs/RecentClosedTabsDialog.vue"));
 const SqlLibraryPanel = defineAsyncComponent(() => import("@/components/layout/SqlLibraryPanel.vue"));
 const SqlFilesBookmarksDock = defineAsyncComponent(() => import("@/components/layout/SqlFilesBookmarksDock.vue"));
 const DriverStorePage = defineAsyncComponent(() => import("@/components/config/DriverStoreDialog.vue"));
@@ -534,6 +536,7 @@ const showQuickOpen = ref(false);
 const quickOpenForceContent = ref(false);
 const showDatabaseObjectSearch = ref(false);
 const showTabSwitcher = ref(false);
+const showRecentTables = ref(false);
 const tabSwitcherIndex = ref(0);
 const agentDriverUpdateCount = ref(0);
 const showHistory = ref(false);
@@ -1361,6 +1364,9 @@ provide(EDITOR_TOOLBAR_ACTIONS, {
   saveSql: (tabId: string) => void openSaveSqlDialog(tabId),
   saveRoutineToDatabase: (tabId: string) => void saveRoutineToDatabase(tabId),
   saveAllTabs: (tabIds?: string[]) => void handleSaveAllTabs(tabIds),
+  openRecentTables: () => {
+    showRecentTables.value = true;
+  },
   openSqlFile,
   importResultArchive,
   pasteSqlInCondition: pasteClipboardAsSqlInCondition,
@@ -5258,6 +5264,15 @@ async function handleKeydown(e: KeyboardEvent) {
     await closeActiveSurface();
     return;
   }
+  if (isOpenRecentTablesShortcut(e, shortcuts) && authenticated.value && !e.isComposing && !e.repeat && (workspaceRendered() || isZenMode.value)) {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target?.closest('[role="dialog"], [role="alertdialog"]')) {
+      e.preventDefault();
+      e.stopPropagation();
+      showRecentTables.value = true;
+      return;
+    }
+  }
   if (isReopenClosedTabShortcut(e, shortcuts)) {
     e.preventDefault();
     e.stopPropagation();
@@ -6400,6 +6415,7 @@ onUnmounted(() => {
         <QuickOpenDialog :open="showQuickOpen" :initial-content-mode="quickOpenForceContent" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
         <DatabaseObjectSearchDialog :open="showDatabaseObjectSearch" @update:open="showDatabaseObjectSearch = $event" @select="handleDatabaseObjectSearchSelect" />
         <OracleTypeManagementDialog v-if="oracleTypeManagementRequest" />
+        <RecentClosedTabsDialog v-if="showRecentTables" v-model:open="showRecentTables" tables-only />
         <TabSwitcherDialog :open="showTabSwitcher" :tabs="tabSwitcherTabs" :selected-index="tabSwitcherIndex" :shortcut-hint="tabSwitcherShortcutHint" @update:open="handleTabSwitcherOpenChange" @update:selected-index="tabSwitcherIndex = $event" @select="handleTabSwitcherSelect" />
       </div>
       <Teleport to="body">

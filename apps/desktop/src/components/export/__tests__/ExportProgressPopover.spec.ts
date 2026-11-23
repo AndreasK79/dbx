@@ -192,7 +192,7 @@ describe("data generation background task", () => {
     await mountPopover();
 
     expect(document.body.textContent).toContain("Data generation: app.users");
-    expect(document.body.textContent).toContain(`1 / 2 tables · users · 250 / ${localeNumber(1_000)} rows`);
+    expect(document.body.textContent).toContain(`1 / 2 tables · users · 250 / ${(1000).toLocaleString()} rows`);
     const openButton = document.body.querySelector<HTMLButtonElement>('button[title="Open task"]');
     expect(openButton).not.toBeNull();
     openButton?.click();
@@ -301,7 +301,7 @@ describe("ExportProgressPopover task duration", () => {
     await mountPopover();
 
     expect(document.body.textContent).toContain("Database export: demo_2000_tables");
-    expect(document.body.textContent).toContain(`Current: t_0123_with_a_long_descriptive_name (123/${localeNumber(2_000)})`);
+    expect(document.body.textContent).toContain(`Current: t_0123_with_a_long_descriptive_name (123/${(2000).toLocaleString()})`);
     expect(document.body.querySelector('[title="t_0123_with_a_long_descriptive_name"]')).not.toBeNull();
   });
 

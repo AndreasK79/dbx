@@ -21,6 +21,7 @@ const { highlight } = useSqlHighlighter();
 const { toast } = useToast();
 
 const open = defineModel<boolean>("open", { default: false });
+const formRef = ref<HTMLFormElement | null>(null);
 
 const props = defineProps<{
   sql: string;
@@ -150,6 +151,16 @@ function selectHistoryEntry(name: string, entry: SqlParameterInput) {
   activeHistoryName.value = "";
 }
 
+// Enter in any parameter field submits the form -> Execute. Initial focus
+// goes to the first parameter input, not the header's "Clear values" button.
+function focusFirstParameterInputOnOpen(event: Event) {
+  const input = formRef.value?.querySelector<HTMLInputElement>("input[data-form-type='other']:not(:disabled)");
+  if (!input) return;
+  event.preventDefault();
+  input.focus();
+  input.select();
+}
+
 function execute() {
   const usedValues = Object.fromEntries(activeParameters.value.flatMap(({ key }) => (values.value[key] ? [[key, values.value[key]]] : [])));
   histories.value = { ...histories.value, ...rememberSqlParameterValues(usedValues) };
@@ -198,13 +209,13 @@ async function copyResolvedSql() {
         <div class="grid max-h-[calc(86vh-8rem)] gap-4 overflow-y-auto pr-1">
           <div class="flex flex-wrap items-center gap-2">
             <p class="min-w-0 flex-1 text-sm text-muted-foreground">{{ t("sqlParameters.description") }}</p>
-            <Button type="button" size="sm" variant="outline" class="shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-clear-values" @click="clearParameterValues">
+            <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-values" :disabled="!activeParameters.length" @click="clearParameterValues">
               {{ t("sqlParameters.clearValues") }}
             </Button>
-            <Button type="button" size="sm" variant="outline" class="shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-clear-history" @click="clearParameterHistory">
+            <Button type="button" size="sm" variant="outline" class="shrink-0" data-testid="sql-parameters-clear-history" @click="clearParameterHistory">
               {{ t("sqlParameters.clearHistory") }}
             </Button>
-            <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" :disabled="!activeParameters.length" data-testid="sql-parameters-use-raw-all" @click="setAllParametersToRaw">
+            <Button type="button" size="sm" variant="outline" class="ml-auto shrink-0" data-testid="sql-parameters-use-raw-all" :disabled="!activeParameters.length" @click="setAllParametersToRaw">
               {{ t("sqlParameters.useRawForAll") }}
             </Button>
           </div>
@@ -214,7 +225,7 @@ async function copyResolvedSql() {
             {{ t("sqlParameters.preserveQuotedBracedParameters") }}
           </label>
 
-          <div class="relative z-20 max-h-[302px] overflow-auto rounded-md border bg-background">
+          <div v-if="activeParameters.length" class="relative z-20 max-h-[302px] overflow-auto rounded-md border bg-background">
             <div class="min-w-[680px]">
               <div class="sticky top-0 z-10 grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] border-b bg-muted px-3 py-2 text-xs font-medium text-muted-foreground">
                 <div>{{ t("sqlParameters.name") }}</div>
@@ -222,7 +233,7 @@ async function copyResolvedSql() {
                 <div>{{ t("sqlParameters.type") }}</div>
                 <div>{{ t("sqlParameters.value") }}</div>
               </div>
-              <div v-for="parameter in parameters" :key="parameter.key" class="grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0">
+              <div v-for="parameter in activeParameters" :key="parameter.key" class="grid grid-cols-[minmax(140px,1fr)_104px_132px_minmax(180px,1.5fr)] items-center gap-2 border-b px-3 py-2 text-sm last:border-b-0">
                 <div class="min-w-0 truncate font-mono text-xs">{{ parameter.name }}</div>
                 <div class="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{{ syntaxLabel(parameter) }}</div>
                 <Select :model-value="values[parameter.key]?.kind || 'string'" @update:model-value="(value) => updateKind(parameter.key, value as SqlParameterValueKind)">

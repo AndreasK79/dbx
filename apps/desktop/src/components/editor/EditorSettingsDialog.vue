@@ -2726,6 +2726,7 @@ const collapsedShortcutScopes = ref<Set<ShortcutScope>>(new Set());
 const formatterEditorShortcutIds: ShortcutActionId[] = [
   "formatSql",
   "toggleLineComment",
+  "toggleLineCommentAndAdvance",
   "find",
   "replace",
   "saveSql",

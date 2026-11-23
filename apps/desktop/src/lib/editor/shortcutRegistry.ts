@@ -12,6 +12,7 @@ export type ShortcutActionId =
   | "formatSql"
   | "expandSelectStar"
   | "toggleLineComment"
+  | "toggleLineCommentAndAdvance"
   | "toggleBlockComment"
   | "saveSql"
   | "acceptCompletion"
@@ -70,6 +71,7 @@ export type ShortcutActionId =
   | "openSettings"
   | "closeTab"
   | "reopenClosedTab"
+  | "openRecentTables"
   | "closeOtherTabs"
   | "closeAllTabs"
   | "saveAllTabs"
@@ -100,6 +102,7 @@ export type ShortcutActionId =
   | "resetUiZoom"
   | "find"
   | "gotoLine"
+  | "goToLastEditLocation"
   | "replace"
   | "refreshData"
   | "toggleResultsPane"
@@ -271,6 +274,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutToggleLineComment",
     scope: "editor",
     defaultShortcut: "Mod+/",
+  },
+  {
+    id: "toggleLineCommentAndAdvance",
+    labelKey: "settings.shortcutToggleLineCommentAndAdvance",
+    scope: "editor",
+    defaultShortcut: "",
   },
   {
     id: "toggleBlockComment",
@@ -614,6 +623,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     defaultShortcut: "Shift+Mod+T",
   },
   {
+    id: "openRecentTables",
+    labelKey: "tabs.recentTablesTitle",
+    scope: "global",
+    defaultShortcut: "",
+  },
+  {
     id: "closeOtherTabs",
     labelKey: "contextMenu.closeOtherTabs",
     scope: "global",
@@ -796,6 +811,16 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutGotoLine",
     scope: "editor",
     defaultShortcut: gotoLineDefaultShortcut(),
+  },
+  {
+    // JetBrains `Ctrl+Shift+Backspace` / VS Code "Go to Last Edit Location".
+    // Free on every platform: CodeMirror's default keymap binds `Backspace`,
+    // `Mod-Backspace` (macOS: `Alt-Backspace`/`Mod-Backspace`) but not
+    // `Shift-Mod-Backspace`.
+    id: "goToLastEditLocation",
+    labelKey: "settings.shortcutGoToLastEditLocation",
+    scope: "editor",
+    defaultShortcut: "Shift+Mod+Backspace",
   },
   {
     id: "replace",

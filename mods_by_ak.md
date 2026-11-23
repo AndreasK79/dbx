@@ -33,7 +33,7 @@ indexCreateSql.ts, DataGridTableInfoPanels.vue, DataGrid.vue
 Per-constraint Copy SQL button in the Foreign Keys tab: ALTER TABLE … ADD CONSTRAINT … FOREIGN KEY … REFERENCES …, with composite FKs merged into one statement, ON DELETE/ON UPDATE actions (NO ACTION omitted), and cross-schema reference qualification. Hidden for MongoDB.
 foreignKeySql.ts, DataGridTableInfoPanels.vue, DataGrid.vue
 
-8. Enter-to-confirm in the delimited-list dialog
+8. Enter-to-confirm in the delimited-list dialog — UPSTREAMED (merged upstream as cce8a3f55 #15476)
 The dialog body is wrapped in a form whose submit runs Confirm (the only submit button), so Enter in any field applies the conversion. Inert while the preview is empty (Confirm disabled); Escape still closes.
 DelimitedListDialog.vue
 
@@ -51,7 +51,7 @@ Removed — upstream now styles native select popups for dark mode (color-scheme
 First press selects the word at the caret, each further press adds the next occurrence as another cursor+selection, and the multi-selections copy/paste normally. The occurrence commands already existed on IntelliJ-style keys (Alt+J / Ctrl+G); the default is now Ctrl+D. "Duplicate line" (the same command as Copy line down) is unbound by default and still assignable; saved shortcuts migrate to the new pairing automatically.
 shortcutRegistry.ts, codemirrorSearchKeymap.ts, queryEditorOccurrenceSelection.ts (pre-existing), QueryEditor.vue
 
-14. Enter-to-execute in the SQL parameter dialog
+14. Enter-to-execute in the SQL parameter dialog — UPSTREAMED (merged upstream as ab1c7a1a0 #15478)
 The dialog body is wrapped in a form whose submit runs Execute (the only submit button), and initial focus goes to the first parameter input — so Enter runs the query instead of activating the previously auto-focused "Clear values" header button.
 SqlParameterDialog.vue
 

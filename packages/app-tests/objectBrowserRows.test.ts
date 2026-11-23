@@ -292,9 +292,7 @@ test("object browser rows sort estimated rows and table size with empty values l
 });
 
 test("object browser formats statistics for compact table cells", () => {
-  // The count formatter is locale-aware ("1 234 567" under nb-NO), so the
-  // expectation must follow the runtime locale instead of hard-coding commas.
-  assert.equal(formatObjectBrowserCount(1234567), new Intl.NumberFormat().format(1234567));
+  assert.equal(formatObjectBrowserCount(1234567), (1234567).toLocaleString());
   assert.equal(formatObjectBrowserBytes(1536), "1.50 KB");
   assert.equal(formatObjectBrowserBytes(null), "");
 });
@@ -439,7 +437,10 @@ test("only shows partition levels whose parent is expanded", () => {
   const root = rows.find((row) => row.name === "catalog_nested");
   assert.ok(root);
 
-  assert.deepEqual(group(rows, []).rows.map((row) => row.name), ["catalog_nested", "plain"]);
+  assert.deepEqual(
+    group(rows, []).rows.map((row) => row.name),
+    ["catalog_nested", "plain"],
+  );
   assert.deepEqual(
     group(rows, [root.id]).rows.map((row) => row.name),
     ["catalog_nested", "catalog_nested_2024", "catalog_nested_2025", "plain"],
@@ -455,6 +456,12 @@ test("a deep search match stays reachable while collapsed", () => {
   // ancestor chain, not dropped as an orphaned third-level partition.
   const result = group(rows, [], "asia", match);
 
-  assert.deepEqual(result.rows.map((row) => row.name), ["catalog_nested", "catalog_nested_2024", "catalog_nested_2024_asia"]);
-  assert.deepEqual(result.rows.map((row) => result.depths.get(row.id)), [0, 1, 2]);
+  assert.deepEqual(
+    result.rows.map((row) => row.name),
+    ["catalog_nested", "catalog_nested_2024", "catalog_nested_2024_asia"],
+  );
+  assert.deepEqual(
+    result.rows.map((row) => result.depths.get(row.id)),
+    [0, 1, 2],
+  );
 });
