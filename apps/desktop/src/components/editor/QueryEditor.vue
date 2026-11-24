@@ -84,7 +84,6 @@ import { enabledSqlParameterSyntaxes, resolveSqlVariableSyntaxToggles } from "@/
 import { createQueryEditorExecutionViewportOwnership, isQueryEditorPositionVisible, locateCursorForGutterExecution } from "@/lib/editor/queryEditorExecutionViewport";
 import { mapQueryEditorFormatSelection } from "@/lib/editor/queryEditorFormatSelection";
 import { joinQueryEditorLines } from "@/lib/editor/queryEditorJoinLines";
-import { cutQueryEditorLine } from "@/lib/editor/queryEditorCutLine";
 
 import { resolveSqlSingleQuoteKeyAction } from "@/lib/sql/sqlQuoteCaret";
 
