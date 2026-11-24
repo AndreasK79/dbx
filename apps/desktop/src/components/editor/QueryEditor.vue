@@ -56,6 +56,7 @@ import TableStructurePeekDialog from "./TableStructurePeekDialog.vue";
 import type { TableStructurePeekInsertKind } from "./TableStructurePeekDialog.vue";
 import type { ColumnInfo } from "@/types/database";
 import { createColumnReferencePayload, tableReferenceInsertText } from "@/lib/editor/queryEditorTableDrop";
+import { cutQueryEditorLine } from "@/lib/editor/queryEditorCutLine";
 import { clearRememberedFocusedQueryEditorView, focusedQueryEditorView, queryEditorInsertContext, registerQueryEditorInsertContext, rememberFocusedQueryEditorView, unregisterQueryEditorInsertContext } from "@/lib/editor/focusedQueryEditorView";
 import { loadObjectMetadataFacet } from "@/lib/metadata/objectMetadataCache";
 import { structurePeekPanelId, structurePeekZIndexesByOrder } from "@/lib/editor/structurePeekPanel";
