@@ -190,7 +190,9 @@ import {
   isDirectNavigationTreeNode,
   isDocumentBrowserTreeNode,
   isRepeatableNavigationTreeNode,
+  objectBrowserFilterForGroupNode,
   objectSourceTargetForTreeNode,
+  packageMemberFocusForTreeNode,
   shouldOpenQueryOnTreeNodeActivation,
   shouldRunTreeNodeRowAction,
   treeNodeRowAction,
@@ -1410,11 +1412,6 @@ function runRowClickAction(clickDetail: number) {
     void openObjectBrowser(false, true);
     return;
   }
-  if (node.type === "group-events") {
-    beginNavigationRequest();
-    void openObjectBrowser();
-    return;
-  }
   const action = treeNodeRowAction(
     node.type,
     canExpand.value,
@@ -1961,9 +1958,17 @@ function onDoubleClick(event: MouseEvent) {
     void openObjectBrowser(false, true);
     return;
   }
-  if (activeNode.value.type === "group-events") {
+  // 双击对象分组行：打开对象浏览器并直接选中该分组的分类。
+  // 表级触发器分组带 tableName，属于表节点自身，继续走后面的展开逻辑。
+  const groupObjectFilter = objectBrowserFilterForGroupNode(activeNode.value.type, activeNode.value.tableName);
+  if (groupObjectFilter) {
     beginNavigationRequest();
-    void openObjectBrowser();
+    void openObjectBrowser(false, false, false, groupObjectFilter);
+    return;
+  }
+  // “查询”分组不是数据库对象，没有对应分类；双击只保证列表处于展开状态。
+  if (activeNode.value.type === "saved-sql-root") {
+    if (!activeNode.value.isExpanded) void toggle(beginNavigationRequest());
     return;
   }
   const action = treeNodeRowDoubleClickAction(
@@ -2191,7 +2196,7 @@ async function confirmDeleteSavedSqlFile() {
   releaseActiveNodeReference([node.id]);
 }
 
-async function openObjectBrowser(eventReadOnly = false, openEventEditor: boolean | "create" = false, focusSearch = false) {
+async function openObjectBrowser(eventReadOnly = false, openEventEditor: boolean | "create" = false, focusSearch = false, filterOverride?: import("@/types/database").ObjectBrowserFilter) {
   const node = activeNode.value;
   if (!node.connectionId) return;
   try {
@@ -2200,7 +2205,7 @@ async function openObjectBrowser(eventReadOnly = false, openEventEditor: boolean
 
     const eventName = openEventEditor === true && node.type === "event" ? node.objectName || node.label : undefined;
     const eventCreateRequestId = openEventEditor === "create" && node.type === "group-events" ? ++mysqlEventCreateRequestSeq : undefined;
-    const objectFilter = node.type === "event" || node.type === "group-events" ? "events" : undefined;
+    const objectFilter = filterOverride ?? (node.type === "event" || node.type === "group-events" ? "events" : undefined);
 
     const connection = connectionStore.getConfig(node.connectionId);
     if (!connection) return;
@@ -3393,6 +3398,10 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
   const sourceTarget = objectSourceTargetForTreeNode(sourceNode);
   if (!sourceTarget) return;
   const schema = sourceTarget.schema || database;
+  // 包成员打开的是整个包体，标题就该是那个包：成员名放进标题的话，复用同一个
+  // tab 打开第二个成员时标题还停在第一个成员上，反而指错了内容。
+  const focusMember = packageMemberFocusForTreeNode(sourceNode);
+  const title = `Source - ${focusMember ? sourceTarget.name : node.label}`;
   // issue #9035：两个分支都不再 await 连接与取源。先把容器挂出来（源码 tab /
   // 源码弹窗），ensureConnected 与 getObjectSource 都发生在已挂载的 UI 之内，
   // 加载中有状态、失败就地重试，而不是点击后一段时间毫无反应。
@@ -3400,12 +3409,13 @@ function openObjectSourceDialog(initialEditing: boolean, viewPackageBody = false
     queryStore.openObjectSourceTabPending({
       connectionId,
       database,
-      title: `Source - ${node.label}`,
+      title,
       schema,
       catalog: node.catalog,
       initialEditing,
       initialSection,
-      request: { name: sourceTarget.name, objectType: sourceTarget.objectType, signature: sourceNode.signature },
+      request: { name: sourceTarget.name, objectType: sourceTarget.objectType, signature: sourceTarget.signature },
+      ...(focusMember ? { focusMember } : {}),
     });
     return;
   }
@@ -5735,7 +5745,10 @@ async function confirmEditDatabaseProperties() {
     const options = propertyGroups.includes("charsetCollation") ? { ...base, charset: editDatabaseCharset.value, collation: editDatabaseCollation.value } : propertyGroups.includes("databaseComment") ? { ...base, comment: editDatabaseCommentText.value } : null;
     if (!options) return;
     const sql = await buildUpdateDatabasePropertiesSql(options);
-    await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database || node.label });
+    const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database || node.label });
+    // The shared production gate declined the DDL (confirmation cancelled or a
+    // read-only connection), so nothing was sent and nothing succeeded.
+    if (!executed) return;
     toast(t("contextMenu.editDatabasePropertiesSuccess", { name: node.label }), 3000);
     showEditDatabasePropertiesDialog.value = false;
     await connectionStore.loadDatabases(node.connectionId, { force: true });
@@ -5809,7 +5822,8 @@ async function confirmEditSchemaComment() {
       comment: schemaCommentText.value,
       identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
     });
-    await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+    const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+    if (!executed) return;
     toast(t("contextMenu.editSchemaCommentSuccess", { name: node.label }), 3000);
     showEditSchemaCommentDialog.value = false;
     await connectionStore.loadSchemas(node.connectionId, node.database, { force: true });

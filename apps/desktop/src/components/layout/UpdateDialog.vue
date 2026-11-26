@@ -619,11 +619,11 @@ watch(
             </template>
           </div>
 
-          <DialogFooter v-if="selectedTab === 'app'" data-update-footer class="mx-0 mb-0 min-w-0 shrink-0 rounded-none border-t px-[22px] pb-2.5 pt-2.5 sm:items-center sm:justify-end">
-            <div v-if="!updateReady && !isInstallingUpdate && !updateDownloaded && (updateInfo?.update_available || updateCheckFailed)" class="flex items-center gap-1.5 self-start sm:mr-auto sm:self-center">
+          <DialogFooter v-if="selectedTab === 'app'" data-update-footer class="mx-0 mb-0 min-w-0 shrink-0 rounded-none border-t px-[22px] pb-2.5 pt-2.5 sm:items-center sm:justify-end sm:gap-1">
+            <div v-if="!updateReady && !isInstallingUpdate && !updateDownloaded && (updateInfo?.update_available || updateCheckFailed)" class="flex flex-none items-center gap-1.5 whitespace-nowrap self-start sm:mr-auto sm:self-center">
               <span class="text-xs text-muted-foreground">{{ t("updates.source") }}</span>
               <Select :model-value="updateDownloadSource" :disabled="checkingUpdates || isIgnoringUpdate" @update:model-value="(value) => value && emit('change-download-source', value as UpdateDownloadSource)">
-                <SelectTrigger class="h-8 w-[150px] text-xs">
+                <SelectTrigger class="h-8 w-[124px] shrink-0 text-xs">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -633,15 +633,15 @@ watch(
               </Select>
             </div>
             <template v-if="appUpdateActionsVisible">
-              <div v-if="updateInfo?.update_available" class="flex min-w-0 flex-wrap items-center gap-2 sm:justify-end">
-                <Button v-if="canIgnoreVersion" variant="ghost" class="shrink-0" :disabled="isIgnoringUpdate" @click="emit('ignore-version')">
+              <div v-if="updateInfo?.update_available" class="flex min-w-0 flex-wrap items-center gap-1 sm:justify-end">
+                <Button v-if="canIgnoreVersion" variant="ghost" class="shrink-0 px-2" :disabled="isIgnoringUpdate" @click="emit('ignore-version')">
                   <Loader2 v-if="isIgnoringUpdate" class="h-4 w-4 animate-spin" />
                   {{ t("updates.ignoreVersion") }}
                 </Button>
-                <Button variant="outline" class="shrink-0" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
+                <Button variant="outline" class="shrink-0 px-2" @click="emit('open-latest-release')">{{ t("updates.openRelease") }}</Button>
               </div>
               <template v-if="canDownloadAndInstallUpdate(updateInfo, isDesktop) || updateDownloaded || updateReady">
-                <Button v-if="updateReady" class="shrink-0" type="submit" :disabled="activeTaskCount > 0 || isIgnoringUpdate || isUpdatingAll">{{ t("updates.restart") }}</Button>
+                <Button v-if="updateReady" class="shrink-0" :disabled="activeTaskCount > 0 || isIgnoringUpdate || isUpdatingAll" @click="emit('restart')">{{ t("updates.restart") }}</Button>
                 <Button v-else-if="isInstallingUpdate" class="shrink-0" disabled>
                   <Loader2 class="h-4 w-4 animate-spin" />
                   {{ t(isPreparingUpdate ? "updates.preparing" : "updates.installing") }}
@@ -656,8 +656,8 @@ watch(
                     </div>
                   </div>
                 </template>
-                <Button v-else-if="updateDownloaded" class="shrink-0" type="submit" :disabled="activeTaskCount > 0 || isIgnoringUpdate || isUpdatingAll">{{ t("updates.restartAndUpdate") }}</Button>
-                <Button v-else-if="!checkingUpdates" class="shrink-0" type="submit" :disabled="isIgnoringUpdate">{{ t(updateCheckFailed ? "updates.retryDownload" : "updates.downloadInBackground") }}</Button>
+                <Button v-else-if="updateDownloaded" class="shrink-0" :disabled="activeTaskCount > 0 || isIgnoringUpdate || isUpdatingAll" @click="emit('install-downloaded')">{{ t("updates.restartAndUpdate") }}</Button>
+                <Button v-else-if="!checkingUpdates" class="shrink-0 px-2" :disabled="isIgnoringUpdate" @click="emit('download-in-background')">{{ t(updateCheckFailed ? "updates.retryDownload" : "updates.downloadInBackground") }}</Button>
               </template>
             </template>
             <template v-else>
@@ -666,7 +666,6 @@ watch(
               </div>
             </template>
           </DialogFooter>
-
           <DialogFooter v-else-if="selectedCategory" data-update-footer class="mx-0 mb-0 min-w-0 shrink-0 rounded-none border-t px-[22px] pb-2.5 pt-2.5 sm:items-center sm:justify-end">
             <template v-if="isAnyComponentUpdating">
               <Button variant="ghost" class="shrink-0" @click="handleOpenChange(false)">{{ t("updates.updateInBackground") }}</Button>

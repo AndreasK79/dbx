@@ -1928,7 +1928,11 @@ impl OracleMetadataQuery<'_> {
                             sql,
                             if database.is_empty() { None } else { Some(*database) },
                             schema,
-                            QueryExecutionOptions { max_rows: Some(max_rows), ..Default::default() },
+                            QueryExecutionOptions {
+                                skip_server_output: true,
+                                max_rows: Some(max_rows),
+                                ..Default::default()
+                            },
                         ),
                         *timeout_duration,
                     )
@@ -2418,7 +2422,11 @@ async fn oracle_table_comments_for_names(
                     &sql,
                     if database.is_empty() { None } else { Some(database) },
                     if schema.is_empty() { None } else { Some(schema) },
-                    QueryExecutionOptions { max_rows: Some(chunk.len()), ..Default::default() },
+                    QueryExecutionOptions {
+                        skip_server_output: true,
+                        max_rows: Some(chunk.len()),
+                        ..Default::default()
+                    },
                 ),
                 timeout_duration,
             )
@@ -2516,7 +2524,7 @@ async fn load_oracle_exact_table_comments_for_objects(
             &sql,
             (!database.is_empty()).then_some(database),
             None,
-            QueryExecutionOptions { max_rows: Some(chunk.len()), ..Default::default() },
+            QueryExecutionOptions { skip_server_output: true, max_rows: Some(chunk.len()), ..Default::default() },
         );
         match client.execute_query_with_timeout::<db::QueryResult>(params, timeout_duration).await {
             Ok(result) => comments.extend(table_comments_from_query_result(result)),
@@ -2728,7 +2736,7 @@ async fn agent_object_statistics_query(
                 sql,
                 if database.is_empty() { None } else { Some(database) },
                 if schema.is_empty() { None } else { Some(schema) },
-                QueryExecutionOptions { max_rows: Some(10_000), ..Default::default() },
+                QueryExecutionOptions { skip_server_output: true, max_rows: Some(10_000), ..Default::default() },
             ),
             timeout_duration,
         )
@@ -3912,6 +3920,7 @@ mod tests {
             transport_layers: Vec::new(),
             connect_timeout_secs: 5,
             query_timeout_secs: 30,
+            write_timeout_secs: 0,
             idle_timeout_secs: 60,
             manual_transaction_timeout_secs: 300,
             idle_disconnect_secs: 0,
@@ -13077,7 +13086,12 @@ pub fn oracle_object_source_sql(schema: &str, name: &str, kind: &db::ObjectSourc
         db::ObjectSourceKind::Sequence => "SEQUENCE",
         db::ObjectSourceKind::Synonym => "SYNONYM",
         db::ObjectSourceKind::Job => "",
-        db::ObjectSourceKind::Package => "PACKAGE",
+        // `PACKAGE` makes DBMS_METADATA emit the specification *and* the body as two
+        // CREATE statements. The editor would then hold two objects, which every later
+        // step treats as one: saving failed with "must contain exactly one complete
+        // object definition", and the readback comparison could never match.
+        // `PACKAGE_SPEC` is the specification alone, matching `source_integrity_sql`.
+        db::ObjectSourceKind::Package => "PACKAGE_SPEC",
         db::ObjectSourceKind::PackageBody => "PACKAGE_BODY",
         db::ObjectSourceKind::Type => "TYPE",
         db::ObjectSourceKind::TypeBody => "TYPE_BODY",
@@ -14404,7 +14418,7 @@ async fn oracle_agent_list_objects(
             &page_sql,
             (!database.is_empty()).then_some(database),
             None,
-            QueryExecutionOptions { max_rows: Some(page_size), ..Default::default() },
+            QueryExecutionOptions { skip_server_output: true, max_rows: Some(page_size), ..Default::default() },
         );
         let result: db::QueryResult = client.execute_query_with_timeout(params, timeout_duration).await?;
         if (result.truncated || result.has_more) && result.rows.is_empty() {
@@ -14454,7 +14468,7 @@ async fn oracle_agent_object_source(
         &sql,
         if database.is_empty() { None } else { Some(database) },
         if schema.is_empty() { None } else { Some(schema) },
-        QueryExecutionOptions { max_rows: Some(1), ..Default::default() },
+        QueryExecutionOptions { skip_server_output: true, max_rows: Some(1), ..Default::default() },
     );
     let mut client = client.lock().await;
     let result: db::QueryResult = client.execute_query_with_timeout(params, timeout_duration).await?;
@@ -15664,9 +15678,16 @@ mod object_source_tests {
             oracle_object_source_sql("HR", "PAYROLL", &ObjectSourceKind::PackageBody),
             "SELECT DBMS_METADATA.GET_DDL('PACKAGE_BODY', 'PAYROLL', 'HR') FROM DUAL"
         );
+        // A package specification must be fetched as PACKAGE_SPEC: plain `PACKAGE`
+        // returns the specification and the body together, which the editor and the
+        // save path both treat as a single object.
         assert_eq!(
             oracle_object_source_sql("", "PAYROLL", &ObjectSourceKind::Package),
-            "SELECT DBMS_METADATA.GET_DDL('PACKAGE', 'PAYROLL') FROM DUAL"
+            "SELECT DBMS_METADATA.GET_DDL('PACKAGE_SPEC', 'PAYROLL') FROM DUAL"
+        );
+        assert_eq!(
+            oracle_object_source_sql("HR", "PAYROLL", &ObjectSourceKind::Package),
+            "SELECT DBMS_METADATA.GET_DDL('PACKAGE_SPEC', 'PAYROLL', 'HR') FROM DUAL"
         );
         assert_eq!(
             oracle_object_source_sql("HR", "ORDER_SEQ", &ObjectSourceKind::Sequence),

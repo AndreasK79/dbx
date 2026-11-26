@@ -51,6 +51,7 @@ const FEATURE_MESSAGES: FeatureMessages[] = [
   { feature: "AI HTML preview (#6467)", keys: under("ai", ["htmlPreviewLabel", "htmlExpandPreview", "htmlExpandPreviewHint", "htmlSaveSafe", "htmlSaveFailed", "htmlCopySource", "htmlCopyRiskBody", "htmlCopyRiskAccept", "htmlCopyRiskRemember", "htmlCopyRiskToast"]) },
   { feature: "AI conversation export (#6467)", keys: under("ai", ["exportConversation", "conversationExportMarkdown", "conversationExportHtml", "conversationRoleUser", "conversationRoleAssistant", "conversationFailedMarker", "conversationExportEmpty"]) },
   { feature: "AI conversation management", keys: under("ai", ["renameConversation", "conversationRenameFailed", "clearDatabaseSelection", "searchDatabases", "noDatabasesFound"]) },
+  { feature: "AI conversation pinning (#14226)", keys: [...under("ai", ["pinConversation", "unpinConversation", "conversationPinFailed"]), "history.pinnedGroup", "history.recentGroup"], translated: true },
   { feature: "AI auto routing (#9118)", keys: ["ai.actions.auto", "ai.routing.recognizing", "ai.routing.chip", "ai.routing.switchTo", "ai.defaultAutoRouting", "ai.defaultAutoRoutingDescription"] },
   {
     feature: "AI SQL action feedback (#11962)",
@@ -163,6 +164,11 @@ const FEATURE_MESSAGES: FeatureMessages[] = [
   {
     feature: "plugin AI tools and data access",
     keys: ["pluginPlatform.dataAccessConsent", "pluginPlatform.dataAccessConsentTitle", "pluginPlatform.aiTools.*", "pluginPlatform.dataAccess.*", "ai.toolApproval.*"],
+    translated: true,
+  },
+  {
+    feature: "plugin tool attachments (#13978)",
+    keys: under("ai", ["pluginToolsEntry", "pluginToolsTitle", "pluginToolsDescription", "pluginToolsEmpty", "pluginToolsHowTo", "pluginToolsClosedHint", "pluginToolsFollowsTarget", "pluginToolsNoneTitle", "pluginToolsSelectedTitle", "pluginToolsSaveFailed", "pluginToolsOverflowHint"]),
     translated: true,
   },
   { feature: "schema diff deploy ignores foreign key checks", keys: under("diff", ["ignoreForeignKeyChecks", "ignoreForeignKeyChecksHint"]), translated: true },

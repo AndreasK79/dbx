@@ -53,6 +53,15 @@ pub struct QueryPaginationExecutionPlanOptions {
     /// callers without the feature keep the SQL unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_hint: Option<String>,
+    /// Connected server version reported by the driver (e.g.
+    /// `8.0.36-ShardingSphere-Proxy 5.5.3`). Used to avoid derived-table SQL
+    /// rewrites that MySQL sharding proxies cannot merge accurately across shards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    /// Connected server comment (`@@version_comment`), used alongside
+    /// `server_version` to identify MySQL sharding proxies such as MyCat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,14 +212,17 @@ pub fn build_query_pagination_execution_plan(
         return plan;
     }
     let execution_hint = options.execution_hint.as_deref().filter(|hint| !hint.trim().is_empty());
+    let server_version = options.server_version.as_deref();
+    let server_comment = options.server_comment.as_deref();
 
     let sql_server_cte =
         options.database_type == Some(DatabaseType::SqlServer) && starts_with_cte(&options.query_base_sql);
     if !sql_server_cte {
-        let counted = build_count_query_sql(CountQuerySqlOptions {
-            original_sql: options.query_base_sql.clone(),
-            database_type: options.database_type,
-        });
+        let counted = build_count_query_sql_with_server_info(
+            CountQuerySqlOptions { original_sql: options.query_base_sql.clone(), database_type: options.database_type },
+            server_version,
+            server_comment,
+        );
         if counted.ok {
             plan.count_sql = counted.sql.map(|count_sql| match execution_hint {
                 Some(hint) => inject_execution_hint(&count_sql, hint),
@@ -293,12 +305,16 @@ pub fn build_query_pagination_execution_plan(
         return plan;
     }
 
-    let paginated = build_paginated_query_sql(PaginatedQuerySqlOptions {
-        original_sql: options.sql.clone(),
-        database_type: options.database_type,
-        limit: options.pagination.limit,
-        offset: options.pagination.offset,
-    });
+    let paginated = build_paginated_query_sql_with_server_info(
+        PaginatedQuerySqlOptions {
+            original_sql: options.sql.clone(),
+            database_type: options.database_type,
+            limit: options.pagination.limit,
+            offset: options.pagination.offset,
+        },
+        server_version,
+        server_comment,
+    );
     if paginated.ok {
         // The executed statement and the recorded page SQL are the same string;
         // build it once so the optimizer hint is applied consistently to both.
@@ -367,6 +383,14 @@ pub fn build_query_pagination_execution_plan(
 }
 
 pub fn build_paginated_query_sql(options: PaginatedQuerySqlOptions) -> QuerySqlBuildResult {
+    build_paginated_query_sql_with_server_info(options, None, None)
+}
+
+fn build_paginated_query_sql_with_server_info(
+    options: PaginatedQuerySqlOptions,
+    server_version: Option<&str>,
+    server_comment: Option<&str>,
+) -> QuerySqlBuildResult {
     let Ok(statement) = single_selectable_statement(&options.original_sql, options.database_type) else {
         return err(single_statement_error_reason(&options.original_sql));
     };
@@ -375,6 +399,8 @@ pub fn build_paginated_query_sql(options: PaginatedQuerySqlOptions) -> QuerySqlB
     }
     let safe_limit = options.limit.max(1);
     let safe_offset = options.offset;
+    let sharding_proxy = matches!(options.database_type, Some(DatabaseType::Mysql | DatabaseType::Goldendb))
+        && is_mysql_sharding_proxy(server_version, server_comment);
 
     if matches!(options.database_type, Some(DatabaseType::Elasticsearch | DatabaseType::Easysearch)) {
         // If the user wrote their own LIMIT, leave the SQL alone — they
@@ -434,14 +460,29 @@ pub fn build_paginated_query_sql(options: PaginatedQuerySqlOptions) -> QuerySqlB
                 return err("unsupported");
             }
             let dedup_order_by = dedup_projection_count_without_order_by(&options.original_sql);
-            add_standard_limit(&statement, options.database_type, safe_limit, safe_offset, dedup_order_by)
-                .map(ok)
-                .unwrap_or_else(|| err("unsupported"))
+            add_standard_limit(
+                &statement,
+                options.database_type,
+                safe_limit,
+                safe_offset,
+                dedup_order_by,
+                sharding_proxy,
+            )
+            .map(ok)
+            .unwrap_or_else(|| err("unsupported"))
         }
     }
 }
 
 pub fn build_count_query_sql(options: CountQuerySqlOptions) -> QuerySqlBuildResult {
+    build_count_query_sql_with_server_info(options, None, None)
+}
+
+fn build_count_query_sql_with_server_info(
+    options: CountQuerySqlOptions,
+    server_version: Option<&str>,
+    server_comment: Option<&str>,
+) -> QuerySqlBuildResult {
     let Ok(statement) = single_selectable_statement(&options.original_sql, options.database_type) else {
         return err(single_statement_error_reason(&options.original_sql));
     };
@@ -484,6 +525,16 @@ pub fn build_count_query_sql(options: CountQuerySqlOptions) -> QuerySqlBuildResu
         // never hold a variable reference and are skipped.
         if mysql_statement_references_session_variable(&statement) {
             return err("session-variable");
+        }
+        // MySQL sharding proxies (ShardingSphere-Proxy / MyCat) route derived
+        // tables `SELECT COUNT(*) FROM (SELECT ... GROUP BY ...)` independently
+        // to each shard and sum the local counts instead of merging cross-shard
+        // groups/deduplication (#15723). Count simple flat SELECTs directly and
+        // decline derived-table counts rather than displaying an inflated total.
+        if is_mysql_sharding_proxy(server_version, server_comment) {
+            return mysql_sharding_proxy_count_sql(&statement)
+                .map(|sql| ok(format!("{execution_hint}{sql}")))
+                .unwrap_or_else(|| err("sharding-proxy-derived-count-unsupported"));
         }
         return mysql_count_sql(&statement)
             .map(|sql| ok(format!("{execution_hint}{sql}")))
@@ -1734,6 +1785,187 @@ fn mysql_wrapped_count_sql(statement: &str) -> String {
     derived_table_sql("SELECT COUNT(*) AS dbx_total_rows FROM", statement, &format!("{alias};"))
 }
 
+fn is_mysql_sharding_proxy(server_version: Option<&str>, server_comment: Option<&str>) -> bool {
+    const SHARDINGSPHERE_PROXY: &[u8] = b"shardingsphere-proxy";
+    const MYCAT: &[u8] = b"mycat";
+    let contains_ascii_ci = |haystack: &str, needle: &[u8]| {
+        haystack.as_bytes().windows(needle.len()).any(|window| window.eq_ignore_ascii_case(needle))
+    };
+    server_version
+        .is_some_and(|version| contains_ascii_ci(version, SHARDINGSPHERE_PROXY) || contains_ascii_ci(version, MYCAT))
+        || server_comment.is_some_and(|comment| contains_ascii_ci(comment, MYCAT))
+}
+
+fn table_factor_is_plain_table(factor: &TableFactor) -> bool {
+    match factor {
+        TableFactor::Table { args: None, .. } => true,
+        TableFactor::NestedJoin { table_with_joins, .. } => {
+            table_factor_is_plain_table(&table_with_joins.relation)
+                && table_with_joins.joins.iter().all(|join| table_factor_is_plain_table(&join.relation))
+        }
+        _ => false,
+    }
+}
+
+fn is_mysql_aggregate_function_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "sum"
+            | "count"
+            | "count_big"
+            | "avg"
+            | "min"
+            | "max"
+            | "group_concat"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+            | "std"
+            | "stddev"
+            | "stddev_pop"
+            | "stddev_samp"
+            | "var_pop"
+            | "var_samp"
+            | "variance"
+            | "json_arrayagg"
+            | "json_objectagg"
+            | "any_value"
+    )
+}
+
+fn mysql_expr_has_outer_aggregate_or_window(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery(_) | Expr::Exists { .. } | Expr::InSubquery { .. } => false,
+        Expr::Function(function) => {
+            let is_aggregate = function
+                .name
+                .0
+                .last()
+                .and_then(ObjectNamePart::as_ident)
+                .is_some_and(|ident| is_mysql_aggregate_function_name(&ident.value));
+            if is_aggregate || function.over.is_some() || function.filter.is_some() || !function.within_group.is_empty()
+            {
+                return true;
+            }
+            match &function.args {
+                sqlparser::ast::FunctionArguments::List(arg_list) => arg_list.args.iter().any(|arg| match arg {
+                    sqlparser::ast::FunctionArg::Unnamed(arg_expr)
+                    | sqlparser::ast::FunctionArg::Named { arg: arg_expr, .. }
+                    | sqlparser::ast::FunctionArg::ExprNamed { arg: arg_expr, .. } => match arg_expr {
+                        sqlparser::ast::FunctionArgExpr::Expr(inner) => mysql_expr_has_outer_aggregate_or_window(inner),
+                        _ => false,
+                    },
+                }),
+                sqlparser::ast::FunctionArguments::None | sqlparser::ast::FunctionArguments::Subquery(_) => false,
+            }
+        }
+        Expr::Nested(inner)
+        | Expr::UnaryOp { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. }
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::IsTrue(inner)
+        | Expr::IsFalse(inner)
+        | Expr::IsNotTrue(inner)
+        | Expr::IsNotFalse(inner)
+        | Expr::IsUnknown(inner)
+        | Expr::IsNotUnknown(inner)
+        | Expr::Extract { expr: inner, .. }
+        | Expr::Collate { expr: inner, .. } => mysql_expr_has_outer_aggregate_or_window(inner),
+        Expr::BinaryOp { left, right, .. }
+        | Expr::IsDistinctFrom(left, right)
+        | Expr::IsNotDistinctFrom(left, right) => {
+            mysql_expr_has_outer_aggregate_or_window(left) || mysql_expr_has_outer_aggregate_or_window(right)
+        }
+        Expr::Between { expr, low, high, .. } => {
+            mysql_expr_has_outer_aggregate_or_window(expr)
+                || mysql_expr_has_outer_aggregate_or_window(low)
+                || mysql_expr_has_outer_aggregate_or_window(high)
+        }
+        Expr::InList { expr, list, .. } => {
+            mysql_expr_has_outer_aggregate_or_window(expr) || list.iter().any(mysql_expr_has_outer_aggregate_or_window)
+        }
+        Expr::Case { operand, conditions, else_result, .. } => {
+            operand.as_deref().is_some_and(mysql_expr_has_outer_aggregate_or_window)
+                || conditions.iter().any(|cw| {
+                    mysql_expr_has_outer_aggregate_or_window(&cw.condition)
+                        || mysql_expr_has_outer_aggregate_or_window(&cw.result)
+                })
+                || else_result.as_deref().is_some_and(mysql_expr_has_outer_aggregate_or_window)
+        }
+        _ => false,
+    }
+}
+
+fn mysql_select_projection_has_aggregate_or_window(projection: &[SelectItem]) -> bool {
+    projection.iter().any(|item| match item {
+        SelectItem::UnnamedExpr(expr)
+        | SelectItem::ExprWithAlias { expr, .. }
+        | SelectItem::ExprWithAliases { expr, .. } => mysql_expr_has_outer_aggregate_or_window(expr),
+        SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => false,
+    })
+}
+
+fn mysql_sharding_proxy_count_sql(statement: &str) -> Option<String> {
+    let dialect = MySqlDialect {};
+    let mut statements = Parser::parse_sql(&dialect, statement).ok()?;
+    let [Statement::Query(query)] = statements.as_mut_slice() else {
+        return None;
+    };
+    if query.with.is_some()
+        || query.limit_clause.is_some()
+        || query.fetch.is_some()
+        || !query.locks.is_empty()
+        || query.for_clause.is_some()
+    {
+        return None;
+    }
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return None;
+    };
+    let group_by_is_empty = matches!(
+        &select.group_by,
+        GroupByExpr::Expressions(expressions, modifiers) if expressions.is_empty() && modifiers.is_empty()
+    );
+    if select.from.is_empty()
+        || !select.from.iter().all(|from| {
+            table_factor_is_plain_table(&from.relation)
+                && from.joins.iter().all(|join| table_factor_is_plain_table(&join.relation))
+        })
+        || select.distinct.is_some()
+        || select.top.is_some()
+        || select.exclude.is_some()
+        || select.prewhere.is_some()
+        || select.into.is_some()
+        || !group_by_is_empty
+        || select.having.is_some()
+        || select.qualify.is_some()
+        || !select.lateral_views.is_empty()
+        || !select.optimizer_hints.is_empty()
+        || select.select_modifiers.as_ref().is_some_and(SelectModifiers::is_any_set)
+        || !select.connect_by.is_empty()
+        || !select.cluster_by.is_empty()
+        || !select.distribute_by.is_empty()
+        || !select.sort_by.is_empty()
+        || !select.named_window.is_empty()
+        || select.value_table_mode.is_some()
+        || mysql_select_projection_has_aggregate_or_window(&select.projection)
+    {
+        return None;
+    }
+
+    let count_projection = match Parser::parse_sql(&dialect, "SELECT COUNT(*) AS dbx_total_rows").ok()?.pop()? {
+        Statement::Query(query) => match query.body.as_ref() {
+            SetExpr::Select(select) => select.projection.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    select.projection = count_projection;
+    query.order_by = None;
+    Some(format!("{query};"))
+}
+
 fn iotdb_tree_count_sql(statement: &str) -> Option<String> {
     let dialect = GenericDialect {};
     let mut statements = Parser::parse_sql(&dialect, statement).ok()?;
@@ -2661,15 +2893,18 @@ fn add_standard_limit(
     limit: usize,
     offset: usize,
     dedup_order_by: Option<Vec<usize>>,
+    sharding_proxy: bool,
 ) -> Option<String> {
     let order_sql = dedup_order_by.as_deref().map_or(String::new(), format_positional_order_by);
 
     if has_top_level_limit(statement) {
         // MySQL rejects a derived table whose columns share a name (error 1060),
-        // which `SELECT t.id, t.*` produces. Page through the user's own LIMIT
+        // which `SELECT t.id, t.*` produces. MySQL sharding proxies also route
+        // derived-table pagination wrappers per shard without merging inner
+        // GROUP BY/DISTINCT across shards. Page through the user's own LIMIT
         // instead of wrapping it.
         let rewrite_limit_in_place = matches!(database_type, Some(DatabaseType::Mysql | DatabaseType::Goldendb))
-            && !mysql_projection_has_unique_names(statement);
+            && (sharding_proxy || !mysql_projection_has_unique_names(statement));
         if !order_sql.is_empty() {
             if rewrite_limit_in_place {
                 return rewrite_mysql_top_level_limit(statement, limit, offset, &order_sql);
@@ -3325,6 +3560,8 @@ mod tests {
                     use_agent_cursor: true,
                     first_page_uses_actual_sql: true,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 });
                 assert!(plan.use_agent_result_session);
                 assert_eq!(plan.sql_to_execute, sql);
@@ -3352,6 +3589,8 @@ mod tests {
                     use_agent_cursor: false,
                     first_page_uses_actual_sql: false,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 });
                 assert_eq!(plan.sql_to_execute, sql);
                 assert!(plan.page_sql.is_none());
@@ -3392,6 +3631,8 @@ mod tests {
             use_agent_cursor: cursor,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         })
     }
 
@@ -3404,6 +3645,8 @@ mod tests {
             use_agent_cursor: cursor,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         })
     }
 
@@ -3542,6 +3785,8 @@ mod tests {
                     use_agent_cursor: true,
                     first_page_uses_actual_sql: true,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 };
                 let plan = build_query_pagination_execution_plan(options.clone());
                 assert_eq!(plan.sql_to_execute, sql);
@@ -3574,6 +3819,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert!(plan.use_agent_result_session);
         assert_eq!(plan.sql_to_execute, sql);
@@ -3696,6 +3943,8 @@ mod tests {
                     use_agent_cursor: true,
                     first_page_uses_actual_sql: true,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 });
                 assert!(plan.use_agent_result_session, "{sql} offset {offset}");
                 assert_eq!(plan.sql_to_execute, sql);
@@ -3850,6 +4099,8 @@ mod tests {
                     use_agent_cursor: true,
                     first_page_uses_actual_sql: true,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 });
                 assert!(plan.use_agent_result_session, "{sql} offset {offset}");
                 assert_eq!(plan.sql_to_execute, sql);
@@ -3891,6 +4142,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         let page_sql = plan.page_sql.expect("pagination plan provides page SQL");
@@ -4401,6 +4654,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(
@@ -4432,6 +4687,8 @@ mod tests {
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
             assert_eq!(first_page.sql_to_execute, sql);
             assert!(first_page.page_sql.is_none());
@@ -4445,6 +4702,8 @@ mod tests {
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
             assert!(later_page.sql_to_execute.starts_with("EXEC sys.sp_executesql N'SET ROWCOUNT 200; "));
             assert_eq!(sqlserver_result_offset(&later_page.sql_to_execute), 100);
@@ -4471,6 +4730,8 @@ mod tests {
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             let count = plan.count_sql.expect("an unnamed scalar subquery must remain countable");
@@ -4589,6 +4850,8 @@ mod tests {
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
             assert_eq!(plan.count_sql.as_deref(), Some("SELECT COUNT(*) AS dbx_total_rows FROM s_room sr WHERE sr.RoomInfo LIKE N'%合肥天珺一期%' AND sr.x_JtRoomCode IS NULL;"));
             assert!(plan.sql_to_execute.starts_with("SELECT TOP (1000)"));
@@ -4639,6 +4902,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(
@@ -4762,6 +5027,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert!(plan.sql_to_execute.contains("ROW_NUMBER()"));
@@ -4782,6 +5049,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -4820,6 +5089,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -4858,6 +5129,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert!(plan.page_sql.is_some());
@@ -4994,6 +5267,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -5019,6 +5294,8 @@ mod tests {
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             assert_eq!(plan.sql_to_execute, sql);
@@ -5081,6 +5358,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -5192,6 +5471,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM system.clusters LIMIT 100 SETTINGS max_execution_time = 0;");
@@ -5227,6 +5508,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM `test`\nwhere id=1 LIMIT 100 for update;");
@@ -5251,6 +5534,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(
@@ -5879,6 +6164,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "/*sets:allsets*/select @@server_id LIMIT 100;");
@@ -5908,6 +6195,8 @@ WHERE u.id = picked.id;
                     use_agent_cursor: false,
                     first_page_uses_actual_sql: false,
                     execution_hint: None,
+                    server_version: None,
+                    server_comment: None,
                 });
                 let expected_sql = if offset == 0 {
                     format!("{sql} LIMIT 1000;")
@@ -5939,6 +6228,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(plan.exact_query_row_bound, Some(1000));
 
@@ -5958,6 +6249,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT id FROM people LIMIT 10;");
@@ -6607,6 +6900,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(
@@ -6860,6 +7155,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM events");
@@ -6879,6 +7176,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         // Wildcard projections cannot safely be wrapped in a derived table due to unknown
@@ -6900,6 +7199,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         // Safe projections without wildcard or duplicate output names support ROWNUM pagination (#12789),
@@ -6924,6 +7225,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert!(plan.use_agent_result_session);
@@ -6940,6 +7243,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM events;");
@@ -6960,6 +7265,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert!(plan.sql_to_execute.contains("LIMIT"));
@@ -6976,6 +7283,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(first_page.sql_to_execute, "SELECT * FROM events LIMIT 500;");
@@ -6992,6 +7301,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(second_page.sql_to_execute, "SELECT * FROM events LIMIT 500 OFFSET 500;");
@@ -7011,6 +7322,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(first_page.sql_to_execute, "SELECT * FROM events");
@@ -7027,6 +7340,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(second_page.sql_to_execute, "SELECT * FROM events");
@@ -7044,6 +7359,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(fallback.sql_to_execute, sql);
@@ -7058,6 +7375,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(offset_jump.sql_to_execute, "SELECT * FROM events");
@@ -7077,6 +7396,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(first_page.sql_to_execute, "SELECT * FROM events LIMIT 100;");
@@ -7093,6 +7414,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(second_page.sql_to_execute, "SELECT * FROM events LIMIT 100 OFFSET 100;");
@@ -7113,6 +7436,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -7130,6 +7455,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(first_page.sql_to_execute, "SELECT * FROM events LIMIT 100;");
@@ -7146,6 +7473,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(second_page.sql_to_execute, "SELECT * FROM events LIMIT 100 OFFSET 100;");
@@ -7166,6 +7495,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -7203,6 +7534,8 @@ WHERE u.id = picked.id;
                 use_agent_cursor: true,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             assert_eq!(plan.sql_to_execute, sql);
@@ -7225,6 +7558,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -7262,6 +7597,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(first_page.sql_to_execute, "SELECT * FROM (SELECT id FROM events) WHERE ROWNUM <= 500;");
         assert_eq!(first_page.page_sql.as_deref(), Some(first_page.sql_to_execute.as_str()));
@@ -7279,6 +7616,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert!(next_page.sql_to_execute.contains("ROWNUM <= 1000"));
         assert!(next_page.sql_to_execute.contains("\"__dbx_row_num\" > 500"));
@@ -7295,6 +7634,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(fallback.sql_to_execute, unrewritable);
         assert!(fallback.page_sql.is_none());
@@ -7312,6 +7653,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(plan.pagination_row_number_column.as_deref(), Some("__dbx_row_num_1"));
         assert!(plan.sql_to_execute.contains("ROWNUM AS \"__dbx_row_num_1\""));
@@ -7330,6 +7673,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert!(plan.pagination_row_number_column.is_none());
         assert!(plan.use_agent_result_session);
@@ -7348,6 +7693,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -7367,6 +7714,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM events ORDER BY id LIMIT 500;");
@@ -7386,6 +7735,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM events");
@@ -7406,6 +7757,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, sql);
@@ -7433,6 +7786,8 @@ WHERE u.id = picked.id;
                 use_agent_cursor: true,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             assert_eq!(plan.sql_to_execute, sql, "sql_to_execute should stay untouched for {sql}");
@@ -7453,6 +7808,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM (SELECT TOP 100 * FROM events) t");
@@ -7483,6 +7840,8 @@ WHERE u.id = picked.id;
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: true,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             assert_eq!(plan.sql_to_execute, sql, "sql_to_execute should stay untouched for {sql}");
@@ -7506,6 +7865,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT TOP 100 * FROM events");
@@ -7592,6 +7953,8 @@ WHERE u.id = picked.id;
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: false,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
 
             assert_eq!(plan.exact_query_row_bound, expected, "unexpected bound for {database_type:?}: {sql}");
@@ -7616,6 +7979,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: false,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT top, name FROM users LIMIT 500;");
@@ -7635,6 +8000,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: true,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
 
         assert_eq!(plan.sql_to_execute, "SELECT * FROM (SELECT * FROM events) t ORDER BY created_at DESC");
@@ -9053,6 +9420,8 @@ WHERE u.id = picked.id;
                 use_agent_cursor: false,
                 first_page_uses_actual_sql: true,
                 execution_hint: Some("/*+ set(query_dop 8) */".to_string()),
+                server_version: None,
+                server_comment: None,
             })
         };
 
@@ -9101,6 +9470,8 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(plan.sql_to_execute, "SELECT id FROM users LIMIT 20;");
         assert!(plan.page_sql.as_deref().is_some_and(|sql| !sql.contains("query_dop")));
@@ -9115,11 +9486,149 @@ WHERE u.id = picked.id;
             use_agent_cursor: false,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(plan.sql_to_execute, "SELECT id FROM users LIMIT 20;");
         assert_eq!(
             plan.count_sql.as_deref(),
             Some("SELECT COUNT(*) AS dbx_total_rows FROM (SELECT id FROM users) `dbx_count`;")
         );
+    }
+
+    #[test]
+    fn shardingsphere_proxy_declines_grouped_derived_count_and_keeps_top_level_pagination() {
+        let sql = "\
+            SELECT SUM(order_fee - paid_fee) AS arrears_fee, plate_number, plate_color \
+            FROM order_info \
+            WHERE order_status = '4' AND out_flag = '1' AND lock_status != '1' AND order_fee > 0 \
+            AND in_time > '2026-06-01' AND in_time < '2026-10-01' \
+            AND park_id IN (1, 2, 3, 4, 5) \
+            GROUP BY plate_number, plate_color";
+
+        for version in ["8.0.36-ShardingSphere-Proxy 5.5.3", "5.7.22-ShardingSphere-Proxy 5.5.0"] {
+            let plan = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+                sql: sql.to_string(),
+                query_base_sql: sql.to_string(),
+                database_type: Some(DatabaseType::Mysql),
+                pagination: QueryPagination { limit: 5000, offset: 0, session_id: None },
+                use_agent_cursor: false,
+                first_page_uses_actual_sql: false,
+                execution_hint: None,
+                server_version: Some(version.to_string()),
+                server_comment: None,
+            });
+            assert_eq!(plan.count_sql, None, "must not wrap GROUP BY count on {version}");
+            assert_eq!(plan.page_limit, Some(5000));
+            assert!(
+                plan.sql_to_execute.ends_with("ORDER BY 2, 3 LIMIT 5000;"),
+                "page SQL should stay top-level for cross-shard GROUP BY merge, got: {}",
+                plan.sql_to_execute
+            );
+            assert!(!plan.sql_to_execute.contains("`dbx_page`"));
+        }
+
+        // Standard MySQL 8 keeps derived-table COUNT(*) unchanged.
+        let standard_mysql = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+            sql: sql.to_string(),
+            query_base_sql: sql.to_string(),
+            database_type: Some(DatabaseType::Mysql),
+            pagination: QueryPagination { limit: 5000, offset: 0, session_id: None },
+            use_agent_cursor: false,
+            first_page_uses_actual_sql: false,
+            execution_hint: None,
+            server_version: Some("8.0.36".to_string()),
+            server_comment: Some("MySQL Community Server - GPL".to_string()),
+        });
+        assert!(
+            standard_mysql.count_sql.as_deref().is_some_and(|c| c
+                .starts_with("SELECT COUNT(*) AS dbx_total_rows FROM (")
+                && c.ends_with(") `dbx_count`;")),
+            "standard MySQL keeps derived-table count: {:?}",
+            standard_mysql.count_sql
+        );
+    }
+
+    #[test]
+    fn mysql_sharding_proxy_flattens_simple_count_and_declines_non_flattenable_queries() {
+        let proxy_plan = |sql: &str, version: Option<&str>, comment: Option<&str>| {
+            build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+                sql: sql.to_string(),
+                query_base_sql: sql.to_string(),
+                database_type: Some(DatabaseType::Mysql),
+                pagination: QueryPagination { limit: 100, offset: 0, session_id: None },
+                use_agent_cursor: false,
+                first_page_uses_actual_sql: false,
+                execution_hint: None,
+                server_version: version.map(str::to_string),
+                server_comment: comment.map(str::to_string),
+            })
+        };
+
+        // Simple SELECT flattens to a direct COUNT(*) without a derived table on ShardingSphere & MyCat.
+        let simple = proxy_plan(
+            "SELECT id, plate_number FROM order_info WHERE park_id IN (1, 2, 3) ORDER BY in_time DESC",
+            Some("8.0.36-ShardingSphere-Proxy 5.5.3"),
+            None,
+        );
+        assert_eq!(
+            simple.count_sql.as_deref(),
+            Some("SELECT COUNT(*) AS dbx_total_rows FROM order_info WHERE park_id IN (1, 2, 3);")
+        );
+
+        let mycat_simple =
+            proxy_plan("SELECT * FROM order_info WHERE order_status = '4'", Some("5.6.29"), Some("MyCat Server"));
+        assert_eq!(
+            mycat_simple.count_sql.as_deref(),
+            Some("SELECT COUNT(*) AS dbx_total_rows FROM order_info WHERE order_status = '4';")
+        );
+
+        // Scalar subquery in projection does not change outer cardinality.
+        let scalar_subquery = proxy_plan(
+            "SELECT id, (SELECT MAX(x) FROM other_table) AS max_x FROM order_info WHERE park_id = 1",
+            Some("8.0.36-ShardingSphere-Proxy 5.5.3"),
+            None,
+        );
+        assert_eq!(
+            scalar_subquery.count_sql.as_deref(),
+            Some("SELECT COUNT(*) AS dbx_total_rows FROM order_info WHERE park_id = 1;")
+        );
+
+        // Queries that require derived-table counting or change cardinality decline count_sql.
+        for unsupported in [
+            "SELECT DISTINCT plate_number, plate_color FROM order_info WHERE park_id IN (1, 2)",
+            "SELECT plate_number, SUM(order_fee) FROM order_info GROUP BY plate_number HAVING SUM(order_fee) > 0",
+            "SELECT id FROM order_info WHERE park_id = 1 UNION SELECT id FROM order_info WHERE park_id = 2",
+            "WITH recent AS (SELECT id FROM order_info) SELECT * FROM recent",
+            "SELECT * FROM (SELECT id FROM order_info) sub",
+            "SELECT SUM(order_fee) FROM order_info WHERE park_id IN (1, 2)",
+            "SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM order_info",
+            "SELECT id FROM order_info LIMIT 500",
+        ] {
+            let plan = proxy_plan(unsupported, Some("8.0.36-ShardingSphere-Proxy 5.5.3"), None);
+            assert_eq!(plan.count_sql, None, "expected None count_sql for sharding proxy query: {unsupported}");
+        }
+    }
+
+    #[test]
+    fn shardingsphere_proxy_rewrites_wider_user_limit_in_place_without_derived_table() {
+        let sql = "SELECT SUM(order_fee) AS total, plate_number FROM order_info GROUP BY plate_number LIMIT 10000";
+        let plan = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
+            sql: sql.to_string(),
+            query_base_sql: sql.to_string(),
+            database_type: Some(DatabaseType::Mysql),
+            pagination: QueryPagination { limit: 5000, offset: 5000, session_id: None },
+            use_agent_cursor: false,
+            first_page_uses_actual_sql: false,
+            execution_hint: None,
+            server_version: Some("8.0.36-ShardingSphere-Proxy 5.5.3".to_string()),
+            server_comment: None,
+        });
+        assert_eq!(plan.count_sql, None);
+        assert_eq!(
+            plan.sql_to_execute,
+            "SELECT SUM(order_fee) AS total, plate_number FROM order_info GROUP BY plate_number ORDER BY 2 LIMIT 5000 OFFSET 5000;"
+        );
+        assert!(!plan.sql_to_execute.contains("`dbx_page`"));
     }
 }

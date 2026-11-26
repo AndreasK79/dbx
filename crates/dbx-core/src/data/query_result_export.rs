@@ -827,6 +827,8 @@ fn supports_streaming_offset_pagination(request: &QueryResultExportRequest, page
         use_agent_cursor: false,
         first_page_uses_actual_sql: true,
         execution_hint: None,
+        server_version: None,
+        server_comment: None,
     });
     let second_page = build_query_pagination_execution_plan(QueryPaginationExecutionPlanOptions {
         sql: request.sql.clone(),
@@ -836,6 +838,8 @@ fn supports_streaming_offset_pagination(request: &QueryResultExportRequest, page
         use_agent_cursor: false,
         first_page_uses_actual_sql: true,
         execution_hint: None,
+        server_version: None,
+        server_comment: None,
     });
 
     let (Some(first_sql), Some(second_sql)) = (first_page.page_sql.as_deref(), second_page.page_sql.as_deref()) else {
@@ -1406,6 +1410,8 @@ async fn export_query_result_core_inner(
                 use_agent_cursor,
                 first_page_uses_actual_sql: true,
                 execution_hint: None,
+                server_version: None,
+                server_comment: None,
             });
             if let Some(error) = plan.pagination_error {
                 return Err(error);
@@ -3798,6 +3804,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(
             plan1.page_sql.as_deref(),
@@ -3812,6 +3820,8 @@ mod tests {
             use_agent_cursor: false,
             first_page_uses_actual_sql: true,
             execution_hint: None,
+            server_version: None,
+            server_comment: None,
         });
         assert_eq!(
             plan2.page_sql.as_deref(),

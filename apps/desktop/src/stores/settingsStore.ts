@@ -591,23 +591,6 @@ export const AI_PROVIDER_PARTNER_PRESETS: readonly AiPartnerProviderPreset[] = [
     badgeKey: "ai.hualongSponsored",
   },
   {
-    id: "hiapi",
-    label: "HiAPI",
-    iconPath: "/icons/ai/hiapi.png",
-    group: "partner",
-    provider: "openai-compatible",
-    endpoint: "https://api.hiapi.ai/v1",
-    model: "",
-    models: [{ name: "glm-5.3" }, { name: "deepseek-v4-flash" }, { name: "deepseek-v4.1-flash" }, { name: "gpt-6-astra" }, { name: "claude-sonnet-4-6" }, { name: "kimi-k3" }],
-    apiStyle: "completions",
-    authMethod: "bearer",
-    requiresApiKey: true,
-    websiteUrl: "https://www.hiapi.ai/invite/dbx?utm_source=dbx&utm_medium=affiliate&utm_campaign=backlink&utm_content=ai-provider",
-    apiKeyUrl: "https://www.hiapi.ai/invite/dbx?utm_source=dbx&utm_medium=affiliate&utm_campaign=backlink&utm_content=ai-provider",
-    descriptionKey: "ai.hiapiDescription",
-    badgeKey: "ai.hiapiSponsored",
-  },
-  {
     id: "astraflow",
     label: "AstraFlow",
     iconPath: "/icons/ai/astraflow.png",
@@ -1761,7 +1744,7 @@ function normalizeUiScale(value: unknown): number {
 export const MIN_COMPLETION_AUTO_ACTIVATION_DELAY_MS = 0;
 export const MAX_COMPLETION_AUTO_ACTIVATION_DELAY_MS = 5000;
 
-function normalizeCompletionAutoActivationDelay(value: unknown): number {
+export function normalizeCompletionAutoActivationDelay(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_EDITOR_SETTINGS.completionAutoActivationDelayMs;
   return Math.min(MAX_COMPLETION_AUTO_ACTIVATION_DELAY_MS, Math.max(MIN_COMPLETION_AUTO_ACTIVATION_DELAY_MS, Math.round(value)));
 }
