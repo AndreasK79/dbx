@@ -10005,6 +10005,7 @@ onUnmounted(() => {
                       <SelectContent>
                         <SelectItem value="default">{{ t("settings.tabDoubleClickActionDefault") }}</SelectItem>
                         <SelectItem value="close">{{ t("settings.tabDoubleClickActionClose") }}</SelectItem>
+                        <SelectItem value="none">{{ t("settings.tabDoubleClickActionNone") }}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

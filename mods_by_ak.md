@@ -63,7 +63,7 @@ types.rs (ForeignServerInfo), postgres.rs (list_foreign_servers), schema.rs/_cor
 Every destructive confirmation (row UPDATE/DELETE, drop/truncate, batch drops, type-the-name confirms, …) confirms on Enter: form wrapper, Confirm is the only submit control, Enter stays inert while the action is gated. Escape closes. The shared Button component now defaults to type="button" (submit must be opted into), so no button inside a form silently submits. Upstream's open-auto-focus on the confirm button was kept on top.
 DangerConfirmDialog.vue, Button.vue, __tests__/DangerConfirmDialog.spec.ts
 
-17. SQL parameter dialog stays open when clicking outside it
+17. SQL parameter dialog stays open when clicking outside it — UPSTREAMED (merged upstream as c03c19413)
 The dialog is modeless: no overlay, clicking outside doesn't dismiss it, and the editor behind stays interactive — text can be selected and copied into a parameter while it's on screen. Escape/Cancel/Execute/Ignore still close it; Escape now closes an open value-history suggestion popover first instead of being swallowed by it.
 SqlParameterDialog.vue, __tests__/SqlParameterDialog.spec.ts
 

@@ -9140,6 +9140,12 @@ struct PostgresSearchPathBaseline {
     configured: String,
     first_resolved_schema: Option<String>,
     has_explicit_pg_catalog: bool,
+    /// Schemas the server actually resolved for this session
+    /// (`current_schemas(false)`). A configured element that is absent here does
+    /// not exist, and naming it in `SET search_path` makes strict servers reject
+    /// the whole statement with SQLSTATE 22023. `None` keeps every element, for
+    /// callers that build a baseline by hand.
+    existing_schemas: Option<Vec<String>>,
 }
 
 type PostgresSearchPathBaselineEntry = (Weak<deadpool_postgres::StatementCache>, PostgresSearchPathBaseline);
@@ -9213,6 +9219,16 @@ fn postgres_quoted_search_path_elements(configured: &str) -> Vec<String> {
     elements
 }
 
+/// The schema name behind one already-quoted search-path element, for comparing
+/// it with the names the server reported as existing.
+fn postgres_search_path_element_name(element: &str) -> String {
+    if element.len() >= 2 && element.starts_with('"') && element.ends_with('"') {
+        element[1..element.len() - 1].replace("\"\"", "\"")
+    } else {
+        element.to_ascii_lowercase()
+    }
+}
+
 fn postgres_set_preserved_search_path_sql(
     schema: &str,
     context: PostgresSearchPathContext,
@@ -9238,6 +9254,14 @@ fn postgres_set_preserved_search_path_sql(
     let configured = configured_elements
         .iter()
         .filter(|element| !is_postgres_user_placeholder(element))
+        .filter(|element| match &baseline.existing_schemas {
+            // Dropping a missing schema is what makes `SET search_path` succeed on
+            // servers that validate every element (SQLSTATE 22023); it also keeps
+            // the path equivalent everywhere else, since a missing element is
+            // never searchable anyway.
+            Some(existing) => existing.iter().any(|name| *name == postgres_search_path_element_name(element)),
+            None => true,
+        })
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
@@ -9344,7 +9368,7 @@ async fn postgres_search_path_baseline(
         timeout_duration,
         client.query_one(
             "SELECT current_setting('search_path'), (current_schemas(false))[1], \
-                    'pg_catalog' = ANY(current_schemas(false))",
+                    'pg_catalog' = ANY(current_schemas(false)), current_schemas(false)",
             &[],
         ),
     )
@@ -9355,6 +9379,7 @@ async fn postgres_search_path_baseline(
         configured: row.try_get(0).map_err(|error| error.to_string())?,
         first_resolved_schema: row.try_get(1).map_err(|error| error.to_string())?,
         has_explicit_pg_catalog: row.try_get(2).map_err(|error| error.to_string())?,
+        existing_schemas: Some(row.try_get(3).map_err(|error| error.to_string())?),
     };
     cache_postgres_search_path_baseline(client, baseline.clone());
     Ok(baseline)
@@ -13302,6 +13327,7 @@ mod tests {
             configured: "application, extensions, public".to_string(),
             first_resolved_schema: Some("application".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
@@ -13351,6 +13377,7 @@ mod tests {
                 configured: configured.to_string(),
                 first_resolved_schema: Some(first_schema.to_string()),
                 has_explicit_pg_catalog: false,
+                existing_schemas: None,
             };
             for (context, scope) in [
                 (PostgresSearchPathContext::Query, ""),
@@ -13368,11 +13395,67 @@ mod tests {
     }
 
     #[test]
+    fn postgres_search_path_drops_a_configured_schema_the_database_does_not_have() {
+        // A database that dropped its `public` schema still reports it in
+        // current_setting('search_path'), but not in current_schemas(false).
+        let baseline = PostgresSearchPathBaseline {
+            configured: "dbi, public".to_string(),
+            first_resolved_schema: Some("dbi".to_string()),
+            has_explicit_pg_catalog: false,
+            existing_schemas: Some(vec!["dbi".to_string()]),
+        };
+        assert_eq!(
+            postgres_set_preserved_search_path_sql("dbi", PostgresSearchPathContext::Query, &baseline),
+            "SET search_path TO \"dbi\", pg_catalog"
+        );
+        assert_eq!(
+            postgres_set_preserved_search_path_sql("dbi", PostgresSearchPathContext::LocalQueryTransaction, &baseline,),
+            "SET LOCAL search_path TO \"dbi\", pg_catalog"
+        );
+    }
+
+    #[test]
+    fn postgres_search_path_keeps_every_existing_configured_schema() {
+        let baseline = PostgresSearchPathBaseline {
+            configured: "application, extensions, public".to_string(),
+            first_resolved_schema: Some("application".to_string()),
+            has_explicit_pg_catalog: false,
+            existing_schemas: Some(vec!["application".to_string(), "extensions".to_string(), "public".to_string()]),
+        };
+        assert_eq!(
+            postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
+            "SET search_path TO \"application\", \"extensions\", \"public\", pg_catalog"
+        );
+    }
+
+    #[test]
+    fn postgres_search_path_compares_quoted_elements_with_existing_names() {
+        let baseline = PostgresSearchPathBaseline {
+            configured: "\"MiXeD Name\", missing, public".to_string(),
+            first_resolved_schema: Some("MiXeD Name".to_string()),
+            has_explicit_pg_catalog: false,
+            existing_schemas: Some(vec!["MiXeD Name".to_string(), "public".to_string()]),
+        };
+        assert_eq!(
+            postgres_set_preserved_search_path_sql("MiXeD Name", PostgresSearchPathContext::Query, &baseline),
+            "SET search_path TO \"MiXeD Name\", \"public\", pg_catalog"
+        );
+    }
+
+    #[test]
+    fn postgres_search_path_element_name_unquotes_identifiers() {
+        assert_eq!(postgres_search_path_element_name(r#""public""#), "public");
+        assert_eq!(postgres_search_path_element_name(r#""a""b""#), "a\"b");
+        assert_eq!(postgres_search_path_element_name("MiXeD"), "mixed");
+    }
+
+    #[test]
     fn postgres_search_path_prepends_selected_schema_without_dropping_configured_items() {
         let baseline = PostgresSearchPathBaseline {
             configured: "extensions, public".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),
@@ -13394,6 +13477,7 @@ mod tests {
             configured: "\"$user\", public".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &baseline),
@@ -13404,6 +13488,7 @@ mod tests {
             configured: "$user, public".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &bare_baseline),
@@ -13417,6 +13502,7 @@ mod tests {
             configured: "\"$user\", public".to_string(),
             first_resolved_schema: Some("dbx_test".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
 
         assert_eq!(
@@ -13428,6 +13514,7 @@ mod tests {
             configured: "dbx_test, \"$user\", public".to_string(),
             first_resolved_schema: Some("dbx_test".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dbx_test", PostgresSearchPathContext::Query, &explicit_baseline),
@@ -13458,6 +13545,7 @@ mod tests {
             configured: "\"$user\"".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &baseline),
@@ -13468,6 +13556,7 @@ mod tests {
             configured: "$user".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: true,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql(
@@ -13485,6 +13574,7 @@ mod tests {
             configured: "my$user_schema, \"$user_backup\", public".to_string(),
             first_resolved_schema: Some("public".to_string()),
             has_explicit_pg_catalog: false,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("dwd_views", PostgresSearchPathContext::Query, &baseline),
@@ -13498,6 +13588,7 @@ mod tests {
             configured: "extensions, pg_catalog, public".to_string(),
             first_resolved_schema: Some("extensions".to_string()),
             has_explicit_pg_catalog: true,
+            existing_schemas: None,
         };
         assert_eq!(
             postgres_set_preserved_search_path_sql("application", PostgresSearchPathContext::Query, &baseline),

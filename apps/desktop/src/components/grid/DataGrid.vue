@@ -75,7 +75,8 @@ import { Input } from "@/components/ui/input";
 import QueryLoadingState from "@/components/common/QueryLoadingState.vue";
 import DataGridBusyOverlay from "@/components/grid/DataGridBusyOverlay.vue";
 import { DATA_GRID_CLIPBOARD_BATCH_CHARS, DataGridClipboardCapacityError, dataGridPendingRowLimit, dataGridPreparationBatchSize, type DataGridRowPreparationOptions, type DataGridRowPreparationProgress } from "@/lib/dataGrid/dataGridRowPreparation";
-import ProductionWatermark from "@/components/common/ProductionWatermark.vue";
+import ConnectionWatermark from "@/components/common/ConnectionWatermark.vue";
+import { resolveConnectionWatermark } from "@/lib/connection/connectionWatermark";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import LightDropdownMenu from "@/components/ui/LightDropdownMenu.vue";
 import LightTooltip from "@/components/ui/LightTooltip.vue";
@@ -152,6 +153,7 @@ import {
   isSalesforceExistingRowReadonlyColumn,
   isSalesforceNewRowReadonlyColumn,
   isTdengineExistingRowReadonlyColumn,
+  isTdengineStableTableType,
   shouldIncludeSyntheticRowId,
   showsKeylessEditWarning,
   postgresTupleLocatorUnsupportedEngine,
@@ -985,7 +987,10 @@ const tableDependencyTarget = computed(() => {
 function viewRelationSql(context: ObjectDependencyTarget, sql: string) {
   queryStore.createTab(context.connectionId, context.database, t("objectDependencies.viewSql"), "query", context.schema, sql, context.catalog, { forceNew: true });
 }
-const productionContext = computed(() => productionContextForDatabase(resolvedConnectionConfig.value, props.database));
+const watermark = computed(() => {
+  const connection = resolvedConnectionConfig.value;
+  return resolveConnectionWatermark(connection, productionContextForDatabase(connection, props.database).active);
+});
 // The collection grid and Mongo query-result grids share the document-grid value
 // encoding (BSON null sentinel + JSON-prefixed containers), so every display,
 // editor and clipboard path must decode it whenever MongoDB values are on screen.
@@ -2669,6 +2674,8 @@ const {
   invertColumnVisibility,
   showColumn,
   persistColumnOrder,
+  previewColumnOrder,
+  hasTemporaryColumnOrder,
   resetColumnOrder: resetColumnOrderInLayout,
   toggleAllNullColumns,
   resetColumnVisibility,
@@ -3177,6 +3184,24 @@ function requestColumnOrderPersistence(indexes: number[]) {
   pendingColumnOrder.value = { scope: tableColumnOrderScopeKey.value, keys: [...columnOrderKeys.value], current: [...current], next: indexes };
 }
 
+function applyColumnHeaderOrder(indexes: number[]) {
+  if (props.context === "table-data" && !settingsStore.editorSettings.dataGridConfirmColumnHeaderReorder) {
+    applyColumnOrderChange(() => previewColumnOrder(indexes));
+    return;
+  }
+  requestColumnOrderPersistence(indexes);
+}
+
+const confirmColumnHeaderReorder = computed(() => (props.context === "table-data" ? settingsStore.editorSettings.dataGridConfirmColumnHeaderReorder : undefined));
+
+function setConfirmColumnHeaderReorder(value: boolean) {
+  settingsStore.updateEditorSettings({ dataGridConfirmColumnHeaderReorder: value });
+}
+
+function savePreviewColumnOrder() {
+  if (hasTemporaryColumnOrder.value) applyColumnOrderChange(() => persistColumnOrder(orderedDisplayableColumnIndexes.value));
+}
+
 function moveDisplayableColumn(fromDisplayableIndex: number, toDisplayableIndex: number) {
   const next = moveDisplayableColumnIndex({
     orderedIndexes: orderedDisplayableColumnIndexes.value,
@@ -3378,7 +3403,7 @@ const {
     if (headerRef.value) headerRef.value.scrollLeft = scroller.scrollLeft;
   },
   onRefreshMetrics: scheduleColumnLayoutRefresh,
-  onPersistColumnOrder: requestColumnOrderPersistence,
+  onPersistColumnOrder: applyColumnHeaderOrder,
   frozenColumnCount,
   columnReferenceDrag: columnHeaderReferenceDragController,
 });
@@ -6829,7 +6854,10 @@ const deleteRowDetails = computed(() => {
 const hasVisibleRows = computed(() => displayRowCount.value > 0);
 const hasActiveFilter = computed(() => (dataGridSearchMode.value === "filter" && !replaceOpen.value && !!deferredClientSearchText.value) || rowStatusFilter.value !== "all" || hasLocalColumnFilters.value || hasServerColumnFilters.value);
 const emptyTitle = computed(() => (hasActiveFilter.value ? t("grid.noFilteredRows") : t("grid.noRows")));
-const emptyDescription = computed(() => (hasActiveFilter.value ? t("grid.noFilteredRowsDescription") : t("grid.noRowsDescription")));
+// A TDengine super table is never read without a condition (the SQL builder returns an empty
+// page), so an empty grid there means "add a condition", not "no data".
+const tdengineStableAwaitsCondition = computed(() => resolvedDatabaseType.value === "tdengine" && isTdengineStableTableType(props.tableMeta?.tableType) && !currentWhereInput()?.trim());
+const emptyDescription = computed(() => (hasActiveFilter.value ? t("grid.noFilteredRowsDescription") : tdengineStableAwaitsCondition.value ? t("grid.tdengineStableNeedsCondition") : t("grid.noRowsDescription")));
 watch([hasVisibleRows, () => props.result.columns.length], scheduleScrollerMetricsRefresh, { flush: "post", immediate: true });
 const isErrorResult = computed(() => isQueryExecutionErrorResult(props.result) && props.result.rows.length > 0);
 const errorMessage = computed(() => (isErrorResult.value ? String(props.result.rows[0]?.[0] ?? "") : ""));
@@ -15630,6 +15658,10 @@ defineExpose({
   invertColumnVisibility,
   hasCustomColumnOrder,
   moveDisplayableColumn,
+  hasTemporaryColumnOrder,
+  confirmColumnHeaderReorder,
+  setConfirmColumnHeaderReorder,
+  savePreviewColumnOrder,
   resetColumnOrder,
   autoFitAllColumns,
   resetColumnWidths,
@@ -16841,7 +16873,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                 </Button>
               </div>
               <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-                <ProductionWatermark v-if="productionContext.active" />
+                <ConnectionWatermark v-if="watermark" v-bind="watermark" />
                 <div data-grid-transpose-header class="data-grid-transpose-header data-grid-header-shell relative z-20 h-7 w-full shrink-0 overflow-hidden border-b border-border font-semibold text-muted-foreground">
                   <div class="absolute left-0 top-0 z-30 h-full" :style="{ width: `${transposePinnedWidth}px` }">
                     <div class="data-grid-header-cell relative flex h-full w-full shrink-0 items-center border-r border-border px-3 py-1.5 truncate">
@@ -17681,7 +17713,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
                    `top`/`inset` offsets are measured from the body instead of from the
                    grid's outer relative container (which starts at the header row). -->
               <div class="data-grid-scroll-body relative min-h-0 flex-1 flex flex-col overflow-hidden" :class="{ 'has-vertical-scrollbar': hasGridVerticalOverflow }">
-                <ProductionWatermark v-if="productionContext.active" />
+                <ConnectionWatermark v-if="watermark" v-bind="watermark" />
                 <div v-if="!hasVisibleRows" class="relative min-h-0 flex-1">
                   <div class="data-grid-scroller h-full overflow-x-auto overflow-y-hidden overscroll-none" :class="{ 'is-scrolling': isScrolling }" @scroll="onScrollerScroll" @wheel="onDomGridWheel">
                     <div class="h-full min-h-[220px]" :style="{ width: 'max(100%, var(--total-w))' }" />
@@ -18766,6 +18798,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       :preference="selectedCopyPreference"
       :single-column-format="settingsStore.editorSettings.dataGridSmartSingleColumnFormat"
       :source-table-name="props.tableMeta?.tableName"
+      :database-type="props.databaseType"
       :visible-copy-extractors="settingsStore.editorSettings.dataGridVisibleCopyExtractors"
       :options="settingsStore.editorSettings.dataGridExtractorOptions"
       :items="copyPreferenceMenuItems"
@@ -18778,6 +18811,7 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
       mode="copy"
       :preference="selectedCopyPreference"
       :source-table-name="props.tableMeta?.tableName"
+      :database-type="props.databaseType"
       :visible-copy-extractors="settingsStore.editorSettings.dataGridVisibleCopyExtractors"
       :options="settingsStore.editorSettings.dataGridExtractorOptions"
       :items="copyPreferenceMenuItems"

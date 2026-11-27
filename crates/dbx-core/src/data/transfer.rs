@@ -15937,6 +15937,7 @@ for line in sys.stdin:
             is_production: false,
             production_databases: vec![],
             production_badge_scope: None,
+            watermark: None,
             database_info: None,
             docs_notes_path: None,
         }
@@ -24521,6 +24522,7 @@ SELECT 1 FROM dual"#
             is_production: false,
             production_databases: vec![],
             production_badge_scope: None,
+            watermark: None,
             database_info: None,
         };
         let mut gbase_jdbc = config.clone();

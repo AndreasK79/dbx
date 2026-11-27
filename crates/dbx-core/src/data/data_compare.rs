@@ -1733,6 +1733,7 @@ fn data_grid_column_info(column: crate::types::ColumnInfo) -> DataGridColumnInfo
         is_primary_key: column.is_primary_key,
         column_default: column.column_default,
         extra: column.extra,
+        collation: column.collation,
     }
 }
 
@@ -2282,6 +2283,7 @@ mod tests {
             is_primary_key: false,
             column_default: None,
             extra: None,
+            collation: None,
         }
     }
 

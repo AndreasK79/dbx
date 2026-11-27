@@ -1061,7 +1061,7 @@ export interface EditorSettings {
   tabSortMode: TabSortMode;
   /** 水平标签页最大显示宽度（像素，0 表示不限制）。 */
   tabMaxWidth: number;
-  tabDoubleClickAction: "default" | "close";
+  tabDoubleClickAction: "default" | "close" | "none";
   /** 分组标签在水平标签栏中的行数：single 为分组与标签混排一行，two-row 为分组独占一行。 */
   tabGroupRows: TabGroupRowMode;
   appLayout: "separated" | "classic";
@@ -1172,6 +1172,7 @@ export interface EditorSettings {
   dataGridHideNullColumns: boolean;
   dataGridHideEmptyColumns: boolean;
   dataGridFreezeFirstColumn: boolean;
+  dataGridConfirmColumnHeaderReorder: boolean;
   dataGridBooleanDisplayMode: "dropdown" | "checkbox";
   dataGridBooleanValueStyle: BooleanCellValueStyle;
   numericColumnRightAlign: boolean;
@@ -1480,7 +1481,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   snippetSuggestions: true,
   sortCompletionColumnsAlphabetically: true,
   selectFirstCompletionOnOpen: true,
-  completionAutoActivationDelayMs: 500,
+  completionAutoActivationDelayMs: 50,
   wordWrap: false,
   showWhitespace: false,
   tableDdlWordWrap: true,
@@ -1597,6 +1598,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   dataGridHideNullColumns: false,
   dataGridHideEmptyColumns: false,
   dataGridFreezeFirstColumn: false,
+  dataGridConfirmColumnHeaderReorder: false,
   dataGridBooleanDisplayMode: "dropdown",
   dataGridBooleanValueStyle: "true-false",
   numericColumnRightAlign: true,
@@ -1814,6 +1816,10 @@ export function normalizeTabGroupCustomizations(value: unknown): Record<string, 
 
 function normalizeTabSortMode(value: unknown): TabSortMode {
   return TAB_SORT_MODES.includes(value as TabSortMode) ? (value as TabSortMode) : DEFAULT_EDITOR_SETTINGS.tabSortMode;
+}
+
+export function normalizeTabDoubleClickAction(value: unknown): EditorSettings["tabDoubleClickAction"] {
+  return value === "close" || value === "none" ? value : DEFAULT_EDITOR_SETTINGS.tabDoubleClickAction;
 }
 
 export function normalizeTabMaxWidth(value: unknown): number {
@@ -2301,7 +2307,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     tabGroupCustomizations: normalizeTabGroupCustomizations(settings.tabGroupCustomizations),
     tabSortMode: normalizeTabSortMode(settings.tabSortMode),
     tabMaxWidth: normalizeTabMaxWidth(settings.tabMaxWidth),
-    tabDoubleClickAction: settings.tabDoubleClickAction === "close" ? "close" : "default",
+    tabDoubleClickAction: normalizeTabDoubleClickAction(settings.tabDoubleClickAction),
     tabGroupRows: normalizeTabGroupRows(settings.tabGroupRows),
     appLayout: settings.appLayout ?? DEFAULT_EDITOR_SETTINGS.appLayout,
     webLogoPosition: normalizeWebLogoPosition(settings.webLogoPosition),
@@ -2382,6 +2388,7 @@ export function normalizeEditorSettings(settings: Partial<EditorSettings>, exist
     dataGridHideNullColumns: settings.dataGridHideNullColumns === true,
     dataGridHideEmptyColumns: settings.dataGridHideEmptyColumns === true,
     dataGridFreezeFirstColumn: settings.dataGridFreezeFirstColumn === true,
+    dataGridConfirmColumnHeaderReorder: settings.dataGridConfirmColumnHeaderReorder === true,
     dataGridBooleanDisplayMode: settings.dataGridBooleanDisplayMode === "checkbox" ? "checkbox" : "dropdown",
     dataGridBooleanValueStyle: normalizeDataGridBooleanValueStyle(settings.dataGridBooleanValueStyle),
     numericColumnRightAlign: typeof settings.numericColumnRightAlign === "boolean" ? settings.numericColumnRightAlign : DEFAULT_EDITOR_SETTINGS.numericColumnRightAlign,
@@ -3335,7 +3342,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.tabGroupCustomizations !== undefined) editorSettings.value.tabGroupCustomizations = normalizeTabGroupCustomizations(partial.tabGroupCustomizations);
     if (partial.tabSortMode !== undefined) editorSettings.value.tabSortMode = normalizeTabSortMode(partial.tabSortMode);
     if (partial.tabMaxWidth !== undefined) editorSettings.value.tabMaxWidth = normalizeTabMaxWidth(partial.tabMaxWidth);
-    if (partial.tabDoubleClickAction !== undefined) editorSettings.value.tabDoubleClickAction = partial.tabDoubleClickAction === "close" ? "close" : "default";
+    if (partial.tabDoubleClickAction !== undefined) editorSettings.value.tabDoubleClickAction = normalizeTabDoubleClickAction(partial.tabDoubleClickAction);
     if (partial.tabGroupRows !== undefined) editorSettings.value.tabGroupRows = normalizeTabGroupRows(partial.tabGroupRows);
     if (partial.appLayout !== undefined) editorSettings.value.appLayout = partial.appLayout;
     if (partial.webLogoPosition !== undefined) editorSettings.value.webLogoPosition = normalizeWebLogoPosition(partial.webLogoPosition);
@@ -3424,6 +3431,7 @@ export const useSettingsStore = defineStore("settings", () => {
     if (partial.dataGridHideNullColumns !== undefined) editorSettings.value.dataGridHideNullColumns = partial.dataGridHideNullColumns === true;
     if (partial.dataGridHideEmptyColumns !== undefined) editorSettings.value.dataGridHideEmptyColumns = partial.dataGridHideEmptyColumns === true;
     if (partial.dataGridFreezeFirstColumn !== undefined) editorSettings.value.dataGridFreezeFirstColumn = partial.dataGridFreezeFirstColumn === true;
+    if (partial.dataGridConfirmColumnHeaderReorder !== undefined) editorSettings.value.dataGridConfirmColumnHeaderReorder = partial.dataGridConfirmColumnHeaderReorder === true;
     if (partial.dataGridBooleanValueStyle !== undefined) editorSettings.value.dataGridBooleanValueStyle = normalizeDataGridBooleanValueStyle(partial.dataGridBooleanValueStyle);
     if (partial.dataGridBooleanDisplayMode !== undefined) editorSettings.value.dataGridBooleanDisplayMode = partial.dataGridBooleanDisplayMode === "dropdown" ? "dropdown" : "checkbox";
     if (partial.numericColumnRightAlign !== undefined) editorSettings.value.numericColumnRightAlign = partial.numericColumnRightAlign === true;

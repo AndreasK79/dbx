@@ -58,6 +58,7 @@ fn temporal_insert_request() -> DataGridExtractRequest {
                     is_primary_key: false,
                     column_default: None,
                     extra: None,
+                    collation: None,
                 })
                 .collect(),
         ),
@@ -1044,6 +1045,7 @@ fn sql_in_list_honors_kingbase_bit_literals() {
             is_primary_key: false,
             column_default: None,
             extra: None,
+            collation: None,
         }]),
     });
     request.rows = vec![vec![json!("0")], vec![json!("1")]];
@@ -1092,6 +1094,7 @@ fn builds_updates_with_hidden_primary_keys_and_selected_columns() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1100,6 +1103,7 @@ fn builds_updates_with_hidden_primary_keys_and_selected_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -1131,6 +1135,7 @@ fn sql_updates_keep_legacy_case_insensitive_primary_key_resolution() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "id".to_string(),
@@ -1139,6 +1144,7 @@ fn sql_updates_keep_legacy_case_insensitive_primary_key_resolution() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1147,6 +1153,7 @@ fn sql_updates_keep_legacy_case_insensitive_primary_key_resolution() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -1172,6 +1179,7 @@ fn sql_copy_honors_kingbase_mysql_compat_connection_identifier_quote() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "event_type".to_string(),
@@ -1180,6 +1188,7 @@ fn sql_copy_honors_kingbase_mysql_compat_connection_identifier_quote() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     };
@@ -1223,6 +1232,7 @@ fn sql_update_computed_column_option_matches_the_frontend_capability() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "search_text".to_string(),
@@ -1231,6 +1241,7 @@ fn sql_update_computed_column_option_matches_the_frontend_capability() {
                 is_primary_key: false,
                 column_default: None,
                 extra: Some("GENERATED ALWAYS AS".to_string()),
+                collation: None,
             },
         ]),
     });
@@ -1580,6 +1591,7 @@ fn where_clause_applies_mysql_json_cast() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1588,6 +1600,7 @@ fn where_clause_applies_mysql_json_cast() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -1692,6 +1705,7 @@ fn format_grid_sql_literal_uses_numeric_bool_for_sqlserver() {
         is_primary_key: false,
         column_default: None,
         extra: None,
+        collation: None,
     };
     // SQL Server has no TRUE/FALSE literals; emit 1/0 even for non-BIT columns.
     assert_eq!(format_grid_sql_literal(&json!(true), Some(DatabaseType::SqlServer), Some(&column)), "1");
@@ -1722,6 +1736,7 @@ fn sqlserver_spatial_extract_selection_replays_cell_srid() {
                     is_primary_key: false,
                     column_default: None,
                     extra: None,
+                    collation: None,
                 },
                 DataGridColumnInfo {
                     name: "location".to_string(),
@@ -1730,6 +1745,7 @@ fn sqlserver_spatial_extract_selection_replays_cell_srid() {
                     is_primary_key: false,
                     column_default: None,
                     extra: None,
+                    collation: None,
                 },
             ]),
         }),
@@ -1794,6 +1810,7 @@ fn sqlserver_spatial_extract_updates_replay_cell_srid() {
                     is_primary_key: true,
                     column_default: None,
                     extra: None,
+                    collation: None,
                 },
                 DataGridColumnInfo {
                     name: "shape".to_string(),
@@ -1802,6 +1819,7 @@ fn sqlserver_spatial_extract_updates_replay_cell_srid() {
                     is_primary_key: false,
                     column_default: None,
                     extra: None,
+                    collation: None,
                 },
             ]),
         }),
@@ -1871,6 +1889,7 @@ fn sql_insert_skips_generated_and_computed_columns() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("auto_increment".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1879,6 +1898,7 @@ fn sql_insert_skips_generated_and_computed_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "search_text".to_string(),
@@ -1887,6 +1907,7 @@ fn sql_insert_skips_generated_and_computed_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: Some("GENERATED ALWAYS AS".to_string()),
+                collation: None,
             },
         ]),
     });
@@ -1929,6 +1950,7 @@ fn sql_insert_keeps_autoincrement_primary_key_by_default() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("auto_increment".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1937,6 +1959,7 @@ fn sql_insert_keeps_autoincrement_primary_key_by_default() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -1965,6 +1988,7 @@ fn sql_insert_honors_primary_key_exclusion_and_row_by_row_mode() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("auto_increment".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -1973,6 +1997,7 @@ fn sql_insert_honors_primary_key_exclusion_and_row_by_row_mode() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2006,6 +2031,7 @@ fn sql_insert_primary_key_exclusion_omits_postgres_serial_key() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("serial".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2014,6 +2040,7 @@ fn sql_insert_primary_key_exclusion_omits_postgres_serial_key() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2043,6 +2070,7 @@ fn sql_insert_generated_primary_key_exclusion_keeps_manual_composite_key_members
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("auto_increment".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "stat_date".to_string(),
@@ -2051,6 +2079,7 @@ fn sql_insert_generated_primary_key_exclusion_keeps_manual_composite_key_members
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2059,6 +2088,7 @@ fn sql_insert_generated_primary_key_exclusion_keeps_manual_composite_key_members
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2090,6 +2120,7 @@ fn sql_insert_all_primary_key_mode_excludes_manual_composite_key_members() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("auto_increment".to_string()),
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "stat_date".to_string(),
@@ -2098,6 +2129,7 @@ fn sql_insert_all_primary_key_mode_excludes_manual_composite_key_members() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2106,6 +2138,7 @@ fn sql_insert_all_primary_key_mode_excludes_manual_composite_key_members() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2138,6 +2171,7 @@ fn sql_insert_primary_key_exclusion_matches_unique_case_insensitive_mysql_primar
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2146,6 +2180,7 @@ fn sql_insert_primary_key_exclusion_matches_unique_case_insensitive_mysql_primar
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2177,6 +2212,7 @@ fn sql_insert_preserves_case_insensitive_mysql_identity_primary_key_columns() {
             is_primary_key: false,
             column_default: None,
             extra: Some("auto_increment".to_string()),
+            collation: None,
         }]),
     });
     request.columns = vec![column("id", 0)];
@@ -2206,6 +2242,7 @@ fn sql_insert_primary_key_exclusion_preserves_case_distinct_postgres_columns() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "id".to_string(),
@@ -2214,6 +2251,7 @@ fn sql_insert_primary_key_exclusion_preserves_case_distinct_postgres_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2222,6 +2260,7 @@ fn sql_insert_primary_key_exclusion_preserves_case_distinct_postgres_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2252,6 +2291,7 @@ fn sql_insert_primary_key_exclusion_uses_exact_postgres_names_with_incomplete_me
             is_primary_key: true,
             column_default: None,
             extra: Some("identity".to_string()),
+            collation: None,
         }]),
     });
     request.columns = vec![column("id", 0), column("name", 1)];
@@ -2282,6 +2322,7 @@ fn sql_insert_uses_exact_column_metadata_for_case_distinct_identity_columns() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "ID".to_string(),
@@ -2290,6 +2331,7 @@ fn sql_insert_uses_exact_column_metadata_for_case_distinct_identity_columns() {
                 is_primary_key: true,
                 column_default: None,
                 extra: Some("identity".to_string()),
+                collation: None,
             },
         ]),
     });
@@ -2452,6 +2494,7 @@ fn sql_copy_reports_selected_opaque_aggregate_states_before_generic_builder_erro
         is_primary_key: false,
         column_default: None,
         extra: None,
+        collation: None,
     };
     for extractor in
         [DataGridExtractorId::SqlInserts, DataGridExtractorId::SqlDeletesInserts, DataGridExtractorId::SqlUpdates]
@@ -2659,6 +2702,7 @@ fn builds_deletes_inserts_merged_mode() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2667,6 +2711,7 @@ fn builds_deletes_inserts_merged_mode() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2694,6 +2739,7 @@ fn builds_deletes_only() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2702,6 +2748,7 @@ fn builds_deletes_only() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2730,6 +2777,7 @@ fn builds_deletes_inserts_row_by_row_mode() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2738,6 +2786,7 @@ fn builds_deletes_inserts_row_by_row_mode() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2768,6 +2817,7 @@ fn builds_deletes_inserts_with_composite_primary_key() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "user_id".to_string(),
@@ -2776,6 +2826,7 @@ fn builds_deletes_inserts_with_composite_primary_key() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "role".to_string(),
@@ -2784,6 +2835,7 @@ fn builds_deletes_inserts_with_composite_primary_key() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2814,6 +2866,7 @@ fn builds_deletes_inserts_with_hidden_primary_keys() {
                 is_primary_key: true,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
             DataGridColumnInfo {
                 name: "name".to_string(),
@@ -2822,6 +2875,7 @@ fn builds_deletes_inserts_with_hidden_primary_keys() {
                 is_primary_key: false,
                 column_default: None,
                 extra: None,
+                collation: None,
             },
         ]),
     });
@@ -2883,4 +2937,46 @@ fn deletes_inserts_requires_table_meta_and_primary_key() {
         extract_data_grid_selection(nosql).expect_err("nosql unsupported").code,
         DataGridExtractErrorCode::UnsupportedDatabase
     );
+}
+
+#[test]
+fn sql_insert_replace_into_mysql_and_dialect_gate() {
+    // (a) MySQL + replace_into emits REPLACE INTO in both insert modes.
+    for insert_mode in
+        [crate::data_grid_sql::DataGridCopyInsertMode::Merged, crate::data_grid_sql::DataGridCopyInsertMode::RowByRow]
+    {
+        let mut request = temporal_insert_request();
+        request.database_type = Some(DatabaseType::Mysql);
+        request.options.sql.insert_mode = insert_mode;
+        request.options.sql.replace_into = true;
+        let result = extract_data_grid_selection(request).unwrap();
+        assert!(
+            result.text.contains("REPLACE INTO"),
+            "mysql replace_into must emit REPLACE INTO ({insert_mode:?}): {}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("INSERT INTO"),
+            "mysql replace_into must not also emit INSERT INTO: {}",
+            result.text
+        );
+    }
+
+    // (b) Non-MySQL with a persisted replace_into preference still emits INSERT.
+    let mut request = temporal_insert_request();
+    request.database_type = Some(DatabaseType::Postgres);
+    request.options.sql.replace_into = true;
+    let result = extract_data_grid_selection(request).unwrap();
+    assert!(result.text.contains("INSERT INTO"), "postgres must ignore replace_into: {}", result.text);
+    assert!(!result.text.contains("REPLACE INTO"), "postgres must never emit REPLACE: {}", result.text);
+
+    // (c) sql-deletes-inserts stays INSERT even on MySQL with replace_into on.
+    let mut request = temporal_insert_request();
+    request.extractor = DataGridExtractorId::SqlDeletesInserts;
+    request.database_type = Some(DatabaseType::Mysql);
+    request.options.sql.replace_into = true;
+    request.table_meta.as_mut().unwrap().primary_keys = vec!["AMOUNT".into()];
+    let result = extract_data_grid_selection(request).unwrap();
+    assert!(result.text.contains("INSERT INTO"), "deletes-inserts must stay INSERT: {}", result.text);
+    assert!(!result.text.contains("REPLACE INTO"), "deletes-inserts must never emit REPLACE: {}", result.text);
 }

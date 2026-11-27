@@ -11,6 +11,7 @@ pub mod pl_debug;
 pub mod plugin_data;
 pub mod plugin_plan;
 pub mod query_cancel;
+pub mod read_only_gate;
 pub mod redis_ops;
 pub mod snapshot_export;
 mod sqlserver_agent_batch;
@@ -10553,6 +10554,7 @@ for line in sys.stdin:
             is_production: false,
             production_databases: vec![],
             production_badge_scope: None,
+            watermark: None,
             database_info: None,
         }
     }
@@ -13947,6 +13949,7 @@ done
             is_production: false,
             production_databases: vec![],
             production_badge_scope: None,
+            watermark: None,
             database_info: None,
         };
 
